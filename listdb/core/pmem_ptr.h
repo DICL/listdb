@@ -1,0 +1,4 @@
+#ifndef LISTDB_CORE_PMEM_PTR_H_
+#define LISTDB_CORE_PMEM_PTR_H_
+
+#endif  // LISTDB_CORE_PMEM_PTR_H_

@@ -1,0 +1,169 @@
+#ifndef LISTDB_CORE_LRU_SKIPLIST_H_
+#define LISTDB_CORE_LRU_SKIPLIST_H_
+
+#define MUTEX mutex
+#define MUTEX_HEADER <MUTEX>
+#include MUTEX_HEADER
+
+#include "listdb/common.h"
+#include "listdb/index/lockfree_skiplist.h"
+
+class LruSkipList {
+ public:
+  struct Node {
+    Key key;       // integer value or offset
+    uint64_t tag;  // seqorder (52-bit), op (4-bit), height (8-bit)
+    uint64_t value;     // integer value or offset, (SHORTCUT: pointer to next memtable node)
+    Node* lru_next;
+    Node* lru_prev;
+    std::atomic<Node*> next[1];
+
+#ifndef LISTDB_STRING_KEY
+    static Key head_key() { return 0ULL; }
+#else
+    static Key head_key() { return Key(); }
+#endif
+
+    static size_t compute_alloc_size(const Key& key, const int height) {
+      return aligned_size(8, sizeof(Node) + (height-1)*8);
+    }
+
+    int height() const { return tag & 0xff; }
+    size_t alloc_size() const { return sizeof(Node) + (height() - 1) * 8; }
+    uint8_t type() const { return ValueType((tag & 0xf00) >> 4); }
+    char* data() const { return (char*) this; }
+  };
+
+  LruSkipList(const size_t capacity);
+
+  // Returns cached value of the largest key among keys less than a given key
+  // Returns 0 if the found result is head node of the SkipList
+  uint64_t FindLessThan(const Key& key);
+
+  void Insert(const Key& key, const uint64_t value, const int height);
+
+ private:
+  void FindPosition(Node* node, Node* preds[], Node* succs[]);
+
+  const size_t capacity_;  // in number of nodes
+  size_t size_;  // in number of nodes
+  Node* head_;
+  std::MUTEX mu_;
+};
+
+LruSkipList::LruSkipList(const size_t capacity) : capacity_(capacity), size_(0) {
+  // Init head
+  size_t node_size = sizeof(Node) + (kLruMaxHeight - 1) * 8;
+  Node* new_node = (Node*) aligned_alloc(8, node_size);
+
+  new_node->key = Node::head_key();
+  new_node->tag = kLruMaxHeight & 0xff;
+  new_node->value = 0;
+  memset(new_node->next, 0, kLruMaxHeight * 8);
+
+  head_ = new_node;
+  head_->lru_next = head_;
+  head_->lru_prev = head_;
+  std::atomic_thread_fence(std::memory_order_release);
+}
+
+uint64_t LruSkipList::FindLessThan(const Key& key) {
+  Node* pred = head_;
+  Node* curr = nullptr;
+  int h = pred->height();
+  for (int l = h - 1; l >= 0; l--) {
+    while (true) {
+      curr = pred->next[l].load(std::memory_order_relaxed);
+      if (curr && curr->key.Compare(key) < 0) {
+        pred = curr;
+        continue;
+      }
+      break;
+    }
+  }
+  
+  if (pred != head_) {
+    // Move found node to MRU position
+    std::unique_lock<std::MUTEX> lk(mu_); 
+    auto tail = head_->lru_prev;
+    if (pred != tail) {
+      pred->lru_prev->lru_next = pred->lru_next;
+      pred->lru_next->lru_prev = pred->lru_prev;
+
+      head_->lru_prev = pred;  // pred at tail
+      pred->lru_next = head_;
+
+      pred->lru_prev = tail;
+      tail->lru_next = pred;
+    }
+    lk.unlock();
+  }
+  return pred->value;
+}
+
+void LruSkipList::Insert(const Key& key, const uint64_t value, const int height) {
+  // Alloc SkipList node and LRU list node
+  size_t node_size = sizeof(Node) + (height - 1) * 8;
+  Node* new_node = (Node*) aligned_alloc(8, node_size);
+
+  // Init SkipList node
+  new_node->key = key;
+  new_node->tag = height & 0xff;
+  new_node->value = value;
+  memset(new_node->next, 0, height * 8);
+
+  // TODO: Evict
+
+  // Insert new LRU node at MRU position
+  std::unique_lock<std::MUTEX> lk(mu_); 
+  auto tail = head_->lru_prev;
+
+  head_->lru_prev = new_node;
+  new_node->lru_next = head_;
+
+  new_node->lru_prev = tail;
+  tail->lru_next = new_node;
+  lk.unlock();
+
+  // Insert new node into SkipList
+  Node* preds[kLruMaxHeight];
+  Node* succs[kLruMaxHeight];
+  while (true) {
+    FindPosition(new_node, preds, succs);
+    for (int l = 0; l < new_node->height(); l++) {
+      new_node->next[l].store(succs[l], std::memory_order_relaxed);
+    }
+    if (!preds[0]->next[0].compare_exchange_strong(succs[0], new_node)) {
+      continue;
+    }
+    for (int l = 1; l < new_node->height(); l++) {
+      while (true) {
+        if (preds[l]->next[l].compare_exchange_strong(succs[l], new_node)) {
+          break;
+        }
+        FindPosition(new_node, preds, succs);
+      }
+    }
+    break;
+  }
+}
+
+void LruSkipList::FindPosition(Node* node, Node* preds[], Node* succs[]) {
+  Node* pred = head_;
+  Node* curr = nullptr;
+  int h = pred->height();
+  for (int l = h - 1; l >= 0; l--) {
+    while (true) {
+      curr = pred->next[l].load(std::memory_order_relaxed);
+      if (curr && curr->key.Compare(node->key) < 0) {
+        pred = curr;
+        continue;
+      }
+      break;
+    }
+    preds[l] = pred;
+    succs[l] = curr;
+  }
+}
+
+#endif  // LISTDB_CORE_LRU_SKIPLIST_H_

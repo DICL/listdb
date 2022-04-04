@@ -1,0 +1,12 @@
+build/
+tags
+.project_alt.json
+scripts/output
+scripts/tmp*
+scripts/aaa
+scripts/bbb
+scripts/ccc
+.nvimlog
+bak/
+log-*
+*.patch

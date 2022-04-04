@@ -1,0 +1,11 @@
+#ifndef LISTDB_CORE_SKIPLIST_CACHE_H_
+#define LISTDB_CORE_SKIPLIST_CACHE_H_
+
+class SkipListCache {
+
+
+
+};
+
+
+#endif  // LISTDB_CORE_SKIPLIST_CACHE_H_
