@@ -20,6 +20,8 @@ class TableList {
 
   void SetFront(Table* table);
 
+  void PushFront(Table* table);
+
   Table* GetFront();
 
   Table* GetMutable(const size_t size);
@@ -46,6 +48,13 @@ void* TableList::Put(const Key& key, const Value& value) {
 
 void TableList::SetFront(Table* table) {
   std::lock_guard<std::mutex> lk(init_mu_);
+  front_.store(table);
+}
+
+void TableList::PushFront(Table* table) {
+  std::lock_guard<std::mutex> lk(init_mu_);
+  auto front_old = front_.load();
+  table->SetNext(front_old);
   front_.store(table);
 }
 

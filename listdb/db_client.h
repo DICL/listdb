@@ -87,6 +87,10 @@ void DBClient::Put(const Key& key, const Value& value) {
   size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
   size_t kv_size = key.size() + sizeof(Value);
 
+  // Determine L0 id
+  auto mem = db_->GetWritableMemTable(kv_size, s);
+  uint64_t l0_id = mem->l0_id();
+
   // Write log
   auto log_paddr = log_[s]->Allocate(iul_entry_size);
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
@@ -96,7 +100,7 @@ void DBClient::Put(const Key& key, const Value& value) {
   //_mm_sfence();
   _mm_stream_pi((__m64*) &iul_entry->key, (__m64) (uint64_t) key);
 #else
-  iul_entry->tag = height;
+  iul_entry->tag = (l0_id << 32) | height;
   iul_entry->value = value;
   //clwb(&iul_entry->tag, 16);
   _mm_sfence();
@@ -108,12 +112,10 @@ void DBClient::Put(const Key& key, const Value& value) {
   // Create skiplist node
   MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
   node->key = key;
-  node->tag = height;
-  //node->value = value;
+  node->tag = (l0_id << 32) | height;
   node->value = log_paddr.dump();
   memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
 
-  auto mem = db_->GetWritableMemTable(kv_size, s);
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
   mem->w_UnRef();

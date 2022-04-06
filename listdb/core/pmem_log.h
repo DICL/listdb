@@ -19,21 +19,35 @@ using Pool = pmem::obj::pool<T>;
 //constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20);
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 
-struct pmem_log_block {
-  size_t p;
-  char data[kPmemLogBlockSize];
-  pmem::obj::persistent_ptr<pmem_log_block> next;
-  size_t wal_end;
+struct pmem_log;
+struct pmem_log_block;
 
-  pmem_log_block(pmem::obj::persistent_ptr<pmem_log_block> next_ = nullptr) : p(0), data(), next(next_), wal_end(0) { }
+struct LogRecordId {
+  uint32_t block_id;
+  uint32_t offset;
 };
 
-struct pmem_log {
-  pmem::obj::persistent_ptr<pmem_log_block> head;
+struct LogRange {
+  LogRecordId begin;
+  LogRecordId end;
 };
 
 struct pmem_log_root {
   pmem::obj::persistent_ptr<pmem_log> shard[kNumShards];
+};
+
+struct pmem_log {
+  uint32_t block_cnt;
+  pmem::obj::persistent_ptr<pmem_log_block> head;
+};
+
+struct pmem_log_block {
+  uint32_t id;
+  size_t p;
+  char data[kPmemLogBlockSize];
+  pmem::obj::persistent_ptr<pmem_log_block> next;
+
+  pmem_log_block(pmem::obj::persistent_ptr<pmem_log_block> next_ = nullptr) : p(0), data(), next(next_) { }
 };
 
 // PmemLog
@@ -43,10 +57,9 @@ class PmemLog {
   struct Block {
     std::atomic<size_t> p;  // current end
     char* data;  // pointer to pmem_log_block::data
-    size_t wal_end;
-    Block* next;
+    pmem::obj::persistent_ptr<pmem_log_block> p_block;
 
-    explicit Block(pmem::obj::persistent_ptr<pmem_log_block> p_block, Block* next_);
+    explicit Block(pmem::obj::persistent_ptr<pmem_log_block> p_block_);
     void* Allocate(const size_t size);
   };
   
@@ -55,6 +68,8 @@ class PmemLog {
   PmemPtr Allocate(const size_t size);
 
   int pool_id() { return pool_id_; }
+
+  pmem::obj::pool<pmem_log_root> pool() { return pool_; }
 
  private:
   Block* GetCurrentBlock();
@@ -67,12 +82,11 @@ class PmemLog {
   std::mutex block_init_mu_;
 };
 
-PmemLog::Block::Block(pmem::obj::persistent_ptr<pmem_log_block> p_block, Block* next_) {
-  assert(p_block != nullptr);
-  p.store(p_block->p);
-  data = p_block->data;
-  wal_end = p_block->wal_end;
-  next = next_;
+PmemLog::Block::Block(pmem::obj::persistent_ptr<pmem_log_block> p_block_) {
+  assert(p_block_ != nullptr);
+  p.store(p_block_->p);
+  data = p_block_->data;
+  p_block = p_block_;
   std::atomic_thread_fence(std::memory_order_release);
 }
 
@@ -90,16 +104,25 @@ PmemLog::PmemLog(const int pool_id, const int shard_id) : pool_id_(pool_id) {
   pool_ = pool;
   auto root = pool_.root();
   if (root->shard[shard_id] == nullptr) {
-    pmem::obj::make_persistent_atomic<pmem_log>(pool_, root->shard[shard_id]);
-    p_log_ = root->shard[shard_id];
+    // Create
+    pmem::obj::persistent_ptr<pmem_log> p_log;
+    pmem::obj::make_persistent_atomic<pmem_log>(pool_, p_log);
+    p_log->block_cnt = 0;
+    root->shard[shard_id] = p_log;
+    p_log_ = p_log;
     front_.store(nullptr);
   } else {
+    // Open
     p_log_ = root->shard[shard_id];
+#if 0
     std::function<Block*(pmem::obj::persistent_ptr<pmem_log_block>)> init_fn =
         [&](pmem::obj::persistent_ptr<pmem_log_block> p_block) {
       return (p_block) ? new Block(p_block, init_fn(p_block->next)) : nullptr;
     };
     auto head_block = init_fn(p_log_->head);
+#else
+    auto head_block = new Block(p_log_->head);
+#endif
     front_.store(head_block);
   }
 }
@@ -112,8 +135,12 @@ PmemLog::Block* PmemLog::GetCurrentBlock() {
     if (ret == nullptr) {
       pmem::obj::persistent_ptr<pmem_log_block> p_new_block;
       pmem::obj::make_persistent_atomic<pmem_log_block>(pool_, p_new_block, p_log_->head);
+
+      p_new_block->id = p_log_->block_cnt;
+      p_log_->block_cnt++;
+
       p_log_->head = p_new_block;
-      auto new_block = new Block(p_new_block, nullptr);
+      auto new_block = new Block(p_new_block);
       front_.store(new_block, MO_RELAXED);
       ret = new_block;
     }
@@ -131,8 +158,12 @@ PmemPtr PmemLog::Allocate(const size_t size) {
       // TODO: write Block contents to pmem_log_block
       pmem::obj::persistent_ptr<pmem_log_block> p_new_block;
       pmem::obj::make_persistent_atomic<pmem_log_block>(pool_, p_new_block, p_log_->head);
+
+      p_new_block->id = p_log_->block_cnt;
+      p_log_->block_cnt++;
+
       p_log_->head = p_new_block;
-      auto new_block = new Block(p_new_block, block);
+      auto new_block = new Block(p_new_block);
       front_.store(new_block, MO_RELAXED);
       buf = new_block->Allocate(size);
     }

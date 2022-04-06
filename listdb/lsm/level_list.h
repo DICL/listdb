@@ -33,6 +33,9 @@ class LevelList {
 
   TableList* GetTableList(const int level);
 
+  template <typename T>
+  T* GetTableList(const int level);
+
  private:
   TableList* table_lists_[kNumLevels];
 };
@@ -43,6 +46,11 @@ inline void LevelList::SetTableList(const int level, TableList* tl) {
 
 inline TableList* LevelList::GetTableList(const int level) {
   return table_lists_[level];
+}
+
+template <typename T>
+inline T* LevelList::GetTableList(const int level) {
+  return (T*) GetTableList(level);
 }
 
 #endif  // LISTDB_LSM_LEVEL_LIST_H_

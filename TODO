@@ -1,0 +1,20 @@
+[v] Write log with l0_id
+[ ] Read l0_id on recovery
+[ ] Set L0 status as full when its memtable got full
+    - Write pmem_l0_info
+      - Level0Status::kFull
+      - MemTableList::NewMutable()
+[ ] Persist p value (pmem_log_block)
+
+pmem_log_block
+  - set block id
+
+pmem_log
+  - count up block_cnt
+  - decide how to define a head node
+    - affects iterator in recovery
+    - affects PmemLog construction
+
+WAL mode
+  - recovery
+    - read log record
