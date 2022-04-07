@@ -363,129 +363,171 @@ void ListDB::Open() {
     // Initial -> Persist -> Persist -> ... -> Merging -> Merged -> Merged -> ...
     auto pred_l0_info = shard->l0_list_head;
     auto curr_l0_info = pred_l0_info->next;
-
-    //std::vector<pmem::obj::persistent_ptr<pmem_l0_info>> p_l0_infos;
-    //while (curr_l0_info) {
-    //}
-
+    std::deque<pmem::obj::persistent_ptr<pmem_l0_info>> l0_manifests;
+    uint64_t min_l0_id;
     while (curr_l0_info) {
       if (curr_l0_info->status == Level0Status::kMergeDone) {
         for (int j = 0; j < kNumRegions; j++) {
           size_t head_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * sizeof(uint64_t);
-          pmem::obj::delete_persistent_atomic<char[]>(curr_l0_info->head[j], head_node_size); // TODO(wkim): Check user-level alloc? pmem alloc?
+          pmem::obj::delete_persistent_atomic<char[]>(curr_l0_info->head[j], head_node_size);
         }
+        auto succ_l0_info = curr_l0_info->next;
         // TODO(wkim): do the followings as a transaction
-        pred_l0_info->next = curr_l0_info->next;
+        pred_l0_info->next = succ_l0_info;
         pmem::obj::delete_persistent_atomic<pmem_l0_info>(curr_l0_info);
-      } else {
-        // kMergeInitiated
-        // kPersisted
-        // kFull
-        // kInitialized
-        auto l0_skiplist = new BraidedPmemSkipList();
+        curr_l0_info = succ_l0_info;
+        continue;
+      }
+      min_l0_id = curr_l0_info->id;
+      l0_manifests.push_front(curr_l0_info);
+    }
+
+    // Collect log blocks
+    std::deque<pmem::obj::persistent_ptr<pmem_log_block>> log_blocks[kNumRegions];
+    for (int j = 0; j < kNumRegions; j++) {
+      int pool_id = log_[j][i]->pool_id();
+      auto pool = log_[j][i]->pool();
+      auto log_shard = pool.root()->shard[i];
+      //curr_log_block[j] = log_shard->head;
+      //cursor[j].p_block = log_shard->head;
+      //cursor[j].data = cursor[j].p_block->data;
+      auto curr_block = log_shard->head;
+      while (curr_block) {
+        PmemNode* first_record = (PmemNode*) curr_block->data;
+        log_blocks[j].push_front(curr_block);
+        if (first_record->l0_id() < min_l0_id) {
+          break;
+        }
+        curr_block = curr_block->next;
+      }
+    }
+    // Init log cursor
+    struct LogCursor {
+      char* data = nullptr;
+      uint64_t offset = 0;
+      std::iterator<std::deque<pmem::obj::persistent_ptr<pmem_log_block>>> block_iter;
+      //pmem::obj::persistent_ptr<pmem_log_block> p_block = nullptr;
+
+      char* p() { return data + offset; }
+    } cursor[kNumRegions];
+    for (int j = 0; j < kNumRegions; j++) {
+      cursor[j].block_iter = log_blocks[j].begin();
+      cursor[j].data = *(cursor[j].block_iter)->data;
+    }
+
+    std::deque<Table*> tables;
+    for (auto& l0 : l0_manifests) {
+      // Prepare L0 SkipList
+      auto l0_skiplist = new BraidedPmemSkipList();
+      for (int j = 0; j < kNumRegions; j++) {
+        int pool_id = log_[j][i]->pool_id();
+        int region = pool_id_to_region_[pool_id];
+        l0_skiplist->BindArena(pool_id, log_[j][i]);
+        l0_skiplist->BindHead(pool_id, (void*) curr_l0_info->head[region].get());
+      }
+
+      if (curr_l0_info->status == Level0Status::kMergeInitiated) {
+        // TODO(wkim): Continue and finish L0 to L1 compaction
+      } else if (curr_l0_info->status == Level0Status::kPersisted) {
+        auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+        l0_table->SetSize(kMemTableCapacity);
+        //memtable_list->PushFront(l0_table);
+        tables.push_back((Table*) l0_table);
+      } else if (curr_l0_info->status == Level0Status::kFull) {
+        // Reset L0 skiplist
         for (int j = 0; j < kNumRegions; j++) {
           int pool_id = log_[j][i]->pool_id();
-          int region = pool_id_to_region_[pool_id];
-          l0_skiplist->BindArena(pool_id, log_[j][i]);
-          l0_skiplist->BindHead(pool_id, (void*) curr_l0_info->head[region].get());
+          auto p_head = l0_skiplist->head(pool_id);
+          for (int k = 0; k < kMaxHeight; k++) {
+            p_head->next[k] = 0;
+          }
         }
 
-        if (curr_l0_info->status == Level0Status::kMergeInitiated) {
-          // TODO(wkim): Finish L0 to L1 compaction
-        } else if (curr_l0_info->status == Level0Status::kPersisted) {
-          auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
-          l0_table->SetSize(kMemTableCapacity);
-          memtable_list->PushFront(l0_table);
-        } else if (curr_l0_info->status == Level0Status::kFull) {
-          // Reset L0 skiplist
-          for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = log_[j][i]->pool_id();
-            auto p_head = l0_skiplist->head(pool_id);
-            for (int k = 0; k < kMaxHeight; k++) {
-              p_head->next[k] = 0;
-            }
-          }
-          // Build L0 skiplist for each region
-          for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = log_[j][i]->pool_id();
-            auto pool = log_[j][i]->pool();
-            auto log_shard = pool.root()->shard[i];
-            auto curr_log_block = log_shard->head;
-            std::deque<pmem::obj::persistent_ptr<pmem_log_block>> p_blocks;
-            while (curr_log_block) {
-              if (curr_log_block->id > curr_l0_info->log_range[j].end.block_id) {
-                curr_log_block = curr_log_block->next;
-                continue;
-              }
-              if (curr_log_block->id < curr_l0_info->log_range[j].begin.block_id) {
-                break;
-              }
-              p_blocks.push_front(curr_log_block);
-              curr_log_block = curr_log_block->next;
-            }
-            for (auto& block : p_blocks) {
-              size_t offset = 0;
-              size_t end_offset = kPmemLogBlockSize;
-              if (block->id == curr_l0_info->log_range[j].begin.block_id) {
-                offset = curr_l0_info->log_range[j].begin.offset;
-              }
-              if (block->id == curr_l0_info->log_range[j].end.block_id) {
-                end_offset = curr_l0_info->log_range[j].end.offset;
-              }
-              while (offset < end_offset) {
-                char* p = block->data + offset;
-                PmemNode* node = (PmemNode*) p;
-                if (node->key == 0) {
-                  break;
-                }
-                PmemPtr node_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
-                l0_skiplist->Insert(node_paddr);
-              }
-            }
-          }
+        // Replay Log
+        for (int j = 0; j < kNumRegions; j++) {
+          auto pool = log_[j][i]->pool();
+          //auto log_shard = pool.root()->shard[i];
 
-          auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
-          l0_table->SetSize(kMemTableCapacity);
-          memtable_list->PushFront(l0_table);
-        } else if (curr_l0_info->status == Level0Status::kInitialized) {
-          // Reset L0 skiplist
-          for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = log_[j][i]->pool_id();
-            auto p_head = l0_skiplist->head(pool_id);
-            for (int k = 0; k < kMaxHeight; k++) {
-              p_head->next[k] = 0;
-            }
-          }
-          auto memtable = new MemTable(kMemTableCapacity);
-          memtable->SetL0SkipList(l0_skiplist);
-          auto skiplist = memtable->skiplist();
-          size_t kv_size_total = 0;
-          // log range end is not set
-          for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = log_[j][i]->pool_id();
-            auto pool = log_[j][i]->pool();
-            auto log_shard = pool.root()->shard[i];
-            auto curr_log_block = log_shard->head;
-            std::deque<pmem::obj::persistent_ptr<pmem_log_block>> p_blocks;
-            while (curr_log_block) {
-              if (curr_log_block->id < curr_l0_info->log_range[j].begin.block_id) {
+          bool current_table_done = false;
+          while (cursor[j].block_iter != log_blocks[j].end()) {
+            while (cursor[j].offset < kPmemLogBlockSize) {
+              char* p = cursor[j].p();
+              PmemNode* p_node = (PmemNode*) p;
+              if (p_node->key == 0) {
                 break;
               }
-              p_blocks.push_front(curr_log_block);
-              curr_log_block = curr_log_block->next;
-            }
-            for (auto& block : p_blocks) {
-              size_t offset = 0;
-              size_t end_offset = kPmemLogBlockSize;
-              if (block->id == curr_l0_info->log_range[j].begin.block_id) {
-                offset = curr_l0_info->log_range[j].begin.offset;
+              if (p_node->l0_id() > curr_l0_info->id) {
+                current_table_done = true;
+                break;
               }
-              while (offset < end_offset) {
-                char* p = block->data + offset;
-                PmemNode* p_node = (PmemNode*) p;
-                if (p_node->key == 0) {
-                  break;
-                }
+              if (p_node->l0_id() == curr_l0_info->id) {
+                // DO REPLAY
+                PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
+                //l0_skiplist->Insert(node_paddr);
+
+                // Create skiplist node
+                int height = p_node->height();
+                MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
+                node->key = p_node->key;
+                node->tag = height;
+                node->value = log_paddr.dump();
+                memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
+
+                skiplist->Insert(node);
+              }
+              size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+              cursor[j].offset += iul_entry_size;
+            }
+            if (current_table_done)  {
+              break;
+            }
+            ++cursor[j].block_iter;
+            if (cursor[j].block_iter != log_blocks[j].end()) {
+              cursor[j].data = *(cursor[j].block_iter)->data;
+              cursor[j].offset = 0;
+            }
+          }
+        }
+
+        auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+        l0_table->SetSize(kMemTableCapacity);
+        //memtable_list->PushFront(l0_table);
+        tables.push_back((Table*) l0_table);
+      } else if (curr_l0_info->status == Level0Status::kInitialized) {
+        // Reset L0 skiplist
+        for (int j = 0; j < kNumRegions; j++) {
+          int pool_id = log_[j][i]->pool_id();
+          auto p_head = l0_skiplist->head(pool_id);
+          for (int k = 0; k < kMaxHeight; k++) {
+            p_head->next[k] = 0;
+          }
+        }
+
+        // Init MemTable SkipList
+        auto memtable = new MemTable(kMemTableCapacity);
+        memtable->SetL0SkipList(l0_skiplist);
+        auto skiplist = memtable->skiplist();
+        size_t kv_size_total = 0;
+
+        // Replay Log
+        for (int j = 0; j < kNumRegions; j++) {
+          auto pool = log_[j][i]->pool();
+          //auto log_shard = pool.root()->shard[i];
+
+          bool current_table_done = false;
+          while (cursor[j].block_iter != log_blocks[j].end()) {
+            while (cursor[j].offset < kPmemLogBlockSize) {
+              char* p = cursor[j].p();
+              PmemNode* p_node = (PmemNode*) p;
+              if (p_node->key == 0) {
+                break;
+              }
+              if (p_node->l0_id() > curr_l0_info->id) {
+                current_table_done = true;
+                break;
+              }
+              if (p_node->l0_id() == curr_l0_info->id) {
+                // DO REPLAY
                 PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
                 //l0_skiplist->Insert(node_paddr);
 
@@ -501,18 +543,29 @@ void ListDB::Open() {
 
                 skiplist->Insert(node);
               }
+              size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+              cursor[j].offset += iul_entry_size;
+            }
+            if (current_table_done)  {
+              break;
+            }
+            ++cursor[j].block_iter;
+            if (cursor[j].block_iter != log_blocks[j].end()) {
+              cursor[j].data = *(cursor[j].block_iter)->data;
+              cursor[j].offset = 0;
             }
           }
-
-          memtable->SetSize(kv_size_total);
-          memtable_list->PushFront(memtable);
-        } else {
-          std::cerr << "Unknown L0 status.\n";
-          exit(1);
         }
+        memtable->SetSize(kv_size_total);
+        //memtable_list->PushFront(memtable);
+        tables.push_back((Table*) memtable);
+      } else {
+        std::cerr << "Unknown L0 status.\n";
+        exit(1);
       }
-      
+
     }
+
   }
 }
 
