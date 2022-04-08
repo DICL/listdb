@@ -416,6 +416,7 @@ void ListDB::Open() {
     }
 
     std::deque<Table*> tables;
+    // l0_manifests: oldest to newest
     for (auto& l0 : l0_manifests) {
       // Prepare L0 SkipList
       auto l0_skiplist = new BraidedPmemSkipList();
@@ -463,17 +464,8 @@ void ListDB::Open() {
               if (p_node->l0_id() == curr_l0_info->id) {
                 // DO REPLAY
                 PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
-                //l0_skiplist->Insert(node_paddr);
+                l0_skiplist->Insert(node_paddr);
 
-                // Create skiplist node
-                int height = p_node->height();
-                MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
-                node->key = p_node->key;
-                node->tag = height;
-                node->value = log_paddr.dump();
-                memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
-
-                skiplist->Insert(node);
               }
               size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
               cursor[j].offset += iul_entry_size;
@@ -529,7 +521,6 @@ void ListDB::Open() {
               if (p_node->l0_id() == curr_l0_info->id) {
                 // DO REPLAY
                 PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
-                //l0_skiplist->Insert(node_paddr);
 
                 // Create skiplist node
                 int height = p_node->height();
@@ -564,6 +555,29 @@ void ListDB::Open() {
         exit(1);
       }
 
+    }
+
+    // Build a MemTable List for this shard with individually initialized tables
+    // tables: oldest to newest
+    for (int i = 0; i < tables.size(); i++) {
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      // TODO: Impl.
+      if (i > 0) {
+       tables[i]->SetNext(tables[i - 1]);
+      }
+      memtable_list->PushFront(tables[i]);
     }
 
   }
