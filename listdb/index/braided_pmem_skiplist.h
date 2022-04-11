@@ -24,7 +24,7 @@ class BraidedPmemSkipList {
     uint32_t l0_id() const { return (tag >> 32); }
   };
 
-  BraidedPmemSkipList(int primary_region_pool_id = 0);
+  BraidedPmemSkipList(int primary_region_pool_id = 1);
 
   void BindArena(int pool_id, PmemLog* arena);
 
@@ -44,11 +44,14 @@ class BraidedPmemSkipList {
 
   PmemPtr head_paddr() { return PmemPtr(primary_region_pool_id_, (char*) head_[primary_region_pool_id_]); }
 
+  pmem::obj::persistent_ptr<char[]> p_head(const int pool_id) { return p_head_[pool_id]; }
+
  private:
-  const int primary_region_pool_id_ = 0;
+  const int primary_region_pool_id_ = 1;
   std::map<int, PmemLog*> arena_;
   std::map<int, Node*> head_;
   //std::vector<int> pool_ids_;
+  std::map<int, pmem::obj::persistent_ptr<char[]>> p_head_;
 };
 
 BraidedPmemSkipList::BraidedPmemSkipList(const int primary_region_pool_id)
@@ -73,6 +76,7 @@ void BraidedPmemSkipList::Init() {
     auto pool = it.second->pool();
     pmem::obj::persistent_ptr<char[]> pmem_head_buf;
     pmem::obj::make_persistent_atomic<char[]>(pool, pmem_head_buf, head_size);
+    p_head_[pool_id] = pmem_head_buf;
     Node* head = (Node*) pmem_head_buf.get();
 #endif
     head->key = 0; 

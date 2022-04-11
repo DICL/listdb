@@ -32,6 +32,8 @@ class MemTable : public Table {
 
   void SetL0Manifest(pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest) { l0_manifest_ = l0_manifest; }
 
+  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest() { return l0_manifest_; }
+
   uint64_t l0_id() const { return l0_manifest_->id; }
 
  private:

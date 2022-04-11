@@ -12,6 +12,7 @@
 #include "listdb/common.h"
 #include "listdb/pmem/pmem.h"
 #include "listdb/pmem/pmem_ptr.h"
+#include "listdb/lib/memory.h"
 
 template <typename T>
 using Pool = pmem::obj::pool<T>;
@@ -64,6 +65,8 @@ class PmemLog {
   };
   
   PmemLog(const int pool_id, const int shard_id);
+
+  ~PmemLog();
 
   PmemPtr Allocate(const size_t size);
 
@@ -125,6 +128,12 @@ PmemLog::PmemLog(const int pool_id, const int shard_id) : pool_id_(pool_id) {
 #endif
     front_.store(head_block);
   }
+}
+
+PmemLog::~PmemLog() {
+  auto block = GetCurrentBlock();
+  block->p_block->p = block->p;
+  clwb(&(block->p_block->p), sizeof(size_t));
 }
 
 PmemLog::Block* PmemLog::GetCurrentBlock() {
