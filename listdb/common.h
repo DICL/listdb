@@ -18,7 +18,7 @@
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 16;
+constexpr size_t kStringKeyLength = 24;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t
@@ -48,6 +48,9 @@ constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
 constexpr int kNumWorkers = 40;
+
+constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
+constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 
 //constexpr uint64_t kHTMask = 0x0fffffff;
 //constexpr size_t kHTSize = kHTMask + 1;

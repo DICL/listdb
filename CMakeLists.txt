@@ -7,6 +7,7 @@ set(CMAKE_CXX_COMPILER "g++")
 
 option(DEBUG "build debug mode." OFF)
 option(STRING_KEY "string key mode." OFF)
+option(WISCKEY "Store values as in Wisckey manner." OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
@@ -23,6 +24,13 @@ if(STRING_KEY)
 else()
   message("[X] STRING KEY disabled.")
 endif(STRING_KEY)
+
+if(WISCKEY)
+  message("[O] WISCKEY ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_WISCKEY")
+else()
+  message("[X] WISCKEY disabled.")
+endif(WISCKEY)
 
 ##
 # Compiler options
@@ -105,7 +113,9 @@ endforeach()
 set(ubench_srcs
   listdb/ubench/eee.cc
   listdb/ubench/rw_ratio.cc
-  listdb/ubench/tune_l1.cc)
+  listdb/ubench/tune_l1.cc
+  listdb/ubench/string_kv_test.cc
+  )
 foreach (ubench_src ${ubench_srcs})
   get_filename_component(ubench_name ${ubench_src} NAME_WE)
   add_executable(${ubench_name} ${ubench_src}

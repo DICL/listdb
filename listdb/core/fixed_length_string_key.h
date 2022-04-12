@@ -9,6 +9,7 @@ class FixedLengthStringKey {
  public:
   FixedLengthStringKey();
   FixedLengthStringKey(const char* key);
+  FixedLengthStringKey(const std::string& key);
   FixedLengthStringKey(const uint64_t key);
   FixedLengthStringKey(const int key);
   size_t size() const { return N; }
@@ -31,6 +32,13 @@ inline FixedLengthStringKey<N>::FixedLengthStringKey() {
 template <std::size_t N>
 inline FixedLengthStringKey<N>::FixedLengthStringKey(const char* key) {
   memcpy(data_, key, N);
+}
+
+template <std::size_t N>
+inline FixedLengthStringKey<N>::FixedLengthStringKey(const std::string& key) {
+  assert(key.size() <= N);
+  memcpy(data_, key.data(), key.size());
+  memset(data_ + key.size(), 0, N - key.size());
 }
 
 template <std::size_t N>

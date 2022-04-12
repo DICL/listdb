@@ -17,6 +17,8 @@
 
 #include "listdb/common.h"
 #include "listdb/core/lru_skiplist.h"
+#include "listdb/core/pmem_blob.h"
+#include "listdb/core/pmem_log.h"
 //#include "listdb/core/pmem_db.h"
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
@@ -77,6 +79,10 @@ class ListDB {
 
   PmemLog* log(int region, int shard) { return log_[region][shard]; }
 
+#ifdef LISTDB_WISCKEY
+  PmemBlob* value_blob(const int region, const int shard) { return value_blob_[region][shard]; }
+#endif
+
   // Background Works
   void BackgroundThreadLoop();
 
@@ -108,6 +114,9 @@ class ListDB {
   
 
  private:
+#ifdef LISTDB_WISCKEY
+  PmemBlob* value_blob_[kNumRegions][kNumShards];
+#endif
   PmemLog* log_[kNumRegions][kNumShards];
   PmemLog* l1_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
@@ -174,6 +183,31 @@ void ListDB::Init() {
       log_[i][j] = new PmemLog(pool_id, j);
     }
   }
+
+#ifdef LISTDB_WISCKEY
+  for (int i = 0; i < kNumRegions; i++) {
+    std::stringstream pss;
+    pss << "/pmem" << i << "/wkim/listdb_value";
+    std::string path = pss.str();
+    fs::remove_all(path);
+    fs::create_directories(path);
+
+    std::string poolset = path + ".set";
+    std::fstream strm(poolset, strm.out);
+    strm << "PMEMPOOLSET" << std::endl;
+    strm << "OPTION SINGLEHDR" << std::endl;
+    strm << "400G " << path << "/" << std::endl;
+    strm.close();
+
+    int pool_id = Pmem::BindPoolSet<pmem_blob_root>(poolset, "");
+    pool_id_to_region_[pool_id] = i;
+    auto pool = Pmem::pool<pmem_blob_root>(pool_id);
+
+    for (int j = 0; j < kNumShards; j++) {
+      value_blob_[i][j] = new PmemBlob(pool_id, j);
+    }
+  }
+#endif
 
 #ifdef L1_COW
   // Pmem Pool for L1
