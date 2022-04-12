@@ -59,11 +59,18 @@ class ListDB {
     Task* current_task;
   };
 
+  enum class ServiceStatus {
+    kActive,
+    kStop,
+  };
+
   ~ListDB();
 
   void Init();
 
   void Open();
+
+  void Close();
 
   //void Put(const Key& key, const Value& value);
 
@@ -83,6 +90,8 @@ class ListDB {
   PmemLog* log(int region, int shard) { return log_[region][shard]; }
 
   // Background Works
+  void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
+
   void BackgroundThreadLoop();
 
   void CompactionWorkerThreadLoop(CompactionWorkerData* td);
@@ -134,6 +143,7 @@ class ListDB {
 
   std::thread bg_thread_;
   bool stop_ = false;
+  ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
@@ -145,33 +155,27 @@ class ListDB {
 
 ListDB::~ListDB() {
   fprintf(stdout, "D \n");
-  stop_ = true;
-  bg_thread_.join();
-
-  for (int i = 0; i < kNumWorkers; i++) {
-    worker_data_[i].stop = true;
-    worker_data_[i].cv.notify_one();
-    worker_threads_[i].join();
-  }
-
-  // Save log cursor info
-  for (int i = 0; i < kNumShards; i++) {
-    for (int j = 0; j < kNumRegions; j++) {
-      delete log_[j][i];
-    }
-  }
+  Close();
 }
 
 void ListDB::Init() {
   std::string db_path = "/pmem/wkim/listdb";
   fs::remove_all(db_path);
-  int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 8*1024*1024);
+  int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
     std::cerr << "root_pool_id must be zero (current: " << root_pool_id << ")\n";
     exit(1);
   }
   auto db_pool = Pmem::pool<pmem_db>(root_pool_id);
-  //auto db_root = db_pool.root();
+  auto db_root = db_pool.root();
+  for (int i = 0; i < kNumShards; i++) {
+    pmem::obj::persistent_ptr<pmem_db_shard> p_shard_manifest;
+    pmem::obj::make_persistent_atomic<pmem_db_shard>(db_pool, p_shard_manifest);
+    pmem::obj::persistent_ptr<pmem_l0_info> p_l0_manifest;
+    pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, p_l0_manifest);
+    p_shard_manifest->l0_list_head = p_l0_manifest;
+    db_root->shard[i] = p_shard_manifest;
+  }
   // TODO(wkim): write log path on db_root
 
   // Log Pmem Pool
@@ -296,8 +300,7 @@ void ListDB::Init() {
 
 void ListDB::Open() {
   std::string db_path = "/pmem/wkim/listdb";
-  fs::remove_all(db_path);
-  int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 8*1024*1024);
+  int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
     std::cerr << "root_pool_id must be zero (current: " << root_pool_id << ")\n";
     exit(1);
@@ -591,6 +594,31 @@ void ListDB::Open() {
   }
 }
 
+void ListDB::Close() {
+  stop_ = true;
+  bg_thread_.join();
+
+  for (int i = 0; i < kNumWorkers; i++) {
+    worker_data_[i].stop = true;
+    worker_data_[i].cv.notify_one();
+    worker_threads_[i].join();
+  }
+
+  // Save log cursor info
+  for (int i = 0; i < kNumShards; i++) {
+    for (int j = 0; j < kNumRegions; j++) {
+      delete log_[j][i];
+    }
+  }
+
+  Pmem::Clear();
+}
+
+void ListDB::SetL0CompactionSchedulerStatus(const ServiceStatus& status) {
+  std::lock_guard<std::mutex> guard(wq_mu_);
+  l0_compaction_scheduler_status_ = status;
+}
+
 void ListDB::BackgroundThreadLoop() {
   static const int kWorkerQueueDepth = 2;
   std::vector<int> num_assigned_tasks(kNumWorkers);
@@ -638,27 +666,30 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }
-    for (int i = 0; i < kNumShards; i++) {
-      if (l0_compaction_state[i] == 0) {
-        auto tl = ll_[i]->GetTableList(0);
-        auto table = tl->GetFront();
-        while (true) {
-          auto next_table = table->Next();
-          if (next_table) {
-            table = next_table;
-          } else {
-            break;
+
+    if (l0_compaction_scheduler_status_ == ServiceStatus::kActive) {
+      for (int i = 0; i < kNumShards; i++) {
+        if (l0_compaction_state[i] == 0) {
+          auto tl = ll_[i]->GetTableList(0);
+          auto table = tl->GetFront();
+          while (true) {
+            auto next_table = table->Next();
+            if (next_table) {
+              table = next_table;
+            } else {
+              break;
+            }
           }
-        }
-        if (table->type() == TableType::kPmemTable) {
-          auto task = new L0CompactionTask();
-          task->type = TaskType::kL0Compaction;
-          task->shard = i;
-          task->l0 = (PmemTable*) table;
-          task->memtable_list = (MemTableList*) tl;
-          l0_compaction_state[i] = 1;  // configured
-          l0_compaction_requests.push_back(task);
-          req_comp_cnt[task->type].req_cnt++;
+          if (table->type() == TableType::kPmemTable) {
+            auto task = new L0CompactionTask();
+            task->type = TaskType::kL0Compaction;
+            task->shard = i;
+            task->l0 = (PmemTable*) table;
+            task->memtable_list = (MemTableList*) tl;
+            l0_compaction_state[i] = 1;  // configured
+            l0_compaction_requests.push_back(task);
+            req_comp_cnt[task->type].req_cnt++;
+          }
         }
       }
     }
@@ -867,7 +898,7 @@ void ListDB::ManualFlushMemTable(int shard) {
     return;
   }
 
-  tl->CreateNewFront();
+  tl->CreateNewFront();  // Level0Status is set to kFull.
   
   // Flush (IUL)
   auto l0_skiplist = reinterpret_cast<MemTable*>(table)->l0_skiplist();

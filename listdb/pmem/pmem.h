@@ -17,6 +17,8 @@ class Pmem {
   template <typename T>
   static int BindPoolSet(const std::string& path, const std::string& layout);
 
+  static void Clear();
+
   static pmem::obj::pool_base pool(const int pool_base_id) {
     return *pool_bases_[pool_base_id];
   }
@@ -63,6 +65,13 @@ int Pmem::BindPoolSet(const std::string& path, const std::string& layout) {
   }
   auto it = pool_bases_.insert(pool_bases_.end(), new pmem::obj::pool<T>(pop));
   return std::distance(pool_bases_.begin(), it);
+}
+
+void Pmem::Clear() {
+  for (auto& pool_base : pool_bases_) {
+    pool_base->close();
+  }
+  pool_bases_.clear();
 }
 
 #endif  // LISTDB_PMEM_PMEM_H_

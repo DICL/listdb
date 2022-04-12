@@ -61,16 +61,19 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   MemTable* new_table = new MemTable(table_capacity);  // TODO(wkim): a table must have an ID
 
   // Set the next table as full
-  auto next_memtable = (MemTable*) next_table;
-  auto next_l0_manifest = next_memtable->l0_manifest();
-  next_l0_manifest->status = Level0Status::kFull;
-  // call clwb
+  if (next_table) {
+    auto next_memtable = (MemTable*) next_table;
+    auto next_l0_manifest = next_memtable->l0_manifest();
+    next_l0_manifest->status = Level0Status::kFull;
+    // call clwb
+  }
 
   // Init the new manifest for a new table
   pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest;
   auto db_pool = Pmem::pool<pmem_db>(0);
   pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, l0_manifest);
-  auto shard_manifest = db_pool.root()->shard[shard_id_];
+  auto db_root = db_pool.root();
+  auto shard_manifest = db_root->shard[shard_id_];
   l0_manifest->id = shard_manifest->l0_cnt++;
   l0_manifest->status = Level0Status::kInitialized;
   BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList();

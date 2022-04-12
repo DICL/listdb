@@ -105,7 +105,9 @@ endforeach()
 set(ubench_srcs
   listdb/ubench/eee.cc
   listdb/ubench/rw_ratio.cc
-  listdb/ubench/tune_l1.cc)
+  listdb/ubench/tune_l1.cc
+  listdb/ubench/recovery_test.cc
+  )
 foreach (ubench_src ${ubench_srcs})
   get_filename_component(ubench_name ${ubench_src} NAME_WE)
   add_executable(${ubench_name} ${ubench_src}
