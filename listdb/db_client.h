@@ -7,7 +7,7 @@
 #include "listdb/common.h"
 #include "listdb/listdb.h"
 #include "listdb/util.h"
-#include "listdb/lib/random.h"
+#include "listdb/util/random.h"
 
 #define LEVEL_CHECK_PERIOD_FACTOR 1
 

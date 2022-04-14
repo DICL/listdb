@@ -20,11 +20,11 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/lib/numa.h"
-#include "listdb/lib/random.h"
 #include "listdb/listdb.h"
 #include "listdb/lsm/table.h"
 #include "listdb/lsm/table_list.h"
 #include "listdb/util.h"
+#include "listdb/util/random.h"
 
 #define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"

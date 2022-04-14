@@ -23,11 +23,11 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/index/simple_hash_table.h"
-#include "listdb/lib/random.h"
 #include "listdb/lsm/level_list.h"
 #include "listdb/lsm/memtable_list.h"
 #include "listdb/lsm/pmemtable.h"
 #include "listdb/lsm/pmemtable_list.h"
+#include "listdb/util/random.h"
 
 namespace fs = std::experimental::filesystem::v1;
 

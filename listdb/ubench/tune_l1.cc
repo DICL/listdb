@@ -20,11 +20,11 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/lib/numa.h"
-#include "listdb/lib/random.h"
 #include "listdb/listdb.h"
 #include "listdb/lsm/table.h"
 #include "listdb/lsm/table_list.h"
 #include "listdb/util.h"
+#include "listdb/util/random.h"
 
 constexpr int NUM_THREADS = 40;
 constexpr size_t NUM_LOADS = 80 * 1000 * 1000;

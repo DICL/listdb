@@ -22,11 +22,11 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/lib/numa.h"
-#include "listdb/lib/random.h"
 #include "listdb/listdb.h"
 #include "listdb/lsm/table.h"
 #include "listdb/lsm/table_list.h"
 #include "listdb/util.h"
+#include "listdb/util/random.h"
 
 //#define COUNT_FOUND
 
@@ -205,7 +205,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<Key>& l
           } else if (work_ops[i] == OP_READ) {
             uint64_t val_read;
 #ifndef COUNT_FOUND
-            auto ret = client->GetStringKV(work_keys[i].data(), &val_read);
+            [[maybe_unused]] auto ret = client->GetStringKV(work_keys[i].data(), &val_read);
 #else
             auto ret = client->Get(work_keys[i].data(), &val_read);
             if (ret) cnt[id]++;
