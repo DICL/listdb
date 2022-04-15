@@ -97,4 +97,17 @@ class Random64 {
   }
 };
 
+// A seeded replacement for removed std::random_shuffle
+template <class RandomIt>
+void RandomShuffle(RandomIt first, RandomIt last, uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::shuffle(first, last, rng);
+}
+
+// A replacement for removed std::random_shuffle
+template <class RandomIt>
+void RandomShuffle(RandomIt first, RandomIt last) {
+  RandomShuffle(first, last, std::random_device{}());
+}
+
 #endif  // LISTDB_UTIL_RANDOM_H_

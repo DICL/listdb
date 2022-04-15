@@ -283,7 +283,7 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
 
   uint64_t height = RandomHeight();
   size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-  size_t kv_size = key.size() + value.size();
+  //size_t kv_size = key.size() + value.size();
 
   // Write log
   size_t value_alloc_size = util::AlignedSize(8, 8 + value.size());
@@ -304,14 +304,15 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 
   // Create skiplist node
-  MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
+  size_t mem_node_size = sizeof(MemNode) + (height - 1) * sizeof(uint64_t);
+  MemNode* node = (MemNode*) malloc(mem_node_size);
   node->key = key;
   node->tag = height;
   //node->value = value;
   node->value = log_paddr.dump();
   memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
 
-  auto mem = db_->GetWritableMemTable(kv_size, s);
+  auto mem = db_->GetWritableMemTable(mem_node_size, s);
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
   mem->w_UnRef();

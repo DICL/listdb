@@ -23,7 +23,9 @@ int main() {
 #include "listdb/db_client.h"
 #include "listdb/env.h"
 #include "listdb/listdb.h"
+#include "listdb/lib/numa.h"
 #include "listdb/monitoring/histogram.h"
+#include "listdb/port/port_posix.h"
 #include "listdb/util/clock.h"
 #include "listdb/util/random.h"
 #include "listdb/util/rate_limiter.h"
@@ -71,6 +73,9 @@ DEFINE_int32(seek_nexts, 0,
              "fillseekseq, seekrandom, seekrandomwhilewriting and "
              "seekrandomwhilemerging");
 
+static int64_t FLAGS_batch_size = 1;
+//DEFINE_int64(batch_size, 1, "Batch size");
+
 DEFINE_int32(key_size, 16, "size of each key");
 
 DEFINE_double(compression_ratio, 0.5, "Arrange to generate values that shrink"
@@ -84,13 +89,11 @@ DEFINE_double(read_random_exp_range, 0.0,
 
 DEFINE_bool(histogram, false, "Print histogram of operation timings");
 
+static bool FLAGS_statistics = false;
+//DEFINE_bool(statistics, false, "Database statistics");
+
 DEFINE_int64(writes, -1, "Number of write operations to do. If negative, do"
              " --num reads.");
-
-DEFINE_uint64(
-    benchmark_write_rate_limit, 0,
-    "If non-zero, db_bench will rate-limit the writes going into RocksDB. This "
-    "is the global rate in bytes/second.");
 
 // the parameters of mix_graph
 DEFINE_double(keyrange_dist_a, 0.0,
@@ -152,11 +155,6 @@ DEFINE_uint64(
 DEFINE_int64(mix_accesses, -1,
              "The total query accesses of mix_graph workload");
 
-DEFINE_uint64(
-    benchmark_read_rate_limit, 0,
-    "If non-zero, db_bench will rate-limit the reads from RocksDB. This "
-    "is the global rate in ops/second.");
-
 DEFINE_int32(ops_between_duration_checks, 1000,
              "Check duration limit every x ops");
 
@@ -180,6 +178,13 @@ DEFINE_string(report_file, "report.csv",
 DEFINE_int32(thread_status_per_interval, 0,
              "Takes and report a snapshot of the current status of each thread"
              " when this is greater than 0.");
+
+DEFINE_bool(use_existing_db, false, "If true, do not destroy the existing"
+            " database.  If you set this flag and also specify a benchmark that"
+            " wants a fresh database, that benchmark will fail.");
+
+static std::string FLAGS_db = "/pmem/wkim/listdb";
+//DEFINE_string(db, "", "Use the db with the following name.");
 
 enum DistributionType : unsigned char {
   kFixed = 0,
@@ -804,6 +809,7 @@ struct ThreadState {
   Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
+  DBClient* client;
 
   explicit ThreadState(int index)
       : tid(index), rand((FLAGS_seed ? FLAGS_seed : 1000) + index) {}
@@ -850,31 +856,33 @@ class Duration {
 class Benchmark {
  public:
   Benchmark()
-      : num_(FLAGS_num),
+      : db_(new ListDB()),
+        num_(FLAGS_num),
         key_size_(FLAGS_key_size),
         reads_(FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads),
         read_random_exp_range_(0.0),
         writes_(FLAGS_writes < 0 ? FLAGS_num : FLAGS_writes) {
+    if (!FLAGS_use_existing_db) {
+      db_->Init();
+    } else {
+      abort();
+      //db_->Open();
+    }
+
+    if (key_size_ > (int) kStringKeyLength) {
+      fprintf(stderr, "Error!: kStringKeyLength < --key_size\n.");
+      exit(1);
+    }
   }
 
   ~Benchmark() {
   }
 
- private:
-  DB* db_;
-  int64_t num_;
-  int key_size_;
-  int64_t reads_;
-  double read_random_exp_range_;
-  int64_t writes_;
-  std::vector<std::string> keys_;
-
-#ifdef IMNOTDEFINED
-  Slice AllocateKey(std::unique_ptr<const char[]>* key_guard) {
+  std::string_view AllocateKey(std::unique_ptr<const char[]>* key_guard) {
     char* data = new char[key_size_];
     const char* const_data = data;
     key_guard->reset(const_data);
-    return Slice(key_guard->get(), key_size_);
+    return std::string_view(key_guard->get(), key_size_);
   }
 
   // Generate key according to the given specification and random number.
@@ -891,33 +899,9 @@ class Benchmark {
   //     ----------------------------
   //     |        key 00000         |
   //     ----------------------------
-  void GenerateKeyFromInt(uint64_t v, int64_t num_keys, Slice* key) {
-    if (!keys_.empty()) {
-      assert(FLAGS_use_existing_keys);
-      assert(keys_.size() == static_cast<size_t>(num_keys));
-      assert(v < static_cast<uint64_t>(num_keys));
-      *key = keys_[v];
-      return;
-    }
+  void GenerateKeyFromInt(uint64_t v, int64_t num_keys, std::string_view* key) {
     char* start = const_cast<char*>(key->data());
     char* pos = start;
-    if (keys_per_prefix_ > 0) {
-      int64_t num_prefix = num_keys / keys_per_prefix_;
-      int64_t prefix = v % num_prefix;
-      int bytes_to_fill = std::min(prefix_size_, 8);
-      if (port::kLittleEndian) {
-        for (int i = 0; i < bytes_to_fill; ++i) {
-          pos[i] = (prefix >> ((bytes_to_fill - i - 1) << 3)) & 0xFF;
-        }
-      } else {
-        memcpy(pos, static_cast<void*>(&prefix), bytes_to_fill);
-      }
-      if (prefix_size_ > 8) {
-        // fill the rest with 0s
-        memset(pos + 8, '0', prefix_size_ - 8);
-      }
-      pos += prefix_size_;
-    }
 
     int bytes_to_fill = std::min(key_size_ - static_cast<int>(pos - start), 8);
     if (port::kLittleEndian) {
@@ -933,46 +917,30 @@ class Benchmark {
     }
   }
 
-  void GenerateKeyFromIntForSeek(uint64_t v, int64_t num_keys, Slice* key) {
-    GenerateKeyFromInt(v, num_keys, key);
-    if (FLAGS_seek_missing_prefix) {
-      assert(prefix_size_ > 8);
-      char* key_ptr = const_cast<char*>(key->data());
-      // This rely on GenerateKeyFromInt filling paddings with '0's.
-      // Putting a '1' will create a non-existing prefix.
-      key_ptr[8] = '1';
-    }
-  }
-
-  void ErrorExit() {
-    exit(1);
-  }
-
   void Run() {
-    Open(&open_options_);
-    PrintHeader(open_options_);
+    //Open(&open_options_);
+    PrintHeader();
     std::stringstream benchmark_stream(FLAGS_benchmarks);
     std::string name;
-    std::unique_ptr<ExpiredTimeFilter> filter;
+    //std::unique_ptr<ExpiredTimeFilter> filter;
     while (std::getline(benchmark_stream, name, ',')) {
       // Sanitize parameters
       num_ = FLAGS_num;
       reads_ = (FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads);
       writes_ = (FLAGS_writes < 0 ? FLAGS_num : FLAGS_writes);
-      deletes_ = (FLAGS_deletes < 0 ? FLAGS_num : FLAGS_deletes);
       value_size = FLAGS_value_size;
       key_size_ = FLAGS_key_size;
       entries_per_batch_ = FLAGS_batch_size;
-      writes_before_delete_range_ = FLAGS_writes_before_delete_range;
-      writes_per_range_tombstone_ = FLAGS_writes_per_range_tombstone;
-      range_tombstone_width_ = FLAGS_range_tombstone_width;
-      max_num_range_tombstones_ = FLAGS_max_num_range_tombstones;
-      write_options_ = WriteOptions();
+      //writes_before_delete_range_ = FLAGS_writes_before_delete_range;
+      //writes_per_range_tombstone_ = FLAGS_writes_per_range_tombstone;
+      //range_tombstone_width_ = FLAGS_range_tombstone_width;
+      //max_num_range_tombstones_ = FLAGS_max_num_range_tombstones;
+      //write_options_ = WriteOptions();
       read_random_exp_range_ = FLAGS_read_random_exp_range;
-      if (FLAGS_sync) {
-        write_options_.sync = true;
-      }
-      write_options_.disableWAL = FLAGS_disable_wal;
+      //if (FLAGS_sync) {
+      //  write_options_.sync = true;
+      //}
+      //write_options_.disableWAL = FLAGS_disable_wal;
 
       void (Benchmark::*method)(ThreadState*) = nullptr;
       void (Benchmark::*post_process_method)() = nullptr;
@@ -1010,55 +978,11 @@ class Benchmark {
         }
       }
 
-      // Both fillseqdeterministic and filluniquerandomdeterministic
-      // fill the levels except the max level with UNIQUE_RANDOM
-      // and fill the max level with fillseq and filluniquerandom, respectively
-      if (name == "fillseqdeterministic" ||
-          name == "filluniquerandomdeterministic") {
-        if (!FLAGS_disable_auto_compactions) {
-          fprintf(stderr,
-                  "Please disable_auto_compactions in FillDeterministic "
-                  "benchmark\n");
-          ErrorExit();
-        }
-        if (num_threads > 1) {
-          fprintf(stderr,
-                  "filldeterministic multithreaded not supported"
-                  ", use 1 thread\n");
-          num_threads = 1;
-        }
+      if (name == "fillseq") {
         fresh_db = true;
-        if (name == "fillseqdeterministic") {
-          method = &Benchmark::WriteSeqDeterministic;
-        } else {
-          method = &Benchmark::WriteUniqueRandomDeterministic;
-        }
-      } else if (name == "fillseq") {
-        fresh_db = true;
-        method = &Benchmark::WriteSeq;
-      } else if (name == "fillbatch") {
-        fresh_db = true;
-        entries_per_batch_ = 1000;
         method = &Benchmark::WriteSeq;
       } else if (name == "fillrandom") {
         fresh_db = true;
-        method = &Benchmark::WriteRandom;
-      } else if (name == "filluniquerandom" ||
-                 name == "fillanddeleteuniquerandom") {
-        fresh_db = true;
-        if (num_threads > 1) {
-          fprintf(stderr,
-                  "filluniquerandom and fillanddeleteuniquerandom "
-                  "multithreaded not supported, use 1 thread");
-          num_threads = 1;
-        }
-        method = &Benchmark::WriteUniqueRandom;
-      } else if (name == "overwrite") {
-        method = &Benchmark::WriteRandom;
-      } else if (name == "fillsync") {
-        fresh_db = true;
-        num_ /= 1000;
-        write_options_.sync = true;
         method = &Benchmark::WriteRandom;
       } else if (name == "fill100K") {
         fresh_db = true;
@@ -1067,175 +991,52 @@ class Benchmark {
         method = &Benchmark::WriteRandom;
       } else if (name == "readseq") {
         method = &Benchmark::ReadSequential;
-      } else if (name == "readtorowcache") {
-        if (!FLAGS_use_existing_keys || !FLAGS_row_cache_size) {
-          fprintf(stderr,
-                  "Please set use_existing_keys to true and specify a "
-                  "row cache size in readtorowcache benchmark\n");
-          ErrorExit();
-        }
-        method = &Benchmark::ReadToRowCache;
-      } else if (name == "readtocache") {
-        method = &Benchmark::ReadSequential;
-        num_threads = 1;
-        reads_ = num_;
-      } else if (name == "readreverse") {
-        method = &Benchmark::ReadReverse;
       } else if (name == "readrandom") {
-        if (FLAGS_multiread_stride) {
-          fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
-                  entries_per_batch_);
-        }
-        method = &Benchmark::ReadRandom;
-      } else if (name == "readrandomfast") {
-        method = &Benchmark::ReadRandomFast;
-      } else if (name == "multireadrandom") {
-        fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
-                entries_per_batch_);
-        method = &Benchmark::MultiReadRandom;
-      } else if (name == "approximatesizerandom") {
-        fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
-                entries_per_batch_);
-        method = &Benchmark::ApproximateSizeRandom;
+        abort();
+        //if (FLAGS_multiread_stride) {
+        //  fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
+        //          entries_per_batch_);
+        //}
+        //method = &Benchmark::ReadRandom;
       } else if (name == "mixgraph") {
-        method = &Benchmark::MixGraph;
-      } else if (name == "readmissing") {
-        ++key_size_;
-        method = &Benchmark::ReadRandom;
-      } else if (name == "newiterator") {
-        method = &Benchmark::IteratorCreation;
-      } else if (name == "newiteratorwhilewriting") {
-        num_threads++;  // Add extra thread for writing
-        method = &Benchmark::IteratorCreationWhileWriting;
-      } else if (name == "seekrandom") {
-        method = &Benchmark::SeekRandom;
-      } else if (name == "seekrandomwhilewriting") {
-        num_threads++;  // Add extra thread for writing
-        method = &Benchmark::SeekRandomWhileWriting;
-      } else if (name == "seekrandomwhilemerging") {
-        num_threads++;  // Add extra thread for merging
-        method = &Benchmark::SeekRandomWhileMerging;
-      } else if (name == "readrandomsmall") {
-        reads_ /= 1000;
-        method = &Benchmark::ReadRandom;
-      } else if (name == "deleteseq") {
-        method = &Benchmark::DeleteSeq;
-      } else if (name == "deleterandom") {
-        method = &Benchmark::DeleteRandom;
-      } else if (name == "readwhilewriting") {
-        num_threads++;  // Add extra thread for writing
-        method = &Benchmark::ReadWhileWriting;
-      } else if (name == "readwhilemerging") {
-        num_threads++;  // Add extra thread for writing
-        method = &Benchmark::ReadWhileMerging;
-      } else if (name == "readwhilescanning") {
-        num_threads++;  // Add extra thread for scaning
-        method = &Benchmark::ReadWhileScanning;
-      } else if (name == "readrandomwriterandom") {
-        method = &Benchmark::ReadRandomWriteRandom;
-      } else if (name == "readrandommergerandom") {
-        if (FLAGS_merge_operator.empty()) {
-          fprintf(stdout, "%-12s : skipped (--merge_operator is unknown)\n",
-                  name.c_str());
-          ErrorExit();
-        }
-        method = &Benchmark::ReadRandomMergeRandom;
-      } else if (name == "updaterandom") {
-        method = &Benchmark::UpdateRandom;
-      } else if (name == "xorupdaterandom") {
-        method = &Benchmark::XORUpdateRandom;
-      } else if (name == "appendrandom") {
-        method = &Benchmark::AppendRandom;
-      } else if (name == "mergerandom") {
-        if (FLAGS_merge_operator.empty()) {
-          fprintf(stdout, "%-12s : skipped (--merge_operator is unknown)\n",
-                  name.c_str());
-          exit(1);
-        }
-        method = &Benchmark::MergeRandom;
-      } else if (name == "randomwithverify") {
-        method = &Benchmark::RandomWithVerify;
-      } else if (name == "fillseekseq") {
-        method = &Benchmark::WriteSeqSeekSeq;
+        abort();
+        //method = &Benchmark::MixGraph;
       } else if (name == "compact") {
-        method = &Benchmark::Compact;
+        abort();
+        //method = &Benchmark::Compact;
       } else if (name == "compactall") {
-        CompactAll();
-#ifndef ROCKSDB_LITE
+        abort();
+        //CompactAll();
       } else if (name == "compact0") {
-        CompactLevel(0);
+        abort();
+        //CompactLevel(0);
       } else if (name == "compact1") {
-        CompactLevel(1);
+        abort();
+        //CompactLevel(1);
       } else if (name == "waitforcompaction") {
-        WaitForCompaction();
-#endif
+        abort();
+        //WaitForCompaction();
       } else if (name == "flush") {
-        Flush();
-      } else if (name == "crc32c") {
-        method = &Benchmark::Crc32c;
-      } else if (name == "xxhash") {
-        method = &Benchmark::xxHash;
-      } else if (name == "xxhash64") {
-        method = &Benchmark::xxHash64;
-      } else if (name == "xxh3") {
-        method = &Benchmark::xxh3;
-      } else if (name == "acquireload") {
-        method = &Benchmark::AcquireLoad;
-      } else if (name == "compress") {
-        method = &Benchmark::Compress;
-      } else if (name == "uncompress") {
-        method = &Benchmark::Uncompress;
-#ifndef ROCKSDB_LITE
-      } else if (name == "randomtransaction") {
-        method = &Benchmark::RandomTransaction;
-        post_process_method = &Benchmark::RandomTransactionVerify;
-#endif  // ROCKSDB_LITE
-      } else if (name == "randomreplacekeys") {
-        fresh_db = true;
-        method = &Benchmark::RandomReplaceKeys;
-      } else if (name == "timeseries") {
-        timestamp_emulator_.reset(new TimestampEmulator());
-        if (FLAGS_expire_style == "compaction_filter") {
-          filter.reset(new ExpiredTimeFilter(timestamp_emulator_));
-          fprintf(stdout, "Compaction filter is used to remove expired data");
-          open_options_.compaction_filter = filter.get();
-        }
-        fresh_db = true;
-        method = &Benchmark::TimeSeries;
+        abort();
+        //Flush();
       } else if (name == "stats") {
-        PrintStats("rocksdb.stats");
+        abort();
+        //PrintStats("rocksdb.stats");
       } else if (name == "resetstats") {
-        ResetStats();
-      } else if (name == "verify") {
-        VerifyDBFromDB(FLAGS_truth_db);
+        abort();
+        //ResetStats();
       } else if (name == "levelstats") {
-        PrintStats("rocksdb.levelstats");
+        abort();
+        //PrintStats("rocksdb.levelstats");
       } else if (name == "memstats") {
-        std::vector<std::string> keys{"rocksdb.num-immutable-mem-table",
-                                      "rocksdb.cur-size-active-mem-table",
-                                      "rocksdb.cur-size-all-mem-tables",
-                                      "rocksdb.size-all-mem-tables",
-                                      "rocksdb.num-entries-active-mem-table",
-                                      "rocksdb.num-entries-imm-mem-tables"};
-        PrintStats(keys);
-      } else if (name == "sstables") {
-        PrintStats("rocksdb.sstables");
-      } else if (name == "stats_history") {
-        PrintStatsHistory();
-#ifndef ROCKSDB_LITE
-      } else if (name == "replay") {
-        if (num_threads > 1) {
-          fprintf(stderr, "Multi-threaded replay is not yet supported\n");
-          ErrorExit();
-        }
-        if (FLAGS_trace_file == "") {
-          fprintf(stderr, "Please set --trace_file to be replayed from\n");
-          ErrorExit();
-        }
-        method = &Benchmark::Replay;
-#endif  // ROCKSDB_LITE
-      } else if (name == "getmergeoperands") {
-        method = &Benchmark::GetMergeOperands;
+        abort();
+        //std::vector<std::string> keys{"rocksdb.num-immutable-mem-table",
+        //                              "rocksdb.cur-size-active-mem-table",
+        //                              "rocksdb.cur-size-all-mem-tables",
+        //                              "rocksdb.size-all-mem-tables",
+        //                              "rocksdb.num-entries-active-mem-table",
+        //                              "rocksdb.num-entries-imm-mem-tables"};
+        //PrintStats(keys);
       } else if (!name.empty()) {  // No error message for empty name
         fprintf(stderr, "unknown benchmark '%s'\n", name.c_str());
         ErrorExit();
@@ -1247,91 +1048,13 @@ class Benchmark {
                   name.c_str());
           method = nullptr;
         } else {
-          if (db_.db != nullptr) {
-            db_.DeleteDBs();
-            DestroyDB(FLAGS_db, open_options_);
-          }
-          Options options = open_options_;
-          for (size_t i = 0; i < multi_dbs_.size(); i++) {
-            delete multi_dbs_[i].db;
-            if (!open_options_.wal_dir.empty()) {
-              options.wal_dir = GetPathForMultiple(open_options_.wal_dir, i);
-            }
-            DestroyDB(GetPathForMultiple(FLAGS_db, i), options);
-          }
-          multi_dbs_.clear();
+          //db_->Init();
         }
-        Open(&open_options_);  // use open_options for the last accessed
+        //Open(&open_options_);  // use open_options for the last accessed
       }
 
       if (method != nullptr) {
         fprintf(stdout, "DB path: [%s]\n", FLAGS_db.c_str());
-
-#ifndef ROCKSDB_LITE
-        // A trace_file option can be provided both for trace and replay
-        // operations. But db_bench does not support tracing and replaying at
-        // the same time, for now. So, start tracing only when it is not a
-        // replay.
-        if (FLAGS_trace_file != "" && name != "replay") {
-          std::unique_ptr<TraceWriter> trace_writer;
-          Status s = NewFileTraceWriter(FLAGS_env, EnvOptions(),
-                                        FLAGS_trace_file, &trace_writer);
-          if (!s.ok()) {
-            fprintf(stderr, "Encountered an error starting a trace, %s\n",
-                    s.ToString().c_str());
-            ErrorExit();
-          }
-          s = db_.db->StartTrace(trace_options_, std::move(trace_writer));
-          if (!s.ok()) {
-            fprintf(stderr, "Encountered an error starting a trace, %s\n",
-                    s.ToString().c_str());
-            ErrorExit();
-          }
-          fprintf(stdout, "Tracing the workload to: [%s]\n",
-                  FLAGS_trace_file.c_str());
-        }
-        // Start block cache tracing.
-        if (!FLAGS_block_cache_trace_file.empty()) {
-          // Sanity checks.
-          if (FLAGS_block_cache_trace_sampling_frequency <= 0) {
-            fprintf(stderr,
-                    "Block cache trace sampling frequency must be higher than "
-                    "0.\n");
-            ErrorExit();
-          }
-          if (FLAGS_block_cache_trace_max_trace_file_size_in_bytes <= 0) {
-            fprintf(stderr,
-                    "The maximum file size for block cache tracing must be "
-                    "higher than 0.\n");
-            ErrorExit();
-          }
-          block_cache_trace_options_.max_trace_file_size =
-              FLAGS_block_cache_trace_max_trace_file_size_in_bytes;
-          block_cache_trace_options_.sampling_frequency =
-              FLAGS_block_cache_trace_sampling_frequency;
-          std::unique_ptr<TraceWriter> block_cache_trace_writer;
-          Status s = NewFileTraceWriter(FLAGS_env, EnvOptions(),
-                                        FLAGS_block_cache_trace_file,
-                                        &block_cache_trace_writer);
-          if (!s.ok()) {
-            fprintf(stderr,
-                    "Encountered an error when creating trace writer, %s\n",
-                    s.ToString().c_str());
-            ErrorExit();
-          }
-          s = db_.db->StartBlockCacheTrace(block_cache_trace_options_,
-                                           std::move(block_cache_trace_writer));
-          if (!s.ok()) {
-            fprintf(
-                stderr,
-                "Encountered an error when starting block cache tracing, %s\n",
-                s.ToString().c_str());
-            ErrorExit();
-          }
-          fprintf(stdout, "Tracing block cache accesses to: [%s]\n",
-                  FLAGS_block_cache_trace_file.c_str());
-        }
-#endif  // ROCKSDB_LITE
 
         if (num_warmup > 0) {
           printf("Warming up benchmark by running %d times\n", num_warmup);
@@ -1359,49 +1082,145 @@ class Benchmark {
       }
     }
 
-    if (secondary_update_thread_) {
-      secondary_update_stopped_.store(1, std::memory_order_relaxed);
-      secondary_update_thread_->join();
-      secondary_update_thread_.reset();
-    }
-
-#ifndef ROCKSDB_LITE
-    if (name != "replay" && FLAGS_trace_file != "") {
-      Status s = db_.db->EndTrace();
-      if (!s.ok()) {
-        fprintf(stderr, "Encountered an error ending the trace, %s\n",
-                s.ToString().c_str());
-      }
-    }
-    if (!FLAGS_block_cache_trace_file.empty()) {
-      Status s = db_.db->EndBlockCacheTrace();
-      if (!s.ok()) {
-        fprintf(stderr,
-                "Encountered an error ending the block cache tracing, %s\n",
-                s.ToString().c_str());
-      }
-    }
-#endif  // ROCKSDB_LITE
-
     if (FLAGS_statistics) {
-      fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
+      abort();
+      //fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
     }
-    if (FLAGS_simcache_size >= 0) {
-      fprintf(
-          stdout, "SIMULATOR CACHE STATISTICS:\n%s\n",
-          static_cast_with_check<SimCache>(cache_.get())->ToString().c_str());
-    }
-
-#ifndef ROCKSDB_LITE
-    if (FLAGS_use_secondary_db) {
-      fprintf(stdout, "Secondary instance updated  %lu times.\n",
-              secondary_db_updates_);
-    }
-#endif  // ROCKSDB_LITE
   }
-#endif  // IMNOTDEFINED
+
+  DB* db() { return db_; }
 
  private:
+  void PrintHeader() {
+    PrintEnvironment();
+    fprintf(stdout,
+            "Keys:       %d bytes each\n",
+            FLAGS_key_size);
+    auto avg_value_size = FLAGS_value_size;
+    if (FLAGS_value_size_distribution_type_e == kFixed) {
+      fprintf(stdout, "Values:     %d bytes each\n",
+              avg_value_size);
+    } else {
+      avg_value_size = (FLAGS_value_size_min + FLAGS_value_size_max) / 2;
+      fprintf(stdout, "Values:     %d avg bytes each\n",
+              avg_value_size);
+      fprintf(stdout, "Values Distribution: %s (min: %d, max: %d)\n",
+              FLAGS_value_size_distribution_type.c_str(),
+              FLAGS_value_size_min, FLAGS_value_size_max);
+    }
+    fprintf(stdout, "Entries:    %lu\n", num_);
+    //fprintf(stdout, "Prefix:    %d bytes\n", FLAGS_prefix_size);
+    //fprintf(stdout, "Keys per prefix:    %lu\n", keys_per_prefix_);
+    fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
+            ((static_cast<int64_t>(FLAGS_key_size + avg_value_size) * num_)
+             / 1048576.0));
+    fprintf(stdout, "FileSize:   %.1f MB (estimated)\n",
+            (((FLAGS_key_size + avg_value_size)
+              * num_)
+             / 1048576.0));
+
+    fprintf(stdout, "------------------------------------------------\n");
+  }
+
+// Current the following isn't equivalent to OS_LINUX.
+#if defined(__linux)
+  static std::string_view TrimSpace(const std::string_view& s) {
+    unsigned int start = 0;
+    while (start < s.size() && isspace(s[start])) {
+      start++;
+    }
+    unsigned int limit = static_cast<unsigned int>(s.size());
+    while (limit > start && isspace(s[limit-1])) {
+      limit--;
+    }
+    return std::string_view(s.data() + start, limit - start);
+  }
+#endif
+
+  void PrintEnvironment() {
+    fprintf(stderr, "ListDB:    version %d.%d\n",
+            0, 0);
+
+#if defined(__linux) || defined(__APPLE__) || defined(__FreeBSD__)
+    time_t now = time(nullptr);
+    char buf[52];
+    // Lint complains about ctime() usage, so replace it with ctime_r(). The
+    // requirement is to provide a buffer which is at least 26 bytes.
+    fprintf(stderr, "Date:       %s",
+            ctime_r(&now, buf));  // ctime_r() adds newline
+
+#if defined(__linux)
+    FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
+    if (cpuinfo != nullptr) {
+      char line[1000];
+      int num_cpus = 0;
+      std::string cpu_type;
+      std::string cache_size;
+      while (fgets(line, sizeof(line), cpuinfo) != nullptr) {
+        const char* sep = strchr(line, ':');
+        if (sep == nullptr) {
+          continue;
+        }
+        std::string_view key = TrimSpace(std::string_view(line, sep - 1 - line));
+        std::string_view val = TrimSpace(std::string_view(sep + 1));
+        if (key == "model name") {
+          ++num_cpus;
+          cpu_type = val;
+        } else if (key == "cache size") {
+          cache_size = val;
+        }
+      }
+      fclose(cpuinfo);
+      fprintf(stderr, "CPU:        %d * %s\n", num_cpus, cpu_type.c_str());
+      fprintf(stderr, "CPUCache:   %s\n", cache_size.c_str());
+    }
+#elif defined(__APPLE__)
+    struct host_basic_info h;
+    size_t hlen = HOST_BASIC_INFO_COUNT;
+    if (host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&h,
+                  (uint32_t*)&hlen) == KERN_SUCCESS) {
+      std::string cpu_type;
+      std::string cache_size;
+      size_t hcache_size;
+      hlen = sizeof(hcache_size);
+      if (sysctlbyname("hw.cachelinesize", &hcache_size, &hlen, NULL, 0) == 0) {
+        cache_size = std::to_string(hcache_size);
+      }
+      switch (h.cpu_type) {
+        case CPU_TYPE_X86_64:
+          cpu_type = "x86_64";
+          break;
+        case CPU_TYPE_ARM64:
+          cpu_type = "arm64";
+          break;
+        default:
+          break;
+      }
+      fprintf(stderr, "CPU:        %d * %s\n", h.max_cpus, cpu_type.c_str());
+      fprintf(stderr, "CPUCache:   %s\n", cache_size.c_str());
+    }
+#elif defined(__FreeBSD__)
+    int ncpus;
+    size_t len = sizeof(ncpus);
+    int mib[2] = {CTL_HW, HW_NCPU};
+    if (sysctl(mib, 2, &ncpus, &len, nullptr, 0) == 0) {
+      char cpu_type[16];
+      len = sizeof(cpu_type) - 1;
+      mib[1] = HW_MACHINE;
+      if (sysctl(mib, 2, cpu_type, &len, nullptr, 0) == 0) cpu_type[len] = 0;
+
+      fprintf(stderr, "CPU:        %d * %s\n", ncpus, cpu_type);
+      // no programmatic way to get the cache line size except on PPC
+    }
+#endif
+#endif
+  }
+  //void Open(...);
+  void ErrorExit() {
+    //DeleteDBs();
+    exit(1);
+  }
+
   struct ThreadArg {
     Benchmark* bm;
     SharedState* shared;
@@ -1413,6 +1232,13 @@ class Benchmark {
     ThreadArg* arg = reinterpret_cast<ThreadArg*>(v);
     SharedState* shared = arg->shared;
     ThreadState* thread = arg->thread;
+
+    int id = thread->tid;
+    SetAffinity(Numa::CpuSequenceRR(id));
+    int r = GetChip();
+    DBClient* client = new DBClient(arg->bm->db(), id, r);
+    thread->client = client;
+
     {
       std::unique_lock<std::mutex> lk(shared->mu);
       shared->num_initialized++;
@@ -1444,15 +1270,6 @@ class Benchmark {
     shared.num_initialized = 0;
     shared.num_done = 0;
     shared.start = false;
-    if (FLAGS_benchmark_write_rate_limit > 0) {
-      shared.write_rate_limiter.reset(
-          NewGenericRateLimiter(FLAGS_benchmark_write_rate_limit));
-    }
-    if (FLAGS_benchmark_read_rate_limit > 0) {
-      shared.read_rate_limiter.reset(NewGenericRateLimiter(
-          FLAGS_benchmark_read_rate_limit, 100000 /* refill_period_us */,
-          10 /* fairness */, RateLimiter::Mode::kReadsOnly));
-    }
 
     std::unique_ptr<ReporterAgent> reporter_agent;
     if (FLAGS_report_interval_seconds > 0) {
@@ -1522,8 +1339,6 @@ class Benchmark {
     }
     //if (ptr == nullptr) exit(1);  // Disable unused variable warning.
   }
-
-#ifdef IMNOTDEFINED
   enum WriteMode {
     RANDOM, SEQUENTIAL, UNIQUE_RANDOM
   };
@@ -1588,29 +1403,17 @@ class Benchmark {
     std::vector<uint64_t> values_;
   };
 
-  double SineRate(double x) {
-    return FLAGS_sine_a*sin((FLAGS_sine_b*x) + FLAGS_sine_c) + FLAGS_sine_d;
-  }
-
   void DoWrite(ThreadState* thread, WriteMode write_mode) {
     const int test_duration = write_mode == RANDOM ? FLAGS_duration : 0;
     const int64_t num_ops = writes_ == 0 ? num_ : writes_;
 
     size_t num_key_gens = 1;
-    if (db_.db == nullptr) {
-      num_key_gens = multi_dbs_.size();
-    }
     std::vector<std::unique_ptr<KeyGenerator>> key_gens(num_key_gens);
     int64_t max_ops = num_ops * num_key_gens;
     int64_t ops_per_stage = max_ops;
-    if (FLAGS_num_column_families > 1 && FLAGS_num_hot_column_families > 0) {
-      ops_per_stage = (max_ops - 1) / (FLAGS_num_column_families /
-                                       FLAGS_num_hot_column_families) +
-                      1;
-    }
 
     Duration duration(test_duration, max_ops, ops_per_stage);
-    const uint64_t num_per_key_gen = num_ + max_num_range_tombstones_;
+    const uint64_t num_per_key_gen = num_/* + max_num_range_tombstones_*/;
     for (size_t i = 0; i < num_key_gens; i++) {
       key_gens[i].reset(new KeyGenerator(&(thread->rand), write_mode,
                                          num_per_key_gen, ops_per_stage));
@@ -1623,323 +1426,42 @@ class Benchmark {
     }
 
     RandomGenerator gen;
-    WriteBatch batch(/*reserved_bytes=*/0, /*max_bytes=*/0,
-                     user_timestamp_size_);
-    Status s;
+    //WriteBatch batch(/*reserved_bytes=*/0, /*max_bytes=*/0,
+    //                 user_timestamp_size_);
     int64_t bytes = 0;
 
     std::unique_ptr<const char[]> key_guard;
-    Slice key = AllocateKey(&key_guard);
-    std::unique_ptr<const char[]> begin_key_guard;
-    Slice begin_key = AllocateKey(&begin_key_guard);
-    std::unique_ptr<const char[]> end_key_guard;
-    Slice end_key = AllocateKey(&end_key_guard);
-    double p = 0.0;
-    uint64_t num_overwrites = 0, num_unique_keys = 0, num_selective_deletes = 0;
-    // If user set overwrite_probability flag,
-    // check if value is in [0.0,1.0].
-    if (FLAGS_overwrite_probability > 0.0) {
-      p = FLAGS_overwrite_probability > 1.0 ? 1.0 : FLAGS_overwrite_probability;
-      // If overwrite set by user, and UNIQUE_RANDOM mode on,
-      // the overwrite_window_size must be > 0.
-      if (write_mode == UNIQUE_RANDOM && FLAGS_overwrite_window_size == 0) {
-        fprintf(stderr,
-                "Overwrite_window_size must be  strictly greater than 0.\n");
-        ErrorExit();
-      }
-    }
-
-    // Default_random_engine provides slightly
-    // improved throughput over mt19937.
-    std::default_random_engine overwrite_gen{
-        static_cast<unsigned int>(FLAGS_seed)};
-    std::bernoulli_distribution overwrite_decider(p);
-
-    // Inserted key window is filled with the last N
-    // keys previously inserted into the DB (with
-    // N=FLAGS_overwrite_window_size).
-    // We use a deque struct because:
-    // - random access is O(1)
-    // - insertion/removal at beginning/end is also O(1).
-    std::deque<int64_t> inserted_key_window;
-    Random64 reservoir_id_gen(FLAGS_seed);
-
-    // --- Variables used in disposable/persistent keys simulation:
-    // The following variables are used when
-    // disposable_entries_batch_size is >0. We simualte a workload
-    // where the following sequence is repeated multiple times:
-    // "A set of keys S1 is inserted ('disposable entries'), then after
-    // some delay another set of keys S2 is inserted ('persistent entries')
-    // and the first set of keys S1 is deleted. S2 artificially represents
-    // the insertion of hypothetical results from some undefined computation
-    // done on the first set of keys S1. The next sequence can start as soon
-    // as the last disposable entry in the set S1 of this sequence is
-    // inserted, if the delay is non negligible"
-    bool skip_for_loop = false, is_disposable_entry = true;
-    std::vector<uint64_t> disposable_entries_index(num_key_gens, 0);
-    std::vector<uint64_t> persistent_ent_and_del_index(num_key_gens, 0);
-    const uint64_t kNumDispAndPersEntries =
-        FLAGS_disposable_entries_batch_size +
-        FLAGS_persistent_entries_batch_size;
-    if (kNumDispAndPersEntries > 0) {
-      if ((write_mode != UNIQUE_RANDOM) || (writes_per_range_tombstone_ > 0) ||
-          (p > 0.0)) {
-        fprintf(
-            stderr,
-            "Disposable/persistent deletes are not compatible with overwrites "
-            "and DeleteRanges; and are only supported in filluniquerandom.\n");
-        ErrorExit();
-      }
-      if (FLAGS_disposable_entries_value_size < 0 ||
-          FLAGS_persistent_entries_value_size < 0) {
-        fprintf(
-            stderr,
-            "disposable_entries_value_size and persistent_entries_value_size"
-            "have to be positive.\n");
-        ErrorExit();
-      }
-    }
-    Random rnd_disposable_entry(static_cast<uint32_t>(FLAGS_seed));
-    std::string random_value;
-    // Queue that stores scheduled timestamp of disposable entries deletes,
-    // along with starting index of disposable entry keys to delete.
-    std::vector<std::queue<std::pair<uint64_t, uint64_t>>> disposable_entries_q(
-        num_key_gens);
-    // --- End of variables used in disposable/persistent keys simulation.
-
-    std::vector<std::unique_ptr<const char[]>> expanded_key_guards;
-    std::vector<Slice> expanded_keys;
-    if (FLAGS_expand_range_tombstones) {
-      expanded_key_guards.resize(range_tombstone_width_);
-      for (auto& expanded_key_guard : expanded_key_guards) {
-        expanded_keys.emplace_back(AllocateKey(&expanded_key_guard));
-      }
-    }
-
-    std::unique_ptr<char[]> ts_guard;
-    if (user_timestamp_size_ > 0) {
-      ts_guard.reset(new char[user_timestamp_size_]);
-    }
+    std::string_view key = AllocateKey(&key_guard);
 
     int64_t stage = 0;
     int64_t num_written = 0;
     while ((num_per_key_gen != 0) && !duration.Done(entries_per_batch_)) {
       if (duration.GetStage() != stage) {
         stage = duration.GetStage();
-        if (db_.db != nullptr) {
-          db_.CreateNewCf(open_options_, stage);
-        } else {
-          for (auto& db : multi_dbs_) {
-            db.CreateNewCf(open_options_, stage);
-          }
-        }
+        //if (db_.db != nullptr) {
+        //  db_.CreateNewCf(open_options_, stage);
+        //} else {
+        //  for (auto& db : multi_dbs_) {
+        //    db.CreateNewCf(open_options_, stage);
+        //  }
+        //}
       }
 
       size_t id = thread->rand.Next() % num_key_gens;
-      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(id);
-      batch.Clear();
+      //DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(id);
+      //batch.Clear();
       int64_t batch_bytes = 0;
 
-      for (int64_t j = 0; j < entries_per_batch_; j++) {
+      std::string_view val;
+      /* for (int64_t j = 0; j < entries_per_batch_; j++) */ {
         int64_t rand_num = 0;
-        if ((write_mode == UNIQUE_RANDOM) && (p > 0.0)) {
-          if ((inserted_key_window.size() > 0) &&
-              overwrite_decider(overwrite_gen)) {
-            num_overwrites++;
-            rand_num = inserted_key_window[reservoir_id_gen.Next() %
-                                           inserted_key_window.size()];
-          } else {
-            num_unique_keys++;
-            rand_num = key_gens[id]->Next();
-            if (inserted_key_window.size() < FLAGS_overwrite_window_size) {
-              inserted_key_window.push_back(rand_num);
-            } else {
-              inserted_key_window.pop_front();
-              inserted_key_window.push_back(rand_num);
-            }
-          }
-        } else if (kNumDispAndPersEntries > 0) {
-          // Check if queue is non-empty and if we need to insert
-          // 'persistent' KV entries (KV entries that are never deleted)
-          // and delete disposable entries previously inserted.
-          if (!disposable_entries_q[id].empty() &&
-              (disposable_entries_q[id].front().first <
-               Clock::NowMicros())) {
-            // If we need to perform a "merge op" pattern,
-            // we first write all the persistent KV entries not targeted
-            // by deletes, and then we write the disposable entries deletes.
-            if (persistent_ent_and_del_index[id] <
-                FLAGS_persistent_entries_batch_size) {
-              // Generate key to insert.
-              rand_num =
-                  key_gens[id]->Fetch(disposable_entries_q[id].front().second +
-                                      FLAGS_disposable_entries_batch_size +
-                                      persistent_ent_and_del_index[id]);
-              persistent_ent_and_del_index[id]++;
-              is_disposable_entry = false;
-              skip_for_loop = false;
-            } else if (persistent_ent_and_del_index[id] <
-                       kNumDispAndPersEntries) {
-              // Find key of the entry to delete.
-              rand_num =
-                  key_gens[id]->Fetch(disposable_entries_q[id].front().second +
-                                      (persistent_ent_and_del_index[id] -
-                                       FLAGS_persistent_entries_batch_size));
-              persistent_ent_and_del_index[id]++;
-              GenerateKeyFromInt(rand_num, FLAGS_num, &key);
-              // For the delete operation, everything happens here and we
-              // skip the rest of the for-loop, which is designed for
-              // inserts.
-              if (FLAGS_num_column_families <= 1) {
-                batch.Delete(key);
-              } else {
-                // We use same rand_num as seed for key and column family so
-                // that we can deterministically find the cfh corresponding to a
-                // particular key while reading the key.
-                batch.Delete(db_with_cfh->GetCfh(rand_num), key);
-              }
-              // A delete only includes Key+Timestamp (no value).
-              batch_bytes += key_size_ + user_timestamp_size_;
-              bytes += key_size_ + user_timestamp_size_;
-              num_selective_deletes++;
-              // Skip rest of the for-loop (j=0, j<entries_per_batch_,j++).
-              skip_for_loop = true;
-            } else {
-              assert(false);  // should never reach this point.
-            }
-            // If disposable_entries_q needs to be updated (ie: when a selective
-            // insert+delete was successfully completed, pop the job out of the
-            // queue).
-            if (!disposable_entries_q[id].empty() &&
-                (disposable_entries_q[id].front().first <
-                 Clock::NowMicros()) &&
-                persistent_ent_and_del_index[id] == kNumDispAndPersEntries) {
-              disposable_entries_q[id].pop();
-              persistent_ent_and_del_index[id] = 0;
-            }
-
-            // If we are deleting disposable entries, skip the rest of the
-            // for-loop since there is no key-value inserts at this moment in
-            // time.
-            if (skip_for_loop) {
-              continue;
-            }
-
-          }
-          // If no job is in the queue, then we keep inserting disposable KV
-          // entries that will be deleted later by a series of deletes.
-          else {
-            rand_num = key_gens[id]->Fetch(disposable_entries_index[id]);
-            disposable_entries_index[id]++;
-            is_disposable_entry = true;
-            if ((disposable_entries_index[id] %
-                 FLAGS_disposable_entries_batch_size) == 0) {
-              // Skip the persistent KV entries inserts for now
-              disposable_entries_index[id] +=
-                  FLAGS_persistent_entries_batch_size;
-            }
-          }
-        } else {
-          rand_num = key_gens[id]->Next();
-        }
+        rand_num = key_gens[id]->Next();
         GenerateKeyFromInt(rand_num, FLAGS_num, &key);
-        Slice val;
-        if (kNumDispAndPersEntries > 0) {
-          random_value = rnd_disposable_entry.RandomString(
-              is_disposable_entry ? FLAGS_disposable_entries_value_size
-                                  : FLAGS_persistent_entries_value_size);
-          val = Slice(random_value);
-          num_unique_keys++;
-        } else {
-          val = gen.Generate();
-        }
-        if (use_blob_db_) {
-#ifndef ROCKSDB_LITE
-          // Stacked BlobDB
-          blob_db::BlobDB* blobdb =
-              static_cast<blob_db::BlobDB*>(db_with_cfh->db);
-          if (FLAGS_blob_db_max_ttl_range > 0) {
-            int ttl = rand() % FLAGS_blob_db_max_ttl_range;
-            s = blobdb->PutWithTTL(write_options_, key, val, ttl);
-          } else {
-            s = blobdb->Put(write_options_, key, val);
-          }
-#endif  //  ROCKSDB_LITE
-        } else if (FLAGS_num_column_families <= 1) {
-          batch.Put(key, val);
-        } else {
-          // We use same rand_num as seed for key and column family so that we
-          // can deterministically find the cfh corresponding to a particular
-          // key while reading the key.
-          batch.Put(db_with_cfh->GetCfh(rand_num), key,
-                    val);
-        }
-        batch_bytes += val.size() + key_size_ + user_timestamp_size_;
-        bytes += val.size() + key_size_ + user_timestamp_size_;
+        //std::string_view val;
+        val = gen.Generate();
+        batch_bytes += val.size() + key_size_;
+        bytes += val.size() + key_size_;
         ++num_written;
-
-        // If all disposable entries have been inserted, then we need to
-        // add in the job queue a call for 'persistent entry insertions +
-        // disposable entry deletions'.
-        if (kNumDispAndPersEntries > 0 && is_disposable_entry &&
-            ((disposable_entries_index[id] % kNumDispAndPersEntries) == 0)) {
-          // Queue contains [timestamp, starting_idx],
-          // timestamp = current_time + delay (minimum aboslute time when to
-          // start inserting the selective deletes) starting_idx = index in the
-          // keygen of the rand_num to generate the key of the first KV entry to
-          // delete (= key of the first selective delete).
-          disposable_entries_q[id].push(std::make_pair(
-              Clock::NowMicros() +
-                  FLAGS_disposable_entries_delete_delay /* timestamp */,
-              disposable_entries_index[id] - kNumDispAndPersEntries
-              /*starting idx*/));
-        }
-        if (writes_per_range_tombstone_ > 0 &&
-            num_written > writes_before_delete_range_ &&
-            (num_written - writes_before_delete_range_) /
-                    writes_per_range_tombstone_ <=
-                max_num_range_tombstones_ &&
-            (num_written - writes_before_delete_range_) %
-                    writes_per_range_tombstone_ ==
-                0) {
-          int64_t begin_num = key_gens[id]->Next();
-          if (FLAGS_expand_range_tombstones) {
-            for (int64_t offset = 0; offset < range_tombstone_width_;
-                 ++offset) {
-              GenerateKeyFromInt(begin_num + offset, FLAGS_num,
-                                 &expanded_keys[offset]);
-              if (use_blob_db_) {
-#ifndef ROCKSDB_LITE
-                // Stacked BlobDB
-                s = db_with_cfh->db->Delete(write_options_,
-                                            expanded_keys[offset]);
-#endif  //  ROCKSDB_LITE
-              } else if (FLAGS_num_column_families <= 1) {
-                batch.Delete(expanded_keys[offset]);
-              } else {
-                batch.Delete(db_with_cfh->GetCfh(rand_num),
-                             expanded_keys[offset]);
-              }
-            }
-          } else {
-            GenerateKeyFromInt(begin_num, FLAGS_num, &begin_key);
-            GenerateKeyFromInt(begin_num + range_tombstone_width_, FLAGS_num,
-                               &end_key);
-            if (use_blob_db_) {
-#ifndef ROCKSDB_LITE
-              // Stacked BlobDB
-              s = db_with_cfh->db->DeleteRange(
-                  write_options_, db_with_cfh->db->DefaultColumnFamily(),
-                  begin_key, end_key);
-#endif  //  ROCKSDB_LITE
-            } else if (FLAGS_num_column_families <= 1) {
-              batch.DeleteRange(begin_key, end_key);
-            } else {
-              batch.DeleteRange(db_with_cfh->GetCfh(rand_num), begin_key,
-                                end_key);
-            }
-          }
-        }
       }
       if (thread->shared->write_rate_limiter.get() != nullptr) {
         thread->shared->write_rate_limiter->Request(batch_bytes, Env::IO_HIGH, RateLimiter::OpType::kWrite);
@@ -1948,75 +1470,27 @@ class Benchmark {
         // once per write.
         thread->stats.ResetLastOpTime();
       }
-      if (user_timestamp_size_ > 0) {
-        Slice user_ts = mock_app_clock_->Allocate(ts_guard.get());
-        s = batch.AssignTimestamp(user_ts);
-        if (!s.ok()) {
-          fprintf(stderr, "assign timestamp to write batch: %s\n",
-                  s.ToString().c_str());
-          ErrorExit();
-        }
-      }
-      if (!use_blob_db_) {
-        // Not stacked BlobDB
-        s = db_with_cfh->db->Write(write_options_, &batch);
-      }
-      thread->stats.FinishedOps(entries_per_batch_, kWrite);
-      if (FLAGS_sine_write_rate) {
-        uint64_t now = Clock::NowMicros();
-
-        uint64_t usecs_since_last;
-        if (now > thread->stats.GetSineInterval()) {
-          usecs_since_last = now - thread->stats.GetSineInterval();
-        } else {
-          usecs_since_last = 0;
-        }
-
-        if (usecs_since_last >
-            (FLAGS_sine_write_rate_interval_milliseconds * uint64_t{1000})) {
-          double usecs_since_start =
-                  static_cast<double>(now - thread->stats.GetStart());
-          thread->stats.ResetSineInterval();
-          uint64_t write_rate =
-                  static_cast<uint64_t>(SineRate(usecs_since_start / 1000000.0));
-          thread->shared->write_rate_limiter.reset(
-                  NewGenericRateLimiter(write_rate));
-        }
-      }
-      if (!s.ok()) {
-        s = listener_->WaitForRecovery(600000000) ? Status::OK() : s;
-      }
-
-      if (!s.ok()) {
-        fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-        ErrorExit();
-      }
-    }
-    if ((write_mode == UNIQUE_RANDOM) && (p > 0.0)) {
-      fprintf(stdout,
-              "Number of unique keys inserted: %" PRIu64
-              ".\nNumber of overwrites: %lu\n",
-              num_unique_keys, num_overwrites);
-    } else if (kNumDispAndPersEntries > 0) {
-      fprintf(stdout,
-              "Number of unique keys inserted (disposable+persistent): %" PRIu64
-              ".\nNumber of 'disposable entry delete': %lu\n",
-              num_written, num_selective_deletes);
+      thread->client->PutStringKV(key, val);
+      thread->stats.FinishedOps(nullptr, entries_per_batch_, kWrite);
     }
     thread->stats.AddBytes(bytes);
   }
 
   void ReadSequential(ThreadState* thread) {
-    if (db_.db != nullptr) {
-      ReadSequential(thread, db_.db);
-    } else {
-      for (const auto& db_with_cfh : multi_dbs_) {
-        ReadSequential(thread, db_with_cfh.db);
-      }
-    }
+    abort();
+    //if (db_.db != nullptr) {
+    //  ReadSequential(thread, db_.db);
+    //} else {
+    //  for (const auto& db_with_cfh : multi_dbs_) {
+    //    ReadSequential(thread, db_with_cfh.db);
+    //  }
+    //}
   }
 
   void ReadSequential(ThreadState* thread, DB* db) {
+#if 1
+    abort();
+#else
     ReadOptions options(FLAGS_verify_checksum, true);
     options.tailing = FLAGS_use_tailing_iterator;
     std::unique_ptr<char[]> ts_guard;
@@ -2048,6 +1522,7 @@ class Benchmark {
       thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
                                get_perf_context()->ToString());
     }
+#endif
   }
 
   int64_t GetRandomKey(Random64* rand) {
@@ -2071,6 +1546,8 @@ class Benchmark {
     return key_rand;
   }
 
+
+#ifdef IMNOTDEFINED
   void ReadRandom(ThreadState* thread) {
     int64_t read = 0;
     int64_t found = 0;
@@ -2139,7 +1616,7 @@ class Benchmark {
         thread->shared->read_rate_limiter->Request(256, Env::IO_HIGH, RateLimiter::OpType::kRead);
       }
 
-      thread->stats.FinishedOps(db_, 1, kRead);
+      thread->stats.FinishedOps(nullptr, 1, kRead);
     }
 
     char msg[100];
@@ -2153,6 +1630,10 @@ class Benchmark {
       thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
                                get_perf_context()->ToString());
     }
+  }
+
+  double SineRate(double x) {
+    return FLAGS_sine_a*sin((FLAGS_sine_b*x) + FLAGS_sine_c) + FLAGS_sine_d;
   }
 
   bool binary_search(std::vector<int>& data, int start, int end, int key) {
@@ -2170,21 +1651,13 @@ class Benchmark {
   }
 
   void ResetStats() {
-    if (db_.db != nullptr) {
-      db_.db->ResetStats();
-    }
-    for (const auto& db_with_cfh : multi_dbs_) {
-      db_with_cfh.db->ResetStats();
-    }
-  }
-
-#ifdef IMNOTDEFINED
-  void Open(Options* opts) {
-    if (!InitializeOptionsFromFile(opts)) {
-      InitializeOptionsFromFlags(opts);
-    }
-
-    InitializeOptionsGeneral(opts);
+    abort();
+    //if (db_.db != nullptr) {
+    //  db_.db->ResetStats();
+    //}
+    //for (const auto& db_with_cfh : multi_dbs_) {
+    //  db_with_cfh.db->ResetStats();
+    //}
   }
 
   void OpenDb(Options options, const std::string& db_name,
@@ -2687,7 +2160,7 @@ class Benchmark {
         if (thread->shared->read_rate_limiter && read % 100 == 0) {
           thread->shared->read_rate_limiter->Request(100, Env::IO_HIGH);
         }
-        thread->stats.FinishedOps(db_, 1, kRead);
+        thread->stats.FinishedOps(nullptr, 1, kRead);
       } else if (query_type == 1) {
         // the Put query
         puts++;
@@ -2709,7 +2182,7 @@ class Benchmark {
         if (thread->shared->write_rate_limiter && puts % 100 == 0) {
           thread->shared->write_rate_limiter->Request(100, Env::IO_HIGH);
         }
-        thread->stats.FinishedOps(db_, 1, kWrite);
+        thread->stats.FinishedOps(nullptr, 1, kWrite);
       } else if (query_type == 2) {
         // Seek query
         if (db_with_cfh->db != nullptr) {
@@ -2737,7 +2210,7 @@ class Benchmark {
           }
           delete single_iter;
         }
-        thread->stats.FinishedOps(db_, 1, kSeek);
+        thread->stats.FinishedOps(nullptr, 1, kSeek);
       }
     }
     char msg[256];
@@ -2756,12 +2229,13 @@ class Benchmark {
   }
 
   void PrintStatsHistory() {
-    if (db_.db != nullptr) {
-      PrintStatsHistoryImpl(db_.db, false);
-    }
-    for (const auto& db_with_cfh : multi_dbs_) {
-      PrintStatsHistoryImpl(db_with_cfh.db, true);
-    }
+    abort();
+    //if (db_.db != nullptr) {
+    //  PrintStatsHistoryImpl(db_.db, false);
+    //}
+    //for (const auto& db_with_cfh : multi_dbs_) {
+    //  PrintStatsHistoryImpl(db_with_cfh.db, true);
+    //}
   }
 
   void PrintStatsHistoryImpl(DB* db, bool print_header) {
@@ -2789,32 +2263,35 @@ class Benchmark {
   }
 
   void PrintStats(const char* key) {
-    if (db_.db != nullptr) {
-      PrintStats(db_.db, key, false);
-    }
-    for (const auto& db_with_cfh : multi_dbs_) {
-      PrintStats(db_with_cfh.db, key, true);
-    }
+    abort();
+    //if (db_.db != nullptr) {
+    //  PrintStats(db_.db, key, false);
+    //}
+    //for (const auto& db_with_cfh : multi_dbs_) {
+    //  PrintStats(db_with_cfh.db, key, true);
+    //}
   }
 
   void PrintStats(DB* db, const char* key, bool print_header = false) {
-    if (print_header) {
-      fprintf(stdout, "\n==== DB: %s ===\n", db->GetName().c_str());
-    }
-    std::string stats;
-    if (!db->GetProperty(key, &stats)) {
-      stats = "(failed)";
-    }
-    fprintf(stdout, "\n%s\n", stats.c_str());
+    abort();
+    //if (print_header) {
+    //  fprintf(stdout, "\n==== DB: %s ===\n", db->GetName().c_str());
+    //}
+    //std::string stats;
+    //if (!db->GetProperty(key, &stats)) {
+    //  stats = "(failed)";
+    //}
+    //fprintf(stdout, "\n%s\n", stats.c_str());
   }
 
   void PrintStats(const std::vector<std::string>& keys) {
-    if (db_.db != nullptr) {
-      PrintStats(db_.db, keys);
-    }
-    for (const auto& db_with_cfh : multi_dbs_) {
-      PrintStats(db_with_cfh.db, keys, true);
-    }
+    abort();
+    //if (db_.db != nullptr) {
+    //  PrintStats(db_.db, keys);
+    //}
+    //for (const auto& db_with_cfh : multi_dbs_) {
+    //  PrintStats(db_with_cfh.db, keys, true);
+    //}
   }
 
   void PrintStats(DB* db, const std::vector<std::string>& keys,
@@ -2832,12 +2309,28 @@ class Benchmark {
     }
   }
 #endif // IMNOTDEFINED
-#endif // IMNOTDEFINED
+
+  DB* db_;
+  int64_t num_;
+  int key_size_;
+  int64_t entries_per_batch_;
+  int64_t reads_;
+  double read_random_exp_range_;
+  int64_t writes_;
 };
+
+//void Benchmark::Open(Options* opts) {
+//  if (!InitializeOptionsFromFile(opts)) {
+//    InitializeOptionsFromFlags(opts);
+//  }
+//
+//  InitializeOptionsGeneral(opts);
+//}
 
 int db_bench_tool(int argc, char** argv) {
   static bool initialized = false;
   if (!initialized) {
+    Numa::Init();
     google::SetUsageMessage(std::string("\nUSAGE:\n") + std::string(argv[0]) +
                     " [OPTIONS]...");
     initialized = true;
