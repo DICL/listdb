@@ -74,7 +74,7 @@ class DBClient {
   //std::vector<std::chrono::duration<double>> latencies_;
 };
 
-DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(region), rnd_(id) {
+DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(region % kNumRegions), rnd_(id) {
   for (int i = 0; i < kNumShards; i++) {
     log_[i] = db_->log(region_, i);
 #ifdef LISTDB_WISCKEY

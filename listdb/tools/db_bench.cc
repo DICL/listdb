@@ -17,6 +17,7 @@ int main() {
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <sstream>
 
 #include <gflags/gflags.h>
 
@@ -822,6 +823,7 @@ struct ThreadState {
   Stats stats;
   SharedState* shared;
   DBClient* client;
+  std::vector<std::pair<int, uint64_t>>* op_time_arr;
 
   explicit ThreadState(int index)
       : tid(index), rand((FLAGS_seed ? FLAGS_seed : 1000) + index) {}
@@ -1023,8 +1025,7 @@ class Benchmark {
         abort();
         //WaitForCompaction();
       } else if (name == "flush") {
-        abort();
-        //Flush();
+        Flush();
       } else if (name == "stats") {
         abort();
         //PrintStats("rocksdb.stats");
@@ -1043,6 +1044,8 @@ class Benchmark {
         //                              "rocksdb.num-entries-active-mem-table",
         //                              "rocksdb.num-entries-imm-mem-tables"};
         //PrintStats(keys);
+      } else if (name == "waitfor30sec") {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
       } else if (!name.empty()) {  // No error message for empty name
         fprintf(stderr, "unknown benchmark '%s'\n", name.c_str());
         ErrorExit();
@@ -1115,6 +1118,13 @@ class Benchmark {
       return 0;
     }
     return 1;
+  }
+
+  void Flush() {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    for (int i = 0; i < kNumShards; i++) {
+      db_->ManualFlushMemTable(i);
+    }
   }
 
   void PrintHeader() {
@@ -1251,6 +1261,7 @@ class Benchmark {
     Benchmark* bm;
     SharedState* shared;
     ThreadState* thread;
+    size_t op_time_arr_size;
     void (Benchmark::*method)(ThreadState*);
   };
 
@@ -1264,6 +1275,11 @@ class Benchmark {
     int r = GetChip();
     DBClient* client = new DBClient(arg->bm->db(), id, r);
     thread->client = client;
+
+    if (arg->op_time_arr_size > 0) {
+      thread->op_time_arr = new std::vector<std::pair<int, uint64_t>>();
+      thread->op_time_arr->reserve(arg->op_time_arr_size + 1);
+    }
 
     {
       std::unique_lock<std::mutex> lk(shared->mu);
@@ -1313,6 +1329,11 @@ class Benchmark {
       arg[i].thread = new ThreadState(i);
       arg[i].thread->stats.SetReporterAgent(reporter_agent.get());
       arg[i].thread->shared = &shared;
+      if (name == "mixgraph") {
+        arg[i].op_time_arr_size = reads_;
+      } else {
+        arg[i].op_time_arr_size = 0;
+      }
       //FLAGS_env->StartThread(ThreadBody, &arg[i]);
       threads.emplace_back(ThreadBody, &arg[i]);
     }
@@ -1342,7 +1363,27 @@ class Benchmark {
     }
     merge_stats.Report(name);
 
+    // Op Time Array
+    if (arg[0].thread->op_time_arr) {
+      fs::remove_all("op_time_output");
+      fs::create_directories("op_time_output");
+      for (int i = 0; i < n; i++) {
+        std::stringstream fname_ss;
+        fname_ss << "op_time_output/" << arg[i].thread->tid << ".dat";
+        std::string fname = fname_ss.str();
+        std::fstream strm(fname, strm.out);
+        for (auto& it : *arg[i].thread->op_time_arr) {
+          strm << it.first << " " << it.second << std::endl;
+        }
+        strm.close();
+      }
+    }
+
     for (int i = 0; i < n; i++) {
+      delete arg[i].thread->client;
+      if (arg[i].thread->op_time_arr) {
+        delete arg[i].thread->op_time_arr;
+      }
       delete arg[i].thread;
     }
     delete[] arg;
@@ -1918,6 +1959,7 @@ class Benchmark {
     }
 
     Duration duration(FLAGS_duration, reads_);
+    thread->op_time_arr->emplace_back(-1, Clock::NowNanos());
     while (!duration.Done(1)) {
       int64_t ini_rand, rand_v, key_rand, key_seed;
       ini_rand = GetRandomKey(&thread->rand);
@@ -2055,6 +2097,7 @@ class Benchmark {
         thread->stats.FinishedOps(nullptr, 1, kSeek);
 #endif
       }
+      thread->op_time_arr->emplace_back(query_type, Clock::NowNanos());
     }
     char msg[256];
     snprintf(msg, sizeof(msg),
