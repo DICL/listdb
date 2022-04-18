@@ -95,6 +95,18 @@ static bool FLAGS_statistics = false;
 DEFINE_int64(writes, -1, "Number of write operations to do. If negative, do"
              " --num reads.");
 
+DEFINE_double(sine_a, 1,
+             "A in f(x) = A sin(bx + c) + d");
+
+DEFINE_double(sine_b, 1,
+             "B in f(x) = A sin(bx + c) + d");
+
+DEFINE_double(sine_c, 0,
+             "C in f(x) = A sin(bx + c) + d");
+
+DEFINE_double(sine_d, 1,
+             "D in f(x) = A sin(bx + c) + d");
+
 // the parameters of mix_graph
 DEFINE_double(keyrange_dist_a, 0.0,
               "The parameter 'a' of prefix average access distribution "
@@ -992,15 +1004,9 @@ class Benchmark {
       } else if (name == "readseq") {
         method = &Benchmark::ReadSequential;
       } else if (name == "readrandom") {
-        //abort();
-        //if (FLAGS_multiread_stride) {
-        //  fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
-        //          entries_per_batch_);
-        //}
         method = &Benchmark::ReadRandom;
       } else if (name == "mixgraph") {
-        abort();
-        //method = &Benchmark::MixGraph;
+        method = &Benchmark::MixGraph;
       } else if (name == "compact") {
         abort();
         //method = &Benchmark::Compact;
@@ -1091,6 +1097,26 @@ class Benchmark {
   DB* db() { return db_; }
 
  private:
+  int Put(DBClient* client, const std::string_view& key, const std::string_view& value) {
+    client->PutStringKV(key, value);
+    return 0;
+  }
+
+  int Get(DBClient* client, const std::string_view& key, std::string_view* value) {
+    uint64_t value_addr;
+    bool ret = client->GetStringKV(key, &value_addr);
+    if (ret) {
+      char* p = (char*) value_addr;
+      size_t val_len = *((uint64_t*) p);
+      p += sizeof(size_t);
+      std::string_view value_sv(p, val_len);
+      *value = value_sv;
+      //value->assign(value_sv);  // memcpy
+      return 0;
+    }
+    return 1;
+  }
+
   void PrintHeader() {
     PrintEnvironment();
     fprintf(stdout,
@@ -1403,6 +1429,10 @@ class Benchmark {
     std::vector<uint64_t> values_;
   };
 
+  double SineRate(double x) {
+    return FLAGS_sine_a*sin((FLAGS_sine_b*x) + FLAGS_sine_c) + FLAGS_sine_d;
+  }
+
   void DoWrite(ThreadState* thread, WriteMode write_mode) {
     const int test_duration = write_mode == RANDOM ? FLAGS_duration : 0;
     const int64_t num_ops = writes_ == 0 ? num_ : writes_;
@@ -1595,7 +1625,7 @@ class Benchmark {
         size_t val_len = *((uint64_t*) p);
         p += sizeof(size_t);
         std::string_view value_sv(p, val_len);
-        value_read.assign(value_sv);  // memcpy
+        //value_read.assign(value_sv);  // memcpy
         found++;
         bytes += key.size() + val_len;
       }
@@ -1616,12 +1646,432 @@ class Benchmark {
     thread->stats.AddMessage(msg);
   }
 
-
-#ifdef IMNOTDEFINED
-  double SineRate(double x) {
-    return FLAGS_sine_a*sin((FLAGS_sine_b*x) + FLAGS_sine_c) + FLAGS_sine_d;
+  // The inverse function of Pareto distribution
+  int64_t ParetoCdfInversion(double u, double theta, double k, double sigma) {
+    double ret;
+    if (k == 0.0) {
+      ret = theta - sigma * std::log(u);
+    } else {
+      ret = theta + sigma * (std::pow(u, -1 * k) - 1) / k;
+    }
+    return static_cast<int64_t>(ceil(ret));
+  }
+  // The inverse function of power distribution (y=ax^b)
+  int64_t PowerCdfInversion(double u, double a, double b) {
+    double ret;
+    ret = std::pow((u / a), (1 / b));
+    return static_cast<int64_t>(ceil(ret));
   }
 
+  // Add the noice to the QPS
+  double AddNoise(double origin, double noise_ratio) {
+    if (noise_ratio < 0.0 || noise_ratio > 1.0) {
+      return origin;
+    }
+    int band_int = static_cast<int>(FLAGS_sine_a);
+    double delta = (rand() % band_int - band_int / 2) * noise_ratio;
+    if (origin + delta < 0) {
+      return origin;
+    } else {
+      return (origin + delta);
+    }
+  }
+
+  // Decide the ratio of different query types
+  // 0 Get, 1 Put, 2 Seek, 3 SeekForPrev, 4 Delete, 5 SingleDelete, 6 merge
+  class QueryDecider {
+   public:
+    std::vector<int> type_;
+    std::vector<double> ratio_;
+    int range_;
+
+    QueryDecider() {}
+    ~QueryDecider() {}
+
+    int Initiate(std::vector<double> ratio_input) {
+      int range_max = 1000;
+      double sum = 0.0;
+      for (auto& ratio : ratio_input) {
+        sum += ratio;
+      }
+      range_ = 0;
+      for (auto& ratio : ratio_input) {
+        range_ += static_cast<int>(ceil(range_max * (ratio / sum)));
+        type_.push_back(range_);
+        ratio_.push_back(ratio / sum);
+      }
+      return 0;
+    }
+
+    int GetType(int64_t rand_num) {
+      if (rand_num < 0) {
+        rand_num = rand_num * (-1);
+      }
+      assert(range_ != 0);
+      int pos = static_cast<int>(rand_num % range_);
+      for (int i = 0; i < static_cast<int>(type_.size()); i++) {
+        if (pos < type_[i]) {
+          return i;
+        }
+      }
+      return 0;
+    }
+  };
+
+  // KeyrangeUnit is the struct of a keyrange. It is used in a keyrange vector
+  // to transfer a random value to one keyrange based on the hotness.
+  struct KeyrangeUnit {
+    int64_t keyrange_start;
+    int64_t keyrange_access;
+    int64_t keyrange_keys;
+  };
+
+  // From our observations, the prefix hotness (key-range hotness) follows
+  // the two-term-exponential distribution: f(x) = a*exp(b*x) + c*exp(d*x).
+  // However, we cannot directly use the inverse function to decide a
+  // key-range from a random distribution. To achieve it, we create a list of
+  // KeyrangeUnit, each KeyrangeUnit occupies a range of integers whose size is
+  // decided based on the hotness of the key-range. When a random value is
+  // generated based on uniform distribution, we map it to the KeyrangeUnit Vec
+  // and one KeyrangeUnit is selected. The probability of a  KeyrangeUnit being
+  // selected is the same as the hotness of this KeyrangeUnit. After that, the
+  // key can be randomly allocated to the key-range of this KeyrangeUnit, or we
+  // can based on the power distribution (y=ax^b) to generate the offset of
+  // the key in the selected key-range. In this way, we generate the keyID
+  // based on the hotness of the prefix and also the key hotness distribution.
+  class GenerateTwoTermExpKeys {
+   public:
+    // Avoid uninitialized warning-as-error in some compilers
+    int64_t keyrange_rand_max_ = 0;
+    int64_t keyrange_size_ = 0;
+    int64_t keyrange_num_ = 0;
+    std::vector<KeyrangeUnit> keyrange_set_;
+
+    // Initiate the KeyrangeUnit vector and calculate the size of each
+    // KeyrangeUnit.
+    int InitiateExpDistribution(int64_t total_keys, double prefix_a,
+                                double prefix_b, double prefix_c,
+                                double prefix_d) {
+      int64_t amplify = 0;
+      int64_t keyrange_start = 0;
+      if (FLAGS_keyrange_num <= 0) {
+        keyrange_num_ = 1;
+      } else {
+        keyrange_num_ = FLAGS_keyrange_num;
+      }
+      keyrange_size_ = total_keys / keyrange_num_;
+
+      // Calculate the key-range shares size based on the input parameters
+      for (int64_t pfx = keyrange_num_; pfx >= 1; pfx--) {
+        // Step 1. Calculate the probability that this key range will be
+        // accessed in a query. It is based on the two-term expoential
+        // distribution
+        double keyrange_p = prefix_a * std::exp(prefix_b * pfx) +
+                            prefix_c * std::exp(prefix_d * pfx);
+        if (keyrange_p < std::pow(10.0, -16.0)) {
+          keyrange_p = 0.0;
+        }
+        // Step 2. Calculate the amplify
+        // In order to allocate a query to a key-range based on the random
+        // number generated for this query, we need to extend the probability
+        // of each key range from [0,1] to [0, amplify]. Amplify is calculated
+        // by 1/(smallest key-range probability). In this way, we ensure that
+        // all key-ranges are assigned with an Integer that  >=0
+        if (amplify == 0 && keyrange_p > 0) {
+          amplify = static_cast<int64_t>(std::floor(1 / keyrange_p)) + 1;
+        }
+
+        // Step 3. For each key-range, we calculate its position in the
+        // [0, amplify] range, including the start, the size (keyrange_access)
+        KeyrangeUnit p_unit;
+        p_unit.keyrange_start = keyrange_start;
+        if (0.0 >= keyrange_p) {
+          p_unit.keyrange_access = 0;
+        } else {
+          p_unit.keyrange_access =
+              static_cast<int64_t>(std::floor(amplify * keyrange_p));
+        }
+        p_unit.keyrange_keys = keyrange_size_;
+        keyrange_set_.push_back(p_unit);
+        keyrange_start += p_unit.keyrange_access;
+      }
+      keyrange_rand_max_ = keyrange_start;
+
+      // Step 4. Shuffle the key-ranges randomly
+      // Since the access probability is calculated from small to large,
+      // If we do not re-allocate them, hot key-ranges are always at the end
+      // and cold key-ranges are at the begin of the key space. Therefore, the
+      // key-ranges are shuffled and the rand seed is only decide by the
+      // key-range hotness distribution. With the same distribution parameters
+      // the shuffle results are the same.
+      Random64 rand_loca(keyrange_rand_max_);
+      for (int64_t i = 0; i < FLAGS_keyrange_num; i++) {
+        int64_t pos = rand_loca.Next() % FLAGS_keyrange_num;
+        assert(i >= 0 && i < static_cast<int64_t>(keyrange_set_.size()) &&
+               pos >= 0 && pos < static_cast<int64_t>(keyrange_set_.size()));
+        std::swap(keyrange_set_[i], keyrange_set_[pos]);
+      }
+
+      // Step 5. Recalculate the prefix start postion after shuffling
+      int64_t offset = 0;
+      for (auto& p_unit : keyrange_set_) {
+        p_unit.keyrange_start = offset;
+        offset += p_unit.keyrange_access;
+      }
+
+      return 0;
+    }
+
+    // Generate the Key ID according to the input ini_rand and key distribution
+    int64_t DistGetKeyID(int64_t ini_rand, double key_dist_a,
+                         double key_dist_b) {
+      int64_t keyrange_rand = ini_rand % keyrange_rand_max_;
+
+      // Calculate and select one key-range that contains the new key
+      int64_t start = 0, end = static_cast<int64_t>(keyrange_set_.size());
+      while (start + 1 < end) {
+        int64_t mid = start + (end - start) / 2;
+        assert(mid >= 0 && mid < static_cast<int64_t>(keyrange_set_.size()));
+        if (keyrange_rand < keyrange_set_[mid].keyrange_start) {
+          end = mid;
+        } else {
+          start = mid;
+        }
+      }
+      int64_t keyrange_id = start;
+
+      // Select one key in the key-range and compose the keyID
+      int64_t key_offset = 0, key_seed;
+      if (key_dist_a == 0.0 || key_dist_b == 0.0) {
+        key_offset = ini_rand % keyrange_size_;
+      } else {
+        double u =
+            static_cast<double>(ini_rand % keyrange_size_) / keyrange_size_;
+        key_seed = static_cast<int64_t>(
+            ceil(std::pow((u / key_dist_a), (1 / key_dist_b))));
+        Random64 rand_key(key_seed);
+        key_offset = rand_key.Next() % keyrange_size_;
+      }
+      return keyrange_size_ * keyrange_id + key_offset;
+    }
+  };
+
+  // The social graph workload mixed with Get, Put, Iterator queries.
+  // The value size and iterator length follow Pareto distribution.
+  // The overall key access follow power distribution. If user models the
+  // workload based on different key-ranges (or different prefixes), user
+  // can use two-term-exponential distribution to fit the workload. User
+  // needs to decide the ratio between Get, Put, Iterator queries before
+  // starting the benchmark.
+  void MixGraph(ThreadState* thread) {
+    int64_t read = 0;  // including single gets and Next of iterators
+    int64_t gets = 0;
+    int64_t puts = 0;
+    int64_t found = 0;
+    int64_t seek = 0;
+    //int64_t seek_found = 0;
+    int64_t bytes = 0;
+    const int64_t default_value_max = 1 * 1024 * 1024;
+    int64_t value_max = default_value_max;
+    //int64_t scan_len_max = FLAGS_mix_max_scan_len;
+    double write_rate = 1000000.0;
+    double read_rate = 1000000.0;
+    bool use_prefix_modeling = false;
+    bool use_random_modeling = false;
+    GenerateTwoTermExpKeys gen_exp;
+    std::vector<double> ratio{FLAGS_mix_get_ratio, FLAGS_mix_put_ratio,
+                              FLAGS_mix_seek_ratio};
+    //char value_buffer[default_value_max];
+    QueryDecider query;
+    RandomGenerator gen;
+    int s;  //Status s;
+    if (value_max > FLAGS_mix_max_value_size) {
+      value_max = FLAGS_mix_max_value_size;
+    }
+
+    //ReadOptions options(FLAGS_verify_checksum, true);
+    std::unique_ptr<const char[]> key_guard;
+    //Slice key = AllocateKey(&key_guard);
+    std::string_view key = AllocateKey(&key_guard);
+    //PinnableSlice pinnable_val;
+    std::string_view sv_val;
+    query.Initiate(ratio);
+
+    // the limit of qps initiation
+    if (FLAGS_sine_mix_rate) {
+      thread->shared->read_rate_limiter.reset(
+          NewGenericRateLimiter(static_cast<int64_t>(read_rate)));
+      thread->shared->write_rate_limiter.reset(
+          NewGenericRateLimiter(static_cast<int64_t>(write_rate)));
+    }
+
+    // Decide if user wants to use prefix based key generation
+    if (FLAGS_keyrange_dist_a != 0.0 || FLAGS_keyrange_dist_b != 0.0 ||
+        FLAGS_keyrange_dist_c != 0.0 || FLAGS_keyrange_dist_d != 0.0) {
+      use_prefix_modeling = true;
+      gen_exp.InitiateExpDistribution(
+          FLAGS_num, FLAGS_keyrange_dist_a, FLAGS_keyrange_dist_b,
+          FLAGS_keyrange_dist_c, FLAGS_keyrange_dist_d);
+    }
+    if (FLAGS_key_dist_a == 0 || FLAGS_key_dist_b == 0) {
+      use_random_modeling = true;
+    }
+
+    Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
+      int64_t ini_rand, rand_v, key_rand, key_seed;
+      ini_rand = GetRandomKey(&thread->rand);
+      rand_v = ini_rand % FLAGS_num;
+      double u = static_cast<double>(rand_v) / FLAGS_num;
+
+      // Generate the keyID based on the key hotness and prefix hotness
+      if (use_random_modeling) {
+        key_rand = ini_rand;
+      } else if (use_prefix_modeling) {
+        key_rand =
+            gen_exp.DistGetKeyID(ini_rand, FLAGS_key_dist_a, FLAGS_key_dist_b);
+      } else {
+        key_seed = PowerCdfInversion(u, FLAGS_key_dist_a, FLAGS_key_dist_b);
+        Random64 rand(key_seed);
+        key_rand = static_cast<int64_t>(rand.Next()) % FLAGS_num;
+      }
+      GenerateKeyFromInt(key_rand, FLAGS_num, &key);
+      int query_type = query.GetType(rand_v);
+
+      // change the qps
+      uint64_t now = Clock::NowMicros();
+      uint64_t usecs_since_last;
+      if (now > thread->stats.GetSineInterval()) {
+        usecs_since_last = now - thread->stats.GetSineInterval();
+      } else {
+        usecs_since_last = 0;
+      }
+
+      if (FLAGS_sine_mix_rate &&
+          usecs_since_last >
+              (FLAGS_sine_mix_rate_interval_milliseconds * uint64_t{1000})) {
+        double usecs_since_start =
+            static_cast<double>(now - thread->stats.GetStart());
+        thread->stats.ResetSineInterval();
+        double mix_rate_with_noise = AddNoise(
+            SineRate(usecs_since_start / 1000000.0), FLAGS_sine_mix_rate_noise);
+        read_rate = mix_rate_with_noise * (query.ratio_[0] + query.ratio_[2]);
+        write_rate = mix_rate_with_noise * query.ratio_[1];
+
+        if (read_rate > 0) {
+          thread->shared->read_rate_limiter->SetBytesPerSecond(
+              static_cast<int64_t>(read_rate));
+        }
+        if (write_rate > 0) {
+          thread->shared->write_rate_limiter->SetBytesPerSecond(
+              static_cast<int64_t>(write_rate));
+        }
+      }
+      // Start the query
+      if (query_type == 0) {
+        // the Get query
+        gets++;
+        read++;
+        //if (FLAGS_num_column_families > 1) {
+        //  s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
+        //                           &pinnable_val);
+        //} else {
+        //  pinnable_val.Reset();
+        //  s = db_with_cfh->db->Get(options,
+        //                           db_with_cfh->db->DefaultColumnFamily(), key,
+        //                           &pinnable_val);
+        //}
+        //pinnable_val.Reset();
+        s = Get(thread->client, key, &sv_val);
+
+        if (s == 0/* s.ok()*/) {
+          found++;
+          bytes += key.size() + sv_val.size();
+        }/* else if (!s.IsNotFound()) {
+          fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+          abort();
+        }*/
+
+        if (thread->shared->read_rate_limiter && read % 100 == 0) {
+          thread->shared->read_rate_limiter->Request(100, Env::IO_HIGH);
+        }
+        thread->stats.FinishedOps(nullptr, 1, kRead);
+      } else if (query_type == 1) {
+        // the Put query
+        puts++;
+        int64_t val_size = ParetoCdfInversion(
+            u, FLAGS_value_theta, FLAGS_value_k, FLAGS_value_sigma);
+        if (val_size < 0) {
+          val_size = 10;
+        } else if (val_size > value_max) {
+          val_size = val_size % value_max;
+        }
+        //s = db_with_cfh->db->Put(
+        //    write_options_, key,
+        //    gen.Generate(static_cast<unsigned int>(val_size)));
+        s = Put(thread->client, key, gen.Generate(static_cast<unsigned int>(val_size)));
+        //if (s == 0) {
+        //  bytes += key.size() + val_size;
+        //}
+        //if (!s.ok()) {
+        //  fprintf(stderr, "put error: %s\n", s.ToString().c_str());
+        //  ErrorExit();
+        //}
+
+        if (thread->shared->write_rate_limiter && puts % 100 == 0) {
+          thread->shared->write_rate_limiter->Request(100, Env::IO_HIGH);
+        }
+        thread->stats.FinishedOps(nullptr, 1, kWrite);
+      } else if (query_type == 2) {
+        fprintf(stdout, "Seek is not supported yet.\n");
+        abort();
+#if 0
+        // Seek query
+        if (db_with_cfh->db != nullptr) {
+          Iterator* single_iter = nullptr;
+          single_iter = db_with_cfh->db->NewIterator(options);
+          if (single_iter != nullptr) {
+            single_iter->Seek(key);
+            seek++;
+            read++;
+            if (single_iter->Valid() && single_iter->key().compare(key) == 0) {
+              seek_found++;
+            }
+            int64_t scan_length =
+                ParetoCdfInversion(u, FLAGS_iter_theta, FLAGS_iter_k,
+                                   FLAGS_iter_sigma) %
+                scan_len_max;
+            for (int64_t j = 0; j < scan_length && single_iter->Valid(); j++) {
+              Slice value = single_iter->value();
+              memcpy(value_buffer, value.data(),
+                     std::min(value.size(), sizeof(value_buffer)));
+              bytes += single_iter->key().size() + single_iter->value().size();
+              single_iter->Next();
+              assert(single_iter->status().ok());
+            }
+          }
+          delete single_iter;
+        }
+        thread->stats.FinishedOps(nullptr, 1, kSeek);
+#endif
+      }
+    }
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "( Gets:%lu Puts:%lu Seek:%lu of %lu in %lu found)\n",
+             gets, puts, seek, found, read);
+
+    thread->stats.AddBytes(bytes);
+    thread->stats.AddMessage(msg);
+
+    //if (FLAGS_perf_level > ROCKSDB_NAMESPACE::PerfLevel::kDisable) {
+    //  thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
+    //                           get_perf_context()->ToString());
+    //}
+  }
+
+
+#ifdef IMNOTDEFINED
   bool binary_search(std::vector<int>& data, int start, int end, int key) {
     if (data.empty()) return false;
     if (start > end) return false;
@@ -1797,420 +2247,6 @@ class Benchmark {
     if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());
       exit(1);
-    }
-  }
-
-  // The inverse function of Pareto distribution
-  int64_t ParetoCdfInversion(double u, double theta, double k, double sigma) {
-    double ret;
-    if (k == 0.0) {
-      ret = theta - sigma * std::log(u);
-    } else {
-      ret = theta + sigma * (std::pow(u, -1 * k) - 1) / k;
-    }
-    return static_cast<int64_t>(ceil(ret));
-  }
-  // The inverse function of power distribution (y=ax^b)
-  int64_t PowerCdfInversion(double u, double a, double b) {
-    double ret;
-    ret = std::pow((u / a), (1 / b));
-    return static_cast<int64_t>(ceil(ret));
-  }
-
-  // Add the noice to the QPS
-  double AddNoise(double origin, double noise_ratio) {
-    if (noise_ratio < 0.0 || noise_ratio > 1.0) {
-      return origin;
-    }
-    int band_int = static_cast<int>(FLAGS_sine_a);
-    double delta = (rand() % band_int - band_int / 2) * noise_ratio;
-    if (origin + delta < 0) {
-      return origin;
-    } else {
-      return (origin + delta);
-    }
-  }
-
-  // Decide the ratio of different query types
-  // 0 Get, 1 Put, 2 Seek, 3 SeekForPrev, 4 Delete, 5 SingleDelete, 6 merge
-  class QueryDecider {
-   public:
-    std::vector<int> type_;
-    std::vector<double> ratio_;
-    int range_;
-
-    QueryDecider() {}
-    ~QueryDecider() {}
-
-    Status Initiate(std::vector<double> ratio_input) {
-      int range_max = 1000;
-      double sum = 0.0;
-      for (auto& ratio : ratio_input) {
-        sum += ratio;
-      }
-      range_ = 0;
-      for (auto& ratio : ratio_input) {
-        range_ += static_cast<int>(ceil(range_max * (ratio / sum)));
-        type_.push_back(range_);
-        ratio_.push_back(ratio / sum);
-      }
-      return Status::OK();
-    }
-
-    int GetType(int64_t rand_num) {
-      if (rand_num < 0) {
-        rand_num = rand_num * (-1);
-      }
-      assert(range_ != 0);
-      int pos = static_cast<int>(rand_num % range_);
-      for (int i = 0; i < static_cast<int>(type_.size()); i++) {
-        if (pos < type_[i]) {
-          return i;
-        }
-      }
-      return 0;
-    }
-  };
-
-  // KeyrangeUnit is the struct of a keyrange. It is used in a keyrange vector
-  // to transfer a random value to one keyrange based on the hotness.
-  struct KeyrangeUnit {
-    int64_t keyrange_start;
-    int64_t keyrange_access;
-    int64_t keyrange_keys;
-  };
-
-  // From our observations, the prefix hotness (key-range hotness) follows
-  // the two-term-exponential distribution: f(x) = a*exp(b*x) + c*exp(d*x).
-  // However, we cannot directly use the inverse function to decide a
-  // key-range from a random distribution. To achieve it, we create a list of
-  // KeyrangeUnit, each KeyrangeUnit occupies a range of integers whose size is
-  // decided based on the hotness of the key-range. When a random value is
-  // generated based on uniform distribution, we map it to the KeyrangeUnit Vec
-  // and one KeyrangeUnit is selected. The probability of a  KeyrangeUnit being
-  // selected is the same as the hotness of this KeyrangeUnit. After that, the
-  // key can be randomly allocated to the key-range of this KeyrangeUnit, or we
-  // can based on the power distribution (y=ax^b) to generate the offset of
-  // the key in the selected key-range. In this way, we generate the keyID
-  // based on the hotness of the prefix and also the key hotness distribution.
-  class GenerateTwoTermExpKeys {
-   public:
-    // Avoid uninitialized warning-as-error in some compilers
-    int64_t keyrange_rand_max_ = 0;
-    int64_t keyrange_size_ = 0;
-    int64_t keyrange_num_ = 0;
-    std::vector<KeyrangeUnit> keyrange_set_;
-
-    // Initiate the KeyrangeUnit vector and calculate the size of each
-    // KeyrangeUnit.
-    Status InitiateExpDistribution(int64_t total_keys, double prefix_a,
-                                   double prefix_b, double prefix_c,
-                                   double prefix_d) {
-      int64_t amplify = 0;
-      int64_t keyrange_start = 0;
-      if (FLAGS_keyrange_num <= 0) {
-        keyrange_num_ = 1;
-      } else {
-        keyrange_num_ = FLAGS_keyrange_num;
-      }
-      keyrange_size_ = total_keys / keyrange_num_;
-
-      // Calculate the key-range shares size based on the input parameters
-      for (int64_t pfx = keyrange_num_; pfx >= 1; pfx--) {
-        // Step 1. Calculate the probability that this key range will be
-        // accessed in a query. It is based on the two-term expoential
-        // distribution
-        double keyrange_p = prefix_a * std::exp(prefix_b * pfx) +
-                            prefix_c * std::exp(prefix_d * pfx);
-        if (keyrange_p < std::pow(10.0, -16.0)) {
-          keyrange_p = 0.0;
-        }
-        // Step 2. Calculate the amplify
-        // In order to allocate a query to a key-range based on the random
-        // number generated for this query, we need to extend the probability
-        // of each key range from [0,1] to [0, amplify]. Amplify is calculated
-        // by 1/(smallest key-range probability). In this way, we ensure that
-        // all key-ranges are assigned with an Integer that  >=0
-        if (amplify == 0 && keyrange_p > 0) {
-          amplify = static_cast<int64_t>(std::floor(1 / keyrange_p)) + 1;
-        }
-
-        // Step 3. For each key-range, we calculate its position in the
-        // [0, amplify] range, including the start, the size (keyrange_access)
-        KeyrangeUnit p_unit;
-        p_unit.keyrange_start = keyrange_start;
-        if (0.0 >= keyrange_p) {
-          p_unit.keyrange_access = 0;
-        } else {
-          p_unit.keyrange_access =
-              static_cast<int64_t>(std::floor(amplify * keyrange_p));
-        }
-        p_unit.keyrange_keys = keyrange_size_;
-        keyrange_set_.push_back(p_unit);
-        keyrange_start += p_unit.keyrange_access;
-      }
-      keyrange_rand_max_ = keyrange_start;
-
-      // Step 4. Shuffle the key-ranges randomly
-      // Since the access probability is calculated from small to large,
-      // If we do not re-allocate them, hot key-ranges are always at the end
-      // and cold key-ranges are at the begin of the key space. Therefore, the
-      // key-ranges are shuffled and the rand seed is only decide by the
-      // key-range hotness distribution. With the same distribution parameters
-      // the shuffle results are the same.
-      Random64 rand_loca(keyrange_rand_max_);
-      for (int64_t i = 0; i < FLAGS_keyrange_num; i++) {
-        int64_t pos = rand_loca.Next() % FLAGS_keyrange_num;
-        assert(i >= 0 && i < static_cast<int64_t>(keyrange_set_.size()) &&
-               pos >= 0 && pos < static_cast<int64_t>(keyrange_set_.size()));
-        std::swap(keyrange_set_[i], keyrange_set_[pos]);
-      }
-
-      // Step 5. Recalculate the prefix start postion after shuffling
-      int64_t offset = 0;
-      for (auto& p_unit : keyrange_set_) {
-        p_unit.keyrange_start = offset;
-        offset += p_unit.keyrange_access;
-      }
-
-      return Status::OK();
-    }
-
-    // Generate the Key ID according to the input ini_rand and key distribution
-    int64_t DistGetKeyID(int64_t ini_rand, double key_dist_a,
-                         double key_dist_b) {
-      int64_t keyrange_rand = ini_rand % keyrange_rand_max_;
-
-      // Calculate and select one key-range that contains the new key
-      int64_t start = 0, end = static_cast<int64_t>(keyrange_set_.size());
-      while (start + 1 < end) {
-        int64_t mid = start + (end - start) / 2;
-        assert(mid >= 0 && mid < static_cast<int64_t>(keyrange_set_.size()));
-        if (keyrange_rand < keyrange_set_[mid].keyrange_start) {
-          end = mid;
-        } else {
-          start = mid;
-        }
-      }
-      int64_t keyrange_id = start;
-
-      // Select one key in the key-range and compose the keyID
-      int64_t key_offset = 0, key_seed;
-      if (key_dist_a == 0.0 || key_dist_b == 0.0) {
-        key_offset = ini_rand % keyrange_size_;
-      } else {
-        double u =
-            static_cast<double>(ini_rand % keyrange_size_) / keyrange_size_;
-        key_seed = static_cast<int64_t>(
-            ceil(std::pow((u / key_dist_a), (1 / key_dist_b))));
-        Random64 rand_key(key_seed);
-        key_offset = rand_key.Next() % keyrange_size_;
-      }
-      return keyrange_size_ * keyrange_id + key_offset;
-    }
-  };
-
-  // The social graph workload mixed with Get, Put, Iterator queries.
-  // The value size and iterator length follow Pareto distribution.
-  // The overall key access follow power distribution. If user models the
-  // workload based on different key-ranges (or different prefixes), user
-  // can use two-term-exponential distribution to fit the workload. User
-  // needs to decide the ratio between Get, Put, Iterator queries before
-  // starting the benchmark.
-  void MixGraph(ThreadState* thread) {
-    int64_t read = 0;  // including single gets and Next of iterators
-    int64_t gets = 0;
-    int64_t puts = 0;
-    int64_t found = 0;
-    int64_t seek = 0;
-    int64_t seek_found = 0;
-    int64_t bytes = 0;
-    const int64_t default_value_max = 1 * 1024 * 1024;
-    int64_t value_max = default_value_max;
-    int64_t scan_len_max = FLAGS_mix_max_scan_len;
-    double write_rate = 1000000.0;
-    double read_rate = 1000000.0;
-    bool use_prefix_modeling = false;
-    bool use_random_modeling = false;
-    GenerateTwoTermExpKeys gen_exp;
-    std::vector<double> ratio{FLAGS_mix_get_ratio, FLAGS_mix_put_ratio,
-                              FLAGS_mix_seek_ratio};
-    char value_buffer[default_value_max];
-    QueryDecider query;
-    RandomGenerator gen;
-    Status s;
-    if (value_max > FLAGS_mix_max_value_size) {
-      value_max = FLAGS_mix_max_value_size;
-    }
-
-    ReadOptions options(FLAGS_verify_checksum, true);
-    std::unique_ptr<const char[]> key_guard;
-    Slice key = AllocateKey(&key_guard);
-    PinnableSlice pinnable_val;
-    query.Initiate(ratio);
-
-    // the limit of qps initiation
-    if (FLAGS_sine_mix_rate) {
-      thread->shared->read_rate_limiter.reset(
-          NewGenericRateLimiter(static_cast<int64_t>(read_rate)));
-      thread->shared->write_rate_limiter.reset(
-          NewGenericRateLimiter(static_cast<int64_t>(write_rate)));
-    }
-
-    // Decide if user wants to use prefix based key generation
-    if (FLAGS_keyrange_dist_a != 0.0 || FLAGS_keyrange_dist_b != 0.0 ||
-        FLAGS_keyrange_dist_c != 0.0 || FLAGS_keyrange_dist_d != 0.0) {
-      use_prefix_modeling = true;
-      gen_exp.InitiateExpDistribution(
-          FLAGS_num, FLAGS_keyrange_dist_a, FLAGS_keyrange_dist_b,
-          FLAGS_keyrange_dist_c, FLAGS_keyrange_dist_d);
-    }
-    if (FLAGS_key_dist_a == 0 || FLAGS_key_dist_b == 0) {
-      use_random_modeling = true;
-    }
-
-    Duration duration(FLAGS_duration, reads_);
-    while (!duration.Done(1)) {
-      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(thread);
-      int64_t ini_rand, rand_v, key_rand, key_seed;
-      ini_rand = GetRandomKey(&thread->rand);
-      rand_v = ini_rand % FLAGS_num;
-      double u = static_cast<double>(rand_v) / FLAGS_num;
-
-      // Generate the keyID based on the key hotness and prefix hotness
-      if (use_random_modeling) {
-        key_rand = ini_rand;
-      } else if (use_prefix_modeling) {
-        key_rand =
-            gen_exp.DistGetKeyID(ini_rand, FLAGS_key_dist_a, FLAGS_key_dist_b);
-      } else {
-        key_seed = PowerCdfInversion(u, FLAGS_key_dist_a, FLAGS_key_dist_b);
-        Random64 rand(key_seed);
-        key_rand = static_cast<int64_t>(rand.Next()) % FLAGS_num;
-      }
-      GenerateKeyFromInt(key_rand, FLAGS_num, &key);
-      int query_type = query.GetType(rand_v);
-
-      // change the qps
-      uint64_t now = Clock::NowMicros();
-      uint64_t usecs_since_last;
-      if (now > thread->stats.GetSineInterval()) {
-        usecs_since_last = now - thread->stats.GetSineInterval();
-      } else {
-        usecs_since_last = 0;
-      }
-
-      if (FLAGS_sine_mix_rate &&
-          usecs_since_last >
-              (FLAGS_sine_mix_rate_interval_milliseconds * uint64_t{1000})) {
-        double usecs_since_start =
-            static_cast<double>(now - thread->stats.GetStart());
-        thread->stats.ResetSineInterval();
-        double mix_rate_with_noise = AddNoise(
-            SineRate(usecs_since_start / 1000000.0), FLAGS_sine_mix_rate_noise);
-        read_rate = mix_rate_with_noise * (query.ratio_[0] + query.ratio_[2]);
-        write_rate = mix_rate_with_noise * query.ratio_[1];
-
-        if (read_rate > 0) {
-          thread->shared->read_rate_limiter->SetBytesPerSecond(
-              static_cast<int64_t>(read_rate));
-        }
-        if (write_rate > 0) {
-          thread->shared->write_rate_limiter->SetBytesPerSecond(
-              static_cast<int64_t>(write_rate));
-        }
-      }
-      // Start the query
-      if (query_type == 0) {
-        // the Get query
-        gets++;
-        read++;
-        if (FLAGS_num_column_families > 1) {
-          s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
-                                   &pinnable_val);
-        } else {
-          pinnable_val.Reset();
-          s = db_with_cfh->db->Get(options,
-                                   db_with_cfh->db->DefaultColumnFamily(), key,
-                                   &pinnable_val);
-        }
-
-        if (s.ok()) {
-          found++;
-          bytes += key.size() + pinnable_val.size();
-        } else if (!s.IsNotFound()) {
-          fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
-          abort();
-        }
-
-        if (thread->shared->read_rate_limiter && read % 100 == 0) {
-          thread->shared->read_rate_limiter->Request(100, Env::IO_HIGH);
-        }
-        thread->stats.FinishedOps(nullptr, 1, kRead);
-      } else if (query_type == 1) {
-        // the Put query
-        puts++;
-        int64_t val_size = ParetoCdfInversion(
-            u, FLAGS_value_theta, FLAGS_value_k, FLAGS_value_sigma);
-        if (val_size < 0) {
-          val_size = 10;
-        } else if (val_size > value_max) {
-          val_size = val_size % value_max;
-        }
-        s = db_with_cfh->db->Put(
-            write_options_, key,
-            gen.Generate(static_cast<unsigned int>(val_size)));
-        if (!s.ok()) {
-          fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          ErrorExit();
-        }
-
-        if (thread->shared->write_rate_limiter && puts % 100 == 0) {
-          thread->shared->write_rate_limiter->Request(100, Env::IO_HIGH);
-        }
-        thread->stats.FinishedOps(nullptr, 1, kWrite);
-      } else if (query_type == 2) {
-        // Seek query
-        if (db_with_cfh->db != nullptr) {
-          Iterator* single_iter = nullptr;
-          single_iter = db_with_cfh->db->NewIterator(options);
-          if (single_iter != nullptr) {
-            single_iter->Seek(key);
-            seek++;
-            read++;
-            if (single_iter->Valid() && single_iter->key().compare(key) == 0) {
-              seek_found++;
-            }
-            int64_t scan_length =
-                ParetoCdfInversion(u, FLAGS_iter_theta, FLAGS_iter_k,
-                                   FLAGS_iter_sigma) %
-                scan_len_max;
-            for (int64_t j = 0; j < scan_length && single_iter->Valid(); j++) {
-              Slice value = single_iter->value();
-              memcpy(value_buffer, value.data(),
-                     std::min(value.size(), sizeof(value_buffer)));
-              bytes += single_iter->key().size() + single_iter->value().size();
-              single_iter->Next();
-              assert(single_iter->status().ok());
-            }
-          }
-          delete single_iter;
-        }
-        thread->stats.FinishedOps(nullptr, 1, kSeek);
-      }
-    }
-    char msg[256];
-    snprintf(msg, sizeof(msg),
-             "( Gets:%lu Puts:%lu Seek:%lu of %" PRIu64
-             " in %lu found)\n",
-             gets, puts, seek, found, read);
-
-    thread->stats.AddBytes(bytes);
-    thread->stats.AddMessage(msg);
-
-    if (FLAGS_perf_level > ROCKSDB_NAMESPACE::PerfLevel::kDisable) {
-      thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
-                               get_perf_context()->ToString());
     }
   }
 
