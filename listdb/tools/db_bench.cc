@@ -992,12 +992,12 @@ class Benchmark {
       } else if (name == "readseq") {
         method = &Benchmark::ReadSequential;
       } else if (name == "readrandom") {
-        abort();
+        //abort();
         //if (FLAGS_multiread_stride) {
         //  fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
         //          entries_per_batch_);
         //}
-        //method = &Benchmark::ReadRandom;
+        method = &Benchmark::ReadRandom;
       } else if (name == "mixgraph") {
         abort();
         //method = &Benchmark::MixGraph;
@@ -1546,69 +1546,58 @@ class Benchmark {
     return key_rand;
   }
 
-
-#ifdef IMNOTDEFINED
   void ReadRandom(ThreadState* thread) {
     int64_t read = 0;
     int64_t found = 0;
     int64_t bytes = 0;
-    int num_keys = 0;
+    //int num_keys = 0;
     int64_t key_rand = 0;
-    ReadOptions options(FLAGS_verify_checksum, true);
+    //ReadOptions options(FLAGS_verify_checksum, true);
+    //std::unique_ptr<const char[]> key_guard;
+    //Slice key = AllocateKey(&key_guard);
+    //PinnableSlice pinnable_val;
+    //std::unique_ptr<char[]> ts_guard;
+    //Slice ts;
+    //if (user_timestamp_size_ > 0) {
+    //  ts_guard.reset(new char[user_timestamp_size_]);
+    //}
     std::unique_ptr<const char[]> key_guard;
-    Slice key = AllocateKey(&key_guard);
-    PinnableSlice pinnable_val;
-    std::unique_ptr<char[]> ts_guard;
-    Slice ts;
-    if (user_timestamp_size_ > 0) {
-      ts_guard.reset(new char[user_timestamp_size_]);
-    }
+    std::string_view key = AllocateKey(&key_guard);
+    uint64_t value_addr;
+    std::string value_read;
 
     Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
-      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(thread);
-      // We use same key_rand as seed for key and column family so that we can
-      // deterministically find the cfh corresponding to a particular key, as it
-      // is done in DoWrite method.
-      if (entries_per_batch_ > 1 && FLAGS_multiread_stride) {
-        if (++num_keys == entries_per_batch_) {
-          num_keys = 0;
-          key_rand = GetRandomKey(&thread->rand);
-          if ((key_rand + (entries_per_batch_ - 1) * FLAGS_multiread_stride) >=
-              FLAGS_num) {
-            key_rand = FLAGS_num - entries_per_batch_ * FLAGS_multiread_stride;
-          }
-        } else {
-          key_rand += FLAGS_multiread_stride;
-        }
-      } else {
-        key_rand = GetRandomKey(&thread->rand);
-      }
+      key_rand = GetRandomKey(&thread->rand);
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       read++;
-      std::string ts_ret;
-      std::string* ts_ptr = nullptr;
-      if (user_timestamp_size_ > 0) {
-        ts = mock_app_clock_->GetTimestampForRead(thread->rand, ts_guard.get());
-        options.timestamp = &ts;
-        ts_ptr = &ts_ret;
-      }
-      Status s;
-      pinnable_val.Reset();
-      if (FLAGS_num_column_families > 1) {
-        s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
-                                 &pinnable_val, ts_ptr);
-      } else {
-        s = db_with_cfh->db->Get(options,
-                                 db_with_cfh->db->DefaultColumnFamily(), key,
-                                 &pinnable_val, ts_ptr);
-      }
-      if (s.ok()) {
+      //Status s;
+      //pinnable_val.Reset();
+      //if (FLAGS_num_column_families > 1) {
+      //  s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
+      //                           &pinnable_val, ts_ptr);
+      //} else {
+      //  s = db_with_cfh->db->Get(options,
+      //                           db_with_cfh->db->DefaultColumnFamily(), key,
+      //                           &pinnable_val, ts_ptr);
+      //}
+      //if (s.ok()) {
+      //  found++;
+      //  bytes += key.size() + pinnable_val.size() + user_timestamp_size_;
+      //} else if (!s.IsNotFound()) {
+      //  fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+      //  abort();
+      //}
+      bool ret;
+      ret = thread->client->GetStringKV(key, &value_addr);
+      if (ret) {
+        char* p = (char*) value_addr;
+        size_t val_len = *((uint64_t*) p);
+        p += sizeof(size_t);
+        std::string_view value_sv(p, val_len);
+        value_read.assign(value_sv);  // memcpy
         found++;
-        bytes += key.size() + pinnable_val.size() + user_timestamp_size_;
-      } else if (!s.IsNotFound()) {
-        fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
-        abort();
+        bytes += key.size() + val_len;
       }
 
       if (thread->shared->read_rate_limiter.get() != nullptr &&
@@ -1625,13 +1614,10 @@ class Benchmark {
 
     thread->stats.AddBytes(bytes);
     thread->stats.AddMessage(msg);
-
-    if (FLAGS_perf_level > ROCKSDB_NAMESPACE::PerfLevel::kDisable) {
-      thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
-                               get_perf_context()->ToString());
-    }
   }
 
+
+#ifdef IMNOTDEFINED
   double SineRate(double x) {
     return FLAGS_sine_a*sin((FLAGS_sine_b*x) + FLAGS_sine_c) + FLAGS_sine_d;
   }

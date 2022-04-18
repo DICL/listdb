@@ -331,7 +331,8 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
-          *value_out = found->value;
+          PmemNode* p_node = PmemPtr::Decode<PmemNode>(found->value);
+          *value_out = (uint64_t) PmemPtr::Decode<char>(p_node->value);
           return true;
         }
       } else if (table->type() == TableType::kPmemTable) {
@@ -360,7 +361,8 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
         //char* value_buf = (char*) value_paddr.get();
         //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
         //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
-        *value_out = found->value;
+        //*value_out = found->value;
+        *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
         return true;
       }
       table = table->Next();
@@ -382,7 +384,8 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
         //char* value_buf = (char*) value_paddr.get();
         //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
         //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
-        *value_out = found->value;
+        //*value_out = found->value;
+        *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
         return true;
       }
       table = table->Next();
