@@ -396,7 +396,11 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 #endif
 
 inline int DBClient::RandomHeight() {
+#ifdef LISTDB_L1_LRU
   static const unsigned int kBranching = 2;
+#else
+  static const unsigned int kBranching = 4;
+#endif
   int height = 1;
 #if 1
   if (rnd_.Next() % std::max<int>(1, (kBranching / kNumRegions)) == 0) {
@@ -531,6 +535,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   Node* curr;
   int height = pred->height();
 
+#ifdef LISTDB_L1_LRU
   if (0) {
     using MyType1 = std::pair<Key, uint64_t>;
     MyType1 search_key(key, 0);
@@ -553,6 +558,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       height = pred->height();
     }
   }
+#endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 

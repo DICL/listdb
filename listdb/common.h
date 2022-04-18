@@ -40,8 +40,10 @@ constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
 constexpr int kMaxHeight = 15;
 
+#ifdef LISTDB_L1_LRU
 constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
+#endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;

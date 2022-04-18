@@ -16,7 +16,9 @@
 #include <libpmemobj++/pexceptions.hpp>
 
 #include "listdb/common.h"
+#ifdef LISTDB_L1_LRU
 #include "listdb/core/lru_skiplist.h"
+#endif
 #include "listdb/core/pmem_blob.h"
 #include "listdb/core/pmem_log.h"
 //#include "listdb/core/pmem_db.h"
@@ -99,6 +101,7 @@ class ListDB {
   // Utility Functions
   void PrintDebugLsmState(int shard);
 
+#ifdef LISTDB_L1_LRU
   std::vector<std::pair<uint64_t, uint64_t>>& sorted_arr(int r, int s) { return sorted_arr_[r][s]; }
   LruSkipList* lru_cache(int s, int r) { return cache_[s][r]; }
 
@@ -111,6 +114,7 @@ class ListDB {
     }
     return total_size;
   }
+#endif
   
 
  private:
@@ -142,8 +146,10 @@ class ListDB {
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
 
+#ifdef LISTDB_L1_LRU
   std::vector<std::pair<uint64_t, uint64_t>> sorted_arr_[kNumRegions][kNumShards];
   LruSkipList* cache_[kNumShards][kNumRegions];
+#endif
 };
 
 
@@ -274,11 +280,13 @@ void ListDB::Init() {
     }
   }
 
+#ifdef LISTDB_L1_LRU
   for (int i = 0; i < kNumShards; i++) {
     for (int j = 0; j < kNumRegions; j++) {
       cache_[i][j] = new LruSkipList(100000000);
     }
   }
+#endif
 
 #ifdef LOOKUP_CACHE
   // HashTable
@@ -388,6 +396,7 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }
+#if 1
     for (int i = 0; i < kNumShards; i++) {
       if (l0_compaction_state[i] == 0) {
         auto tl = ll_[i]->GetTableList(0);
@@ -412,6 +421,7 @@ void ListDB::BackgroundThreadLoop() {
         }
       }
     }
+#endif
 
     std::vector<CompactionWorkerData*> available_workers;
     for (int i = 0; i < kNumWorkers; i++) {
@@ -534,7 +544,9 @@ inline TableList* ListDB::GetTableList(int level, int shard) {
 void ListDB::FlushMemTable(MemTableFlushTask* task) {
   if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm);
   // Check Reference Counter
-  while (task->imm->w_RefCount() > 0) continue;
+  while (task->imm->w_RefCount() > 0) {
+    continue;
+  }
 
   // Flush (IUL)
 #if 0
@@ -931,6 +943,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       l0_node->next[i] = z->preds[i]->next[i];
       z->preds[i]->next[i] = z->node_paddr.dump();
     }
+#ifdef LISTDB_L1_LRU
     if (l0_node->height() >= kMaxHeight - (kNumCachedLevels - 1)) {
       int region = z->node_paddr.pool_id();
       //sorted_arr_[region][task->shard].emplace_back(l0_node->key, z->node_paddr.dump());
@@ -942,15 +955,18 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       }
       cache_[task->shard][region]->Insert(l0_node->key, z->node_paddr.dump(), lru_height);
     }
+#endif
     zstack.pop();
     delete z;
   }
 
+#ifdef LISTDB_L1_LRU
   using MyType1 = std::pair<uint64_t, uint64_t>;
   for (int i = 0; i < kNumRegions; i++) {
     std::sort(sorted_arr_[i][task->shard].begin(), sorted_arr_[i][task->shard].end(),
         [&](const MyType1 &a, const MyType1 &b) { return a.first > b.first; });
   }
+#endif
 
   // Remove empty L0 from MemTableList
   //auto tl = ll_[task->shard]->GetTableList(0);

@@ -1044,6 +1044,8 @@ class Benchmark {
         //                              "rocksdb.num-entries-active-mem-table",
         //                              "rocksdb.num-entries-imm-mem-tables"};
         //PrintStats(keys);
+      } else if (name == "waitfor10sec") {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
       } else if (name == "waitfor30sec") {
         std::this_thread::sleep_for(std::chrono::seconds(30));
       } else if (!name.empty()) {  // No error message for empty name
