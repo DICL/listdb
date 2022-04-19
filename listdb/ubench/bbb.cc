@@ -18,9 +18,9 @@
 #include "tbb/task_scheduler_init.h"
 
 #include "listdb/common.h"
-#include "listdb/lib/random.h"
 #include "listdb/lib/numa.h"
 #include "listdb/core/pmem_log.h"
+#include "listdb/util/random.h"
 
 constexpr int NUM_THREADS = 80;
 constexpr size_t NUM_LOADS = 10 * 1000 * 1000;

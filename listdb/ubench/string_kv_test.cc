@@ -22,11 +22,11 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/lib/numa.h"
-#include "listdb/lib/random.h"
 #include "listdb/listdb.h"
 #include "listdb/lsm/table.h"
 #include "listdb/lsm/table_list.h"
 #include "listdb/util.h"
+#include "listdb/util/random.h"
 
 //#define COUNT_FOUND
 
@@ -205,7 +205,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<Key>& l
           } else if (work_ops[i] == OP_READ) {
             uint64_t val_read;
 #ifndef COUNT_FOUND
-            auto ret = client->GetStringKV(work_keys[i].data(), &val_read);
+            [[maybe_unused]] auto ret = client->GetStringKV(work_keys[i].data(), &val_read);
 #else
             auto ret = client->Get(work_keys[i].data(), &val_read);
             if (ret) cnt[id]++;
@@ -260,7 +260,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<Key>& l
     for (int h = 0; h < kMaxHeight; h++) {
       fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
     }
+#ifdef LISTDB_L1_LRU
     fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
+#endif
   }
   fprintf(stdout, "\n");
   delete db;

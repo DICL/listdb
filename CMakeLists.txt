@@ -7,7 +7,7 @@ set(CMAKE_CXX_COMPILER "g++")
 
 option(DEBUG "build debug mode." OFF)
 option(STRING_KEY "string key mode." OFF)
-option(WISCKEY "Store values as in Wisckey manner." OFF)
+option(WISCKEY "Store values in Wisckey manner." OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
@@ -31,6 +31,13 @@ if(WISCKEY)
 else()
   message("[X] WISCKEY disabled.")
 endif(WISCKEY)
+
+##
+# GFLAGS
+find_package(gflags)
+if(gflags_FOUND)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DGFLAGS")
+endif()
 
 ##
 # Compiler options
@@ -136,6 +143,28 @@ foreach (ubench_src ${ubench_srcs})
   #target_include_directories(${ubench_name} PUBLIC
   #  /home/wkim/Projects/libcds-2.3.3
   #  )
+endforeach()
+
+# db_bench
+set(db_bench_srcs
+  listdb/tools/db_bench.cc
+  )
+foreach (db_bench_src ${db_bench_srcs})
+  get_filename_component(db_bench_name ${db_bench_src} NAME_WE)
+  add_executable(${db_bench_name} ${db_bench_src}
+    )
+  target_link_libraries(${db_bench_name}
+    listdb
+    pthread
+    numa
+    jemalloc
+    pmemobj
+    stdc++fs
+    tbb
+    )
+  if(gflags_FOUND)
+    target_link_libraries(${db_bench_name} ${gflags_LIBRARIES})
+  endif()
 endforeach()
 
 ###

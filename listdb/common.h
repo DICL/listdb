@@ -18,14 +18,14 @@
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 24;
+constexpr size_t kStringKeyLength = 48;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t
 
 #define MO_RELAXED std::memory_order_relaxed
 
-constexpr int kNumRegions = 2;
+constexpr int kNumRegions = 4;
 constexpr int kNumShards = 128;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
@@ -40,8 +40,10 @@ constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
 constexpr int kMaxHeight = 15;
 
+#ifdef LISTDB_L1_LRU
 constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
+#endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
