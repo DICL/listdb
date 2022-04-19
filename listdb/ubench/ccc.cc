@@ -21,12 +21,12 @@
 
 #include "listdb/common.h"
 #include "listdb/index/lockfree_skiplist.h"
-#include "listdb/lib/random.h"
 #include "listdb/lib/numa.h"
 #include "listdb/core/pmem_log.h"
 #include "listdb/lsm/table.h"
 #include "listdb/lsm/table_list.h"
 #include "listdb/lsm/memtable_list.h"
+#include "listdb/util/random.h"
 
 constexpr int NUM_THREADS = 80;
 constexpr size_t NUM_LOADS = 10 * 1000 * 1000;

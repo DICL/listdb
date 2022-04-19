@@ -26,6 +26,9 @@ class PmemPtr {
 
   static uint64_t Encode(const int16_t pool_id, const uint64_t offset);
 
+  template <typename T>
+  static T* Decode(const uint64_t dump);
+
  private:
   uint64_t data_;
 };
@@ -73,6 +76,19 @@ inline uint64_t PmemPtr::offset() {
 
 inline uint64_t PmemPtr::Encode(const int16_t pool_id, const uint64_t offset) {
   return ((uint64_t) pool_id << 48) | offset;
+}
+
+template <typename T>
+inline T* PmemPtr::Decode(const uint64_t dump) {
+  if (dump == 0) {
+    return nullptr;
+  }
+  //int *p2 = (int *)(((uintptr_t)p1 & ((1ull << 48) - 1)) |
+  //  ~(((uintptr_t)p1 & (1ull << 47)) - 1));
+  static const uintptr_t kMask = 0x0000ffffffffffff;
+  const int16_t pool_id = (dump >> 48);
+  const uint64_t offset = (dump & kMask);
+  return (T*) ((uintptr_t) Pmem::pool(pool_id).handle() + offset);
 }
 
 #endif  // LISTDB_PMEM_PMEM_PTR_H_

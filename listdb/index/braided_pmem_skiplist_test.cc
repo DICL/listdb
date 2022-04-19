@@ -6,7 +6,7 @@
 #include "listdb/common.h"
 #include "listdb/core/pmem_log.h"
 #include "listdb/index/braided_pmem_skiplist.h"
-#include "listdb/lib/random.h"
+#include "listdb/util/random.h"
 
 namespace fs = std::experimental::filesystem::v1;
 

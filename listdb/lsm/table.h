@@ -28,7 +28,7 @@ class Table {
 
   bool HasRoom(const size_t size, const std::memory_order mo = std::memory_order_seq_cst);
 
-  uint64_t w_RefCount () { return writer_ref_cnt_ - writer_unref_cnt_; }
+  int64_t w_RefCount () { return writer_ref_cnt_ - writer_unref_cnt_; }
 
   void SetSize(const size_t size) { size_.store(size); }
 
@@ -41,9 +41,9 @@ class Table {
  protected:
   const size_t capacity_;
   TableType type_;
-  std::atomic<uint64_t> writer_ref_cnt_;
+  std::atomic<int64_t> writer_ref_cnt_ = 0;
   std::atomic<size_t> size_;
-  std::atomic<uint64_t> writer_unref_cnt_;
+  std::atomic<int64_t> writer_unref_cnt_ = 0;
   std::atomic<Table*> next_;
   //std::atomic<size_t> size_retired_;
 };

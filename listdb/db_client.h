@@ -7,7 +7,7 @@
 #include "listdb/common.h"
 #include "listdb/listdb.h"
 #include "listdb/util.h"
-#include "listdb/lib/random.h"
+#include "listdb/util/random.h"
 
 #define LEVEL_CHECK_PERIOD_FACTOR 1
 
@@ -24,6 +24,11 @@ class DBClient {
   void Put(const Key& key, const Value& value);
 
   bool Get(const Key& key, Value* value_out);
+
+#if defined(LISTDB_STRING_KEY) && defined(LISTDB_WISCKEY)
+  void PutStringKV(const std::string_view& key_sv, const std::string_view& value);
+  bool GetStringKV(const std::string_view& key_sv, Value* value_out);
+#endif
   
   //void ReserveLatencyHistory(size_t size);
   
@@ -46,6 +51,9 @@ class DBClient {
   int region_;
   Random rnd_;
   PmemLog* log_[kNumShards];
+#ifdef LISTDB_WISCKEY
+  PmemBlob* value_blob_[kNumShards];
+#endif
   //BraidedPmemSkipList* bsl_[kNumShards];
   size_t pmem_get_cnt_ = 0;
   size_t search_visit_cnt_ = 0;
@@ -66,9 +74,12 @@ class DBClient {
   //std::vector<std::chrono::duration<double>> latencies_;
 };
 
-DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(region), rnd_(id) {
+DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(region % kNumRegions), rnd_(id) {
   for (int i = 0; i < kNumShards; i++) {
     log_[i] = db_->log(region_, i);
+#ifdef LISTDB_WISCKEY
+    value_blob_[i] = db_->value_blob(region_, i);
+#endif
   }
 }
 
@@ -76,6 +87,9 @@ void DBClient::SetRegion(int region) {
   region_ = region;
   for (int i = 0; i < kNumShards; i++) {
     log_[i] = db_->log(region_, i);
+#ifdef LISTDB_WISCKEY
+    value_blob_[i] = db_->value_blob(region_, i);
+#endif
   }
 }
 
@@ -264,8 +278,131 @@ bool DBClient::Get(const Key& key, Value* value_out) {
   return false;
 }
 
+#if defined(LISTDB_STRING_KEY) && defined(LISTDB_WISCKEY)
+void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_view& value) {
+  Key& key = *((Key*) key_sv.data());
+  int s = KeyShard(key);
+
+  uint64_t height = RandomHeight();
+  size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+  //size_t kv_size = key.size() + value.size();
+
+  // Write log
+  size_t value_alloc_size = util::AlignedSize(8, 8 + value.size());
+  auto value_paddr = value_blob_[s]->Allocate(value_alloc_size);
+  char* value_p = (char*) value_paddr.get();
+  *((size_t*) value_p) = value.size();
+  value_p += sizeof(size_t);
+  memcpy(value_p, value.data(), value.size());
+
+  auto log_paddr = log_[s]->Allocate(iul_entry_size);
+  PmemNode* iul_entry = (PmemNode*) log_paddr.get();
+  iul_entry->tag = height;
+  iul_entry->value = value_paddr.dump();
+  //clwb(&iul_entry->tag, 16);
+  _mm_sfence();
+  iul_entry->key = key;
+  //clwb(iul_entry, 8);
+  clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
+
+  // Create skiplist node
+  size_t mem_node_size = sizeof(MemNode) + (height - 1) * sizeof(uint64_t);
+  MemNode* node = (MemNode*) malloc(mem_node_size);
+  node->key = key;
+  node->tag = height;
+  //node->value = value;
+  node->value = log_paddr.dump();
+  memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
+
+  auto mem = db_->GetWritableMemTable(mem_node_size, s);
+  auto skiplist = mem->skiplist();
+  skiplist->Insert(node);
+  mem->w_UnRef();
+}
+
+bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
+  Key& key = *((Key*) key_sv.data());
+  int s = KeyShard(key);
+  {
+    MemTableList* tl = (MemTableList*) db_->GetTableList(0, s);
+
+    auto table = tl->GetFront();
+    while (table) {
+      if (table->type() == TableType::kMemTable) {
+        auto mem = (MemTable*) table;
+        auto skiplist = mem->skiplist();
+        auto found = skiplist->Lookup(key);
+        if (found && found->key == key) {
+          PmemNode* p_node = PmemPtr::Decode<PmemNode>(found->value);
+          *value_out = (uint64_t) PmemPtr::Decode<char>(p_node->value);
+          return true;
+        }
+      } else if (table->type() == TableType::kPmemTable) {
+        break;
+      }
+      table = table->Next();
+    }
+#ifdef LOOKUP_CACHE
+    {
+      auto ht = db_->GetHashTable(s);
+      if (ht->Get(key, value_out)) {
+        return true;
+      }
+    }
+#endif
+    pmem_get_cnt_++;
+    while (table) {
+      auto pmem = (PmemTable*) table;
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = Lookup(key, region_, skiplist);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        //fprintf(stdout, "found on pmem\n");
+        //PmemPtr value_paddr(found->value);
+        //char* value_buf = (char*) value_paddr.get();
+        //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
+        //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
+        //*value_out = found->value;
+        *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
+        return true;
+      }
+      table = table->Next();
+    }
+  }
+  {
+    // Level 1 Lookup
+    auto tl = (PmemTableList*) db_->GetTableList(1, s);
+    auto table = tl->GetFront();
+    while (table) {
+      auto pmem = (PmemTable*) table;
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = LookupL1(key, region_, skiplist, s);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        //fprintf(stdout, "found on pmem\n");
+        //PmemPtr value_paddr(found->value);
+        //char* value_buf = (char*) value_paddr.get();
+        //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
+        //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
+        //*value_out = found->value;
+        *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
+        return true;
+      }
+      table = table->Next();
+    }
+  }
+  return false;
+}
+#endif
+
 inline int DBClient::RandomHeight() {
+#ifdef LISTDB_L1_LRU
   static const unsigned int kBranching = 2;
+#else
+  static const unsigned int kBranching = 4;
+#endif
   int height = 1;
 #if 1
   if (rnd_.Next() % std::max<int>(1, (kBranching / kNumRegions)) == 0) {
@@ -400,6 +537,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   Node* curr;
   int height = pred->height();
 
+#ifdef LISTDB_L1_LRU
   if (0) {
     using MyType1 = std::pair<Key, uint64_t>;
     MyType1 search_key(key, 0);
@@ -422,6 +560,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       height = pred->height();
     }
   }
+#endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 

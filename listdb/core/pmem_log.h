@@ -17,9 +17,6 @@
 template <typename T>
 using Pool = pmem::obj::pool<T>;
 
-//constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20);
-constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
-
 struct pmem_log;
 struct pmem_log_block;
 

@@ -23,6 +23,7 @@ class Numa {
 };
 
 void Numa::Init() {
+  table_.clear();
   num_cpus_ = numa_num_configured_cpus();
   num_sockets_ = numa_num_configured_nodes();
   for (int i = 0; i < num_cpus_; i++) {
