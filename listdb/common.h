@@ -18,7 +18,7 @@
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 48;
+constexpr size_t kStringKeyLength = 16;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t

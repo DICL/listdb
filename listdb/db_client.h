@@ -42,13 +42,17 @@ class DBClient {
 
   static int KeyShard(const Key& key);
 
+#ifdef LISTDB_EXPERIMENTAL_SEARCH_LEVEL_CHECK
   PmemPtr LevelLookup(const Key& key, const int pool_id, const int level, BraidedPmemSkipList* skiplist);
+#endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
 
   ListDB* db_;
   int id_;
   int region_;
+  int l0_pool_id_;
+  int l1_pool_id_;
   Random rnd_;
   PmemLog* log_[kNumShards];
 #ifdef LISTDB_WISCKEY
@@ -81,6 +85,8 @@ DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(r
     value_blob_[i] = db_->value_blob(region_, i);
 #endif
   }
+  l0_pool_id_ = db_->l0_pool_id(region_);
+  l1_pool_id_ = db_->l1_pool_id(region_);
 }
 
 void DBClient::SetRegion(int region) {
@@ -252,7 +258,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = LookupL1(key, region_, skiplist, s);
+      auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
         //fprintf(stdout, "found on pmem\n");
@@ -355,7 +361,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = Lookup(key, region_, skiplist);
+      auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
         //fprintf(stdout, "found on pmem\n");
@@ -378,7 +384,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = LookupL1(key, region_, skiplist, s);
+      auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
         //fprintf(stdout, "found on pmem\n");
@@ -424,7 +430,8 @@ inline int DBClient::KeyShard(const Key& key) {
   //return key.key_num() / kShardSize;
 }
 
-PmemPtr DBClient::LevelLookup(const Key& key, const int pool_id, const int level, BraidedPmemSkipList* skiplist) {
+#ifdef LISTDB_EXPERIMENTAL_SEARCH_LEVEL_CHECK
+PmemPtr DBClient::LevelLookup(const Key& key, const int region, const int level, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
@@ -478,6 +485,7 @@ PmemPtr DBClient::LevelLookup(const Key& key, const int pool_id, const int level
   }
   return curr_paddr_dump;
 }
+#endif
 
 PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;
@@ -507,11 +515,11 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
 
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
-    if (pool_id != 0) {
+    if (pool_id != skiplist->primary_pool_id()) {
       search_visit_cnt_++;
       height_visit_cnt_[kMaxHeight - 1]++;
     }
-    pred = skiplist->head(0);
+    pred = skiplist->head();
   }
   while (true) {
     curr_paddr_dump = pred->next[0];
@@ -583,11 +591,11 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
-    if (pool_id != 0) {
+    if (pool_id != skiplist->primary_pool_id()) {
       search_visit_cnt_++;
       height_visit_cnt_[kMaxHeight - 1]++;
     }
-    pred = skiplist->head(0);
+    pred = skiplist->head();
   }
   while (true) {
     curr_paddr_dump = pred->next[0];

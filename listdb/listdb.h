@@ -97,6 +97,10 @@ class ListDB {
   PmemBlob* value_blob(const int region, const int shard) { return value_blob_[region][shard]; }
 #endif
 
+  int l0_pool_id(const int region) { return l0_pool_id_[region]; }
+
+  int l1_pool_id(const int region) { return l1_pool_id_[region]; }
+
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
 
@@ -144,6 +148,8 @@ class ListDB {
 #endif
 
   std::unordered_map<int, int> pool_id_to_region_;
+  std::unordered_map<int, int> l0_pool_id_;
+  std::unordered_map<int, int> l1_pool_id_;
 
   std::queue<MemTableFlushTask*> memtable_flush_queue_;
   std::mutex bg_mu_;
@@ -210,6 +216,7 @@ void ListDB::Init() {
 
     int pool_id = Pmem::BindPoolSet<pmem_log_root>(poolset, "");
     pool_id_to_region_[pool_id] = i;
+    l0_pool_id_[i] = pool_id;
     auto pool = Pmem::pool<pmem_log_root>(pool_id);
 
     for (int j = 0; j < kNumShards; j++) {
@@ -273,6 +280,9 @@ void ListDB::Init() {
     }
   }
 #endif
+  for (int i = 0; i < kNumRegions; i++) {
+    l1_pool_id_[i] = l1_arena_[i][0]->pool_id();
+  }
 
   for (int i = 0; i < kNumShards; i++) {
     ll_[i] = new LevelList();
