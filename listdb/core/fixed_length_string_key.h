@@ -75,7 +75,37 @@ inline uint64_t FixedLengthStringKey<N>::key_num() const {
 
 template <std::size_t N>
 inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other) const {
+#if 0
   return strncmp(data_, other.data_, N);
+#endif
+#if 0
+  return memcmp(data_, other.data_, N);
+#endif
+#if 1
+  size_t pos = 0;
+  while (pos + 8 <= N) {
+    uint64_t* a = (uint64_t*) (data_ + pos);
+    uint64_t* b = (uint64_t*) (other.data_ + pos);
+    if (*a < *b) {
+      return -1;
+    } else if (*a > *b) {
+      return 1;
+    } else {
+      pos += 8;
+    }
+  }
+  return memcmp(data_ + pos, other.data_ + pos, N - pos);
+#endif
+#if 0
+  size_t pos = 0;
+  while (pos < N) {
+    if (data_[pos] != other.data_[pos]) {
+      return data_[pos] - other.data_[pos];
+    }
+    pos++;
+  }
+  return 0;
+#endif
 }
 
 template <std::size_t N>
