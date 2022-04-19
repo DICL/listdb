@@ -3,4 +3,4 @@ ListDB
 
 Hello World!
 
-A lightweight version of the original brdb implementation.
+An improved version of the original brdb implementation.
