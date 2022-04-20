@@ -18,6 +18,8 @@ class FixedLengthStringKey {
 
   const char* data() const { return data_; }
 
+  bool Valid() const { return *((uint64_t*) data_) != 0; }
+
   bool operator==(const FixedLengthStringKey<N>& other) const;
 
  private:

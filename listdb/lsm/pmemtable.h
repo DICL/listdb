@@ -16,8 +16,14 @@ class PmemTable : public Table {
 
   BraidedPmemSkipList* skiplist() { return skiplist_; }
 
+  void SetManifest(pmem::obj::persistent_ptr_base manifest) { manifest_ = manifest; }
+
+  template <typename T>
+  pmem::obj::persistent_ptr<T> manifest() { return manifest_.raw(); }
+
  private:
   BraidedPmemSkipList* skiplist_;
+  pmem::obj::persistent_ptr_base manifest_;
 };
 
 PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)

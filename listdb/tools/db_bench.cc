@@ -7,10 +7,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#ifndef GFLAGS
+#if !defined(GFLAGS)
 #include <cstdio>
 int main() {
   fprintf(stderr, "Please install gflags to run db_bench\n");
+  return 1;
+}
+#elif !defined(LISTDB_STRING_KEY) || !defined(LISTDB_WISCKEY)
+#include <cstdio>
+int main() {
+  fprintf(stderr, "Please configure cmake with -DSTRING_KEY=ON -DWISCKEY=ON to run db_bench\n");
   return 1;
 }
 #else
@@ -40,6 +46,7 @@ DEFINE_string(
     "readseq,"
     "readrandom,"
     "mixgraph",
+    "recoveryaftermixgraph"
     "Comma-separated list of operations to run in the specified order. Available benchmarks:\n"
     "\tfillseq       -- write N values in sequential key order in async mode\n"
     "\tfillrandom    -- write N values in random key order in async mode\n"
@@ -914,6 +921,7 @@ class Benchmark {
   //     |        key 00000         |
   //     ----------------------------
   void GenerateKeyFromInt(uint64_t v, int64_t num_keys, std::string_view* key) {
+    if (v == 0) v++;
     char* start = const_cast<char*>(key->data());
     char* pos = start;
 
@@ -1008,6 +1016,8 @@ class Benchmark {
       } else if (name == "readrandom") {
         method = &Benchmark::ReadRandom;
       } else if (name == "mixgraph") {
+        method = &Benchmark::MixGraph;
+      } else if (name == "recoveryaftermixgraph") {
         method = &Benchmark::MixGraph;
       } else if (name == "compact") {
         abort();
@@ -1107,16 +1117,14 @@ class Benchmark {
     return 0;
   }
 
-  int Get(DBClient* client, const std::string_view& key, std::string_view* value) {
+  int Get(DBClient* client, const std::string_view& key, std::string* value) {
     uint64_t value_addr;
     bool ret = client->GetStringKV(key, &value_addr);
     if (ret) {
       char* p = (char*) value_addr;
       size_t val_len = *((uint64_t*) p);
       p += sizeof(size_t);
-      std::string_view value_sv(p, val_len);
-      *value = value_sv;
-      //value->assign(value_sv);  // memcpy
+      value->assign(p, val_len);
       return 0;
     }
     return 1;
@@ -1340,23 +1348,21 @@ class Benchmark {
       threads.emplace_back(ThreadBody, &arg[i]);
     }
 
-    //shared.mu.Lock();
-    //while (shared.num_initialized < n) {
-    //  shared.cv.Wait();
-    //}
     std::unique_lock<std::mutex> lk(shared.mu);
     shared.cv.wait(lk, [&]{ return shared.num_initialized == n; });
 
     shared.start = true;
     shared.cv.notify_all();
-    //while (shared.num_done < n) {
-    //  shared.cv.Wait();
-    //}
     shared.cv.wait(lk, [&]{ return shared.num_done == n; });
-    //shared.mu.Unlock();
     lk.unlock();
 
     for (auto& t : threads) { if (t.joinable()) t.join(); }
+
+    // RecoveryAfterMixGraph
+    if (name == "recoveryaftermixgraph") {
+      RecoveryAfterMixGraph();
+    }
+
 
     // Stats for some threads can be excluded.
     Stats merge_stats;
@@ -1636,14 +1642,15 @@ class Benchmark {
     //}
     std::unique_ptr<const char[]> key_guard;
     std::string_view key = AllocateKey(&key_guard);
-    uint64_t value_addr;
-    std::string value_read;
+    std::string value;
+    value.reserve(value_size);
 
     Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       key_rand = GetRandomKey(&thread->rand);
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       read++;
+      int s;
       //Status s;
       //pinnable_val.Reset();
       //if (FLAGS_num_column_families > 1) {
@@ -1661,17 +1668,15 @@ class Benchmark {
       //  fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
       //  abort();
       //}
-      bool ret;
-      ret = thread->client->GetStringKV(key, &value_addr);
-      if (ret) {
-        char* p = (char*) value_addr;
-        size_t val_len = *((uint64_t*) p);
-        p += sizeof(size_t);
-        std::string_view value_sv(p, val_len);
-        //value_read.assign(value_sv);  // memcpy
+      s = Get(thread->client, key, &value);
+
+      if (s == 0/* s.ok()*/) {
         found++;
-        bytes += key.size() + val_len;
-      }
+        bytes += key.size() + value.size();
+      }/* else if (!s.IsNotFound()) {
+        fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+        abort();
+      }*/
 
       if (thread->shared->read_rate_limiter.get() != nullptr &&
           read % 256 == 255) {
@@ -1937,7 +1942,8 @@ class Benchmark {
     //Slice key = AllocateKey(&key_guard);
     std::string_view key = AllocateKey(&key_guard);
     //PinnableSlice pinnable_val;
-    std::string_view sv_val;
+    std::string value;
+    value.reserve(value_max);
     query.Initiate(ratio);
 
     // the limit of qps initiation
@@ -1961,7 +1967,9 @@ class Benchmark {
     }
 
     Duration duration(FLAGS_duration, reads_);
-    thread->op_time_arr->emplace_back(-1, Clock::NowNanos());
+    if (thread->op_time_arr) {
+      thread->op_time_arr->emplace_back(-1, Clock::NowNanos());
+    }
     while (!duration.Done(1)) {
       int64_t ini_rand, rand_v, key_rand, key_seed;
       ini_rand = GetRandomKey(&thread->rand);
@@ -2026,11 +2034,11 @@ class Benchmark {
         //                           &pinnable_val);
         //}
         //pinnable_val.Reset();
-        s = Get(thread->client, key, &sv_val);
+        s = Get(thread->client, key, &value);
 
         if (s == 0/* s.ok()*/) {
           found++;
-          bytes += key.size() + sv_val.size();
+          bytes += key.size() + value.size();
         }/* else if (!s.IsNotFound()) {
           fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
           abort();
@@ -2099,7 +2107,9 @@ class Benchmark {
         thread->stats.FinishedOps(nullptr, 1, kSeek);
 #endif
       }
-      thread->op_time_arr->emplace_back(query_type, Clock::NowNanos());
+      if (thread->op_time_arr) {
+        thread->op_time_arr->emplace_back(query_type, Clock::NowNanos());
+      }
     }
     char msg[256];
     snprintf(msg, sizeof(msg),
@@ -2115,6 +2125,23 @@ class Benchmark {
     //}
   }
 
+  void RecoveryAfterMixGraph() {
+    fprintf(stdout, "> db_->PrintDebugLsmState(0);\n");
+    db_->PrintDebugLsmState(0);
+    fprintf(stdout, "> delete db_;\n");
+    delete db_;
+    fprintf(stdout, "> db_ = new ListDB();\n");
+    db_ = new ListDB();
+    fprintf(stdout, "> db_->Open();\n");
+    auto open_begin_tp = std::chrono::steady_clock::now();
+    db_->Open();
+    auto open_end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> open_dur = open_end_tp - open_begin_tp;
+    fprintf(stdout, "Open() time: %.3lf sec\n", open_dur.count());
+    fprintf(stdout, "> db_->PrintDebugLsmState(0);\n");
+    db_->PrintDebugLsmState(0);
+    fprintf(stdout, "\n");
+  }
 
 #ifdef IMNOTDEFINED
   bool binary_search(std::vector<int>& data, int start, int end, int key) {

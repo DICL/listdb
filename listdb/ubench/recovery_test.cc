@@ -28,11 +28,13 @@
 
 //#define COUNT_FOUND
 
-#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_zipf/loada_zipf_int.dat"
+//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_1M_zipf/loada_zipf_int.dat"
+#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf/loada_zipf_int.dat"
 
-constexpr int NUM_THREADS = 40;
-constexpr size_t NUM_LOADS = 10 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 1 * 1000 * 1000;
+constexpr int NUM_THREADS = 80;
+constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+//constexpr size_t NUM_LOADS = 1;
+constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
 constexpr int NUM_SHARDS = kNumShards;
 
@@ -93,7 +95,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
   ListDB* db = new ListDB();
   db->Init();
-  db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kStop);
+  //db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kStop);
   
   // Load
   {
@@ -123,18 +125,33 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
+  //std::this_thread::sleep_for(std::chrono::seconds(3));
+  //for (int i = 0; i < num_shards; i++) {
+  //  db->ManualFlushMemTable(i);
+  //}
+  //std::this_thread::sleep_for(std::chrono::seconds(35));
+  db->PrintDebugLsmState(0);
+#if 1
   std::this_thread::sleep_for(std::chrono::seconds(3));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  //std::this_thread::sleep_for(std::chrono::seconds(35));
+  std::this_thread::sleep_for(std::chrono::seconds(10));
   db->PrintDebugLsmState(0);
+#endif
 
-  fprintf(stdout, "\n");
+  fprintf(stdout, "> delete db;\n");
   delete db;
 
+  fprintf(stdout, "> db = new ListDB();\n");
   db = new ListDB();
+  fprintf(stdout, "> db->Open();\n");
+  auto open_begin_tp = std::chrono::steady_clock::now();
   db->Open();
+  auto open_end_tp = std::chrono::steady_clock::now();
+  std::chrono::duration<double> open_dur = open_end_tp - open_begin_tp;
+  fprintf(stdout, "Open() time: %.3lf sec\n", open_dur.count());
+  fprintf(stdout, "> db->PrintDebugLsmState(0);\n");
   db->PrintDebugLsmState(0);
   fprintf(stdout, "\n");
   delete db;

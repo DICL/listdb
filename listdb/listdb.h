@@ -31,6 +31,9 @@
 #include "listdb/lsm/pmemtable_list.h"
 #include "listdb/util/random.h"
 
+//#define L0_COMPACTION_ON_IDLE
+//#define ZIPPER_COMPACTION_YIELD
+
 namespace fs = std::experimental::filesystem::v1;
 
 class ListDB {
@@ -370,6 +373,7 @@ void ListDB::Open() {
     int pool_id = Pmem::BindPoolSet<pmem_log_root>(poolset, "");
     pool_id_to_region_[pool_id] = i;
     //auto pool = Pmem::pool<pmem_log_root>(pool_id);
+    l0_pool_id_[i] = pool_id;
 
     for (int j = 0; j < kNumShards; j++) {
       log_[i][j] = new PmemLog(pool_id, j);
@@ -386,6 +390,9 @@ void ListDB::Open() {
     }
   }
 #endif
+  for (int i = 0; i < kNumRegions; i++) {
+    l1_pool_id_[i] = l1_arena_[i][0]->pool_id();
+  }
 
   for (int i = 0; i < kNumShards; i++) {
     ll_[i] = new LevelList();
@@ -420,6 +427,16 @@ void ListDB::Open() {
     }
   }
 
+  std::atomic<int> memtable_recovery_cnt_total = 0;
+  std::atomic<int> l0_recovery_cnt_total = 0;
+  std::atomic<int> l0_persisted_cnt_total = 0;
+  std::atomic<int> merge_done_cnt_total = 0;
+  std::atomic<int> l1_recovery_cnt_total = 0;
+  std::atomic<size_t> mem_insert_cnt_total = 0;
+  std::atomic<size_t> l0_insert_cnt_total = 0;
+
+  auto recovery_begin_tp = std::chrono::steady_clock::now();
+  // read l1 info
   // read l0 info
   // check the status
   // classify the L0 tables according to the status
@@ -428,232 +445,299 @@ void ListDB::Open() {
   //  - recover as L1
 
   // TODO(wkim): Parallel execution.
-  for (int i = 0; i < kNumShards; i++) {
-    auto shard = db_root->shard[i];
+  std::vector<std::thread> recovery_workers;
+  static const int kNumRecoveryThreads = kNumShards;
+  for (int wid = 0; wid < kNumRecoveryThreads; wid++) {
+    recovery_workers.push_back(std::thread([&, wid] {
+      int memtable_recovery_cnt = 0;
+      int l0_recovery_cnt = 0;
+      int l0_persisted_cnt = 0;
+      int merge_done_cnt = 0;
+      int l1_recovery_cnt = 0;
+      size_t mem_insert_cnt = 0;
+      size_t l0_insert_cnt = 0;
+      int shard_begin = (kNumShards / kNumRecoveryThreads) * wid;
+      int shard_end = (kNumShards / kNumRecoveryThreads) * (wid + 1);
+      for (int i = shard_begin ; i < shard_end; i++) {
+        auto shard = db_root->shard[i];
 
-    auto memtable_list = GetTableList<MemTableList>(0, i);
-
-    // L0 list
-    // Initial -> Persist -> Persist -> ... -> Merging -> Merged -> Merged -> ...
-    auto pred_l0_info = shard->l0_list_head;
-    auto curr_l0_info = pred_l0_info->next;
-    std::deque<pmem::obj::persistent_ptr<pmem_l0_info>> l0_manifests;
-    uint64_t min_l0_id = std::numeric_limits<uint64_t>::max();
-    while (curr_l0_info) {
-      if (curr_l0_info->status == Level0Status::kMergeDone) {
-        for (int j = 0; j < kNumRegions; j++) {
-          size_t head_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * sizeof(uint64_t);
-          pmem::obj::delete_persistent_atomic<char[]>(curr_l0_info->head[j], head_node_size);
-        }
-        auto succ_l0_info = curr_l0_info->next;
-        // TODO(wkim): do the followings as a transaction
-        pred_l0_info->next = succ_l0_info;
-        pmem::obj::delete_persistent_atomic<pmem_l0_info>(curr_l0_info);
-        curr_l0_info = succ_l0_info;
-        continue;
-      }
-      min_l0_id = curr_l0_info->id;
-      l0_manifests.push_front(curr_l0_info);
-    }
-
-    // Collect log blocks
-    std::deque<pmem::obj::persistent_ptr<pmem_log_block>> log_blocks[kNumRegions];
-    for (int j = 0; j < kNumRegions; j++) {
-      //int pool_id = log_[j][i]->pool_id();
-      auto pool = log_[j][i]->pool();
-      auto log_shard = pool.root()->shard[i];
-      //curr_log_block[j] = log_shard->head;
-      //cursor[j].p_block = log_shard->head;
-      //cursor[j].data = cursor[j].p_block->data;
-      auto curr_block = log_shard->head;
-      while (curr_block) {
-        PmemNode* first_record = (PmemNode*) curr_block->data;
-        log_blocks[j].push_front(curr_block);
-        if (first_record->l0_id() < min_l0_id) {
-          break;
-        }
-        curr_block = curr_block->next;
-      }
-    }
-    // Init log cursor
-    struct LogCursor {
-      char* data = nullptr;
-      uint64_t offset = 0;
-      std::deque<pmem::obj::persistent_ptr<pmem_log_block>>::iterator block_iter;
-      //pmem::obj::persistent_ptr<pmem_log_block> p_block = nullptr;
-
-      char* p() { return data + offset; }
-    } cursor[kNumRegions];
-    for (int j = 0; j < kNumRegions; j++) {
-      cursor[j].block_iter = log_blocks[j].begin();
-      cursor[j].data = (*(cursor[j].block_iter))->data;
-    }
-
-    std::deque<Table*> tables;
-    // l0_manifests: oldest to newest
-    for (auto& l0 : l0_manifests) {
-      // Prepare L0 SkipList
-      auto l0_skiplist = new BraidedPmemSkipList();
-      for (int j = 0; j < kNumRegions; j++) {
-        int pool_id = log_[j][i]->pool_id();
-        int region = pool_id_to_region_[pool_id];
-        l0_skiplist->BindArena(pool_id, log_[j][i]);
-        l0_skiplist->BindHead(pool_id, (void*) l0->head[region].get());
-      }
-
-      if (l0->status == Level0Status::kMergeInitiated) {
-        // TODO(wkim): Continue and finish L0 to L1 compaction
-      } else if (l0->status == Level0Status::kPersisted) {
-        auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
-        l0_table->SetSize(kMemTableCapacity);
-        //memtable_list->PushFront(l0_table);
-        tables.push_back((Table*) l0_table);
-      } else if (l0->status == Level0Status::kFull) {
-        // Reset L0 skiplist
-        for (int j = 0; j < kNumRegions; j++) {
-          int pool_id = log_[j][i]->pool_id();
-          auto p_head = l0_skiplist->head(pool_id);
-          for (int k = 0; k < kMaxHeight; k++) {
-            p_head->next[k] = 0;
+        // read l1 info
+        auto l1_info = shard->l1_info;
+        if (l1_info) {
+          l1_recovery_cnt++;
+          // Prepare L1 SkipList
+          auto l1_skiplist = new BraidedPmemSkipList();
+          for (int j = 0; j < kNumRegions; j++) {
+            int pool_id = l1_pool_id_[j];
+            l1_skiplist->BindArena(pool_id, l1_arena_[j][i]);
+            l1_skiplist->BindHead(pool_id, (void*) l1_info->head[j].get());
           }
+          auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l1_skiplist);
+          //l1_table->SetSize(kMemTableCapacity);
+          auto l1_tl = ll_[i]->GetTableList(1);
+          l1_tl->SetFront(l1_table);
         }
 
-        // Replay Log
-        for (int j = 0; j < kNumRegions; j++) {
-          int pool_id = log_[j][i]->pool_id();
-          auto pool = log_[j][i]->pool();
-          //auto log_shard = pool.root()->shard[i];
-
-          bool current_table_done = false;
-          while (cursor[j].block_iter != log_blocks[j].end()) {
-            while (cursor[j].offset < kPmemLogBlockSize) {
-              char* p = cursor[j].p();
-              PmemNode* p_node = (PmemNode*) p;
-              if (p_node->key == 0) {
-                break;
-              }
-              if (p_node->l0_id() > l0->id) {
-                current_table_done = true;
-                break;
-              }
-              if (p_node->l0_id() == l0->id) {
-                // DO REPLAY
-                PmemPtr node_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
-                l0_skiplist->Insert(node_paddr);
-
-              }
-              int height = p_node->height();
-              size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-              cursor[j].offset += iul_entry_size;
+        auto memtable_list = GetTableList<MemTableList>(0, i);
+        // L0 list
+        // Initial -> Persist -> Persist -> ... -> Merging -> Merged -> Merged -> ...
+        auto pred_l0_info = shard->l0_list_head;
+        auto curr_l0_info = pred_l0_info->next;
+        std::deque<pmem::obj::persistent_ptr<pmem_l0_info>> l0_manifests;
+        uint64_t min_l0_id = std::numeric_limits<uint64_t>::max();
+        while (curr_l0_info) {
+          if (curr_l0_info->status == Level0Status::kMergeDone) {
+            merge_done_cnt++;
+            for (int j = 0; j < kNumRegions; j++) {
+              size_t head_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * sizeof(uint64_t);
+              pmem::obj::delete_persistent_atomic<char[]>(curr_l0_info->head[j], head_node_size);
             }
-            if (current_table_done)  {
+            auto succ_l0_info = curr_l0_info->next;
+            // TODO(wkim): do the followings as a transaction
+            pred_l0_info->next = succ_l0_info;
+            pmem::obj::delete_persistent_atomic<pmem_l0_info>(curr_l0_info);
+            curr_l0_info = succ_l0_info;
+            continue;
+          }
+          min_l0_id = curr_l0_info->id;
+          l0_manifests.push_front(curr_l0_info);
+          curr_l0_info = curr_l0_info->next;
+        }
+
+        // Collect log blocks
+        std::deque<pmem::obj::persistent_ptr<pmem_log_block>> log_blocks[kNumRegions];
+        for (int j = 0; j < kNumRegions; j++) {
+          //int pool_id = log_[j][i]->pool_id();
+          auto pool = log_[j][i]->pool();
+          auto log_shard = pool.root()->shard[i];
+          //curr_log_block[j] = log_shard->head;
+          //cursor[j].p_block = log_shard->head;
+          //cursor[j].data = cursor[j].p_block->data;
+          auto curr_block = log_shard->head;
+          while (curr_block) {
+            PmemNode* first_record = (PmemNode*) curr_block->data;
+            log_blocks[j].push_front(curr_block);
+            if (first_record->l0_id() < min_l0_id) {
               break;
             }
-            ++cursor[j].block_iter;
-            if (cursor[j].block_iter != log_blocks[j].end()) {
-              cursor[j].data = (*(cursor[j].block_iter))->data;
-              cursor[j].offset = 0;
-            }
+            curr_block = curr_block->next;
           }
         }
+        // Init log cursor
+        struct LogCursor {
+          char* data = nullptr;
+          uint64_t offset = 0;
+          std::deque<pmem::obj::persistent_ptr<pmem_log_block>>::iterator block_iter;
+          //pmem::obj::persistent_ptr<pmem_log_block> p_block = nullptr;
 
-        auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
-        l0_table->SetSize(kMemTableCapacity);
-        //memtable_list->PushFront(l0_table);
-        tables.push_back((Table*) l0_table);
-      } else if (l0->status == Level0Status::kInitialized) {
-        // Reset L0 skiplist
+          char* p() { return data + offset; }
+        } cursor[kNumRegions];
         for (int j = 0; j < kNumRegions; j++) {
-          int pool_id = log_[j][i]->pool_id();
-          auto p_head = l0_skiplist->head(pool_id);
-          for (int k = 0; k < kMaxHeight; k++) {
-            p_head->next[k] = 0;
-          }
+          cursor[j].block_iter = log_blocks[j].begin();
+          cursor[j].data = (*(cursor[j].block_iter))->data;
         }
 
-        // Init MemTable SkipList
-        auto memtable = new MemTable(kMemTableCapacity);
-        memtable->SetL0SkipList(l0_skiplist);
-        auto skiplist = memtable->skiplist();
-        size_t kv_size_total = 0;
-
-        // Replay Log
-        for (int j = 0; j < kNumRegions; j++) {
-          int pool_id = log_[j][i]->pool_id();
-          auto pool = log_[j][i]->pool();
-          //auto log_shard = pool.root()->shard[i];
-
-          bool current_table_done = false;
-          while (cursor[j].block_iter != log_blocks[j].end()) {
-            while (cursor[j].offset < kPmemLogBlockSize) {
-              char* p = cursor[j].p();
-              PmemNode* p_node = (PmemNode*) p;
-              if (p_node->key == 0) {
-                break;
-              }
-              if (p_node->l0_id() > l0->id) {
-                current_table_done = true;
-                break;
-              }
-              int height = p_node->height();
-              if (p_node->l0_id() == l0->id) {
-                // DO REPLAY
-                PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
-
-                // Create skiplist node
-                MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
-                node->key = p_node->key;
-                node->tag = height;
-                node->value = log_paddr.dump();
-                memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
-
-                kv_size_total += node->key.size() + sizeof(Value);
-
-                skiplist->Insert(node);
-              }
-              size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-              cursor[j].offset += iul_entry_size;
-            }
-            if (current_table_done)  {
-              break;
-            }
-            ++cursor[j].block_iter;
-            if (cursor[j].block_iter != log_blocks[j].end()) {
-              cursor[j].data = (*(cursor[j].block_iter))->data;
-              cursor[j].offset = 0;
-            }
+        std::deque<Table*> tables;
+        // l0_manifests: oldest to newest
+        for (auto& l0 : l0_manifests) {
+          // Prepare L0 SkipList
+          auto l0_skiplist = new BraidedPmemSkipList();
+          for (int j = 0; j < kNumRegions; j++) {
+            int pool_id = log_[j][i]->pool_id();
+            int region = pool_id_to_region_[pool_id];
+            l0_skiplist->BindArena(pool_id, log_[j][i]);
+            l0_skiplist->BindHead(pool_id, (void*) l0->head[region].get());
           }
+
+          if (l0->status == Level0Status::kMergeInitiated) {
+            fprintf(stdout, "Level0Status::kMergeInitiated.\n");
+            exit(1);
+            // TODO(wkim): Continue and finish L0 to L1 compaction
+          } else if (l0->status == Level0Status::kPersisted) {
+            l0_persisted_cnt++;
+            auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+            l0_table->SetSize(kMemTableCapacity);
+            //memtable_list->PushFront(l0_table);
+            tables.push_back((Table*) l0_table);
+          } else if (l0->status == Level0Status::kFull) {
+            l0_recovery_cnt++;
+            // Reset L0 skiplist
+            for (int j = 0; j < kNumRegions; j++) {
+              int pool_id = log_[j][i]->pool_id();
+              auto p_head = l0_skiplist->head(pool_id);
+              for (int k = 0; k < kMaxHeight; k++) {
+                p_head->next[k] = 0;
+              }
+            }
+
+            // Replay Log
+            for (int j = 0; j < kNumRegions; j++) {
+              int pool_id = log_[j][i]->pool_id();
+              auto pool = log_[j][i]->pool();
+              //auto log_shard = pool.root()->shard[i];
+
+              bool current_table_done = false;
+              while (cursor[j].block_iter != log_blocks[j].end()) {
+                while (cursor[j].offset < kPmemLogBlockSize - 7) {
+                  char* p = cursor[j].p();
+                  PmemNode* p_node = (PmemNode*) p;
+                  if (!p_node->key.Valid()) {
+                    break;
+                  }
+        //fprintf(stdout, "key: %s,%zu\nheight=%d\nl0_id=%u/%lu\nvalue=%zu\n", std::string(p_node->key.data(), 8).c_str(), *((uint64_t*) &p_node->key), p_node->height(), p_node->l0_id(), l0->id, p_node->value);
+                  if (p_node->l0_id() > l0->id) {
+                    current_table_done = true;
+                    break;
+                  }
+                  if (p_node->l0_id() == l0->id) {
+                    // DO REPLAY
+                    PmemPtr node_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
+                    l0_skiplist->Insert(node_paddr);
+                    l0_insert_cnt++;
+                  }
+                  int height = p_node->height();
+                  size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+                  cursor[j].offset += iul_entry_size;
+                }
+                if (current_table_done)  {
+                  break;
+                }
+                ++cursor[j].block_iter;
+                if (cursor[j].block_iter != log_blocks[j].end()) {
+                  cursor[j].data = (*(cursor[j].block_iter))->data;
+                  cursor[j].offset = 0;
+                }
+              }
+            }
+
+            auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+            l0_table->SetSize(kMemTableCapacity);
+            //memtable_list->PushFront(l0_table);
+            tables.push_back((Table*) l0_table);
+          } else if (l0->status == Level0Status::kInitialized) {
+            memtable_recovery_cnt++;
+            // Reset L0 skiplist
+            for (int j = 0; j < kNumRegions; j++) {
+              int pool_id = log_[j][i]->pool_id();
+              auto p_head = l0_skiplist->head(pool_id);
+              for (int k = 0; k < kMaxHeight; k++) {
+                p_head->next[k] = 0;
+              }
+            }
+
+            // Init MemTable SkipList
+            auto memtable = new MemTable(kMemTableCapacity);
+            memtable->SetL0SkipList(l0_skiplist);
+            auto skiplist = memtable->skiplist();
+            size_t kv_size_total = 0;
+
+            // Replay Log
+            for (int j = 0; j < kNumRegions; j++) {
+              int pool_id = log_[j][i]->pool_id();
+              auto pool = log_[j][i]->pool();
+              //auto log_shard = pool.root()->shard[i];
+
+              bool current_table_done = false;
+              while (cursor[j].block_iter != log_blocks[j].end()) {
+                while (cursor[j].offset < kPmemLogBlockSize - 7) {
+                  char* p = cursor[j].p();
+                  PmemNode* p_node = (PmemNode*) p;
+                  if (!p_node->key.Valid()) {
+                    break;
+                  }
+        //fprintf(stdout, "key: %s,%zu\nheight=%d\nl0_id=%u/%lu\nvalue=%zu\n", std::string(p_node->key.data(), 8).c_str(), *((uint64_t*) &p_node->key), p_node->height(), p_node->l0_id(), l0->id, p_node->value);
+                  if (p_node->l0_id() > l0->id) {
+                    current_table_done = true;
+                    break;
+                  }
+                  int height = p_node->height();
+                  if (p_node->l0_id() == l0->id) {
+                    // DO REPLAY
+                    PmemPtr log_paddr(pool_id, (uint64_t) ((uintptr_t) p - (uintptr_t) pool.handle()));
+
+                    // Create skiplist node
+                    MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
+                    node->key = p_node->key;
+                    node->tag = height;
+                    node->value = log_paddr.dump();
+                    memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
+
+                    kv_size_total += node->key.size() + sizeof(Value);
+
+                    skiplist->Insert(node);
+                    mem_insert_cnt++;
+                  }
+                  size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+                  cursor[j].offset += iul_entry_size;
+                }
+                if (current_table_done)  {
+                  break;
+                }
+                ++cursor[j].block_iter;
+                if (cursor[j].block_iter != log_blocks[j].end()) {
+                  cursor[j].data = (*(cursor[j].block_iter))->data;
+                  cursor[j].offset = 0;
+                }
+              }
+            }
+            memtable->SetSize(kv_size_total);
+            //memtable_list->PushFront(memtable);
+            tables.push_back((Table*) memtable);
+          } else {
+            std::cerr << "Unknown L0 status.\n";
+            exit(1);
+          }
+
         }
-        memtable->SetSize(kv_size_total);
-        //memtable_list->PushFront(memtable);
-        tables.push_back((Table*) memtable);
-      } else {
-        std::cerr << "Unknown L0 status.\n";
-        exit(1);
+
+        // Build a MemTable List for this shard with individually initialized tables
+        // tables: oldest to newest
+        for (size_t i = 0; i < tables.size(); i++) {
+          if (i > 0) {
+           tables[i]->SetNext(tables[i - 1]);
+          }
+          memtable_list->PushFront(tables[i]);
+        }
+
       }
 
-    }
-
-    // Build a MemTable List for this shard with individually initialized tables
-    // tables: oldest to newest
-    for (size_t i = 0; i < tables.size(); i++) {
-      if (i > 0) {
-       tables[i]->SetNext(tables[i - 1]);
-      }
-      memtable_list->PushFront(tables[i]);
-    }
-
+      memtable_recovery_cnt_total.fetch_add(memtable_recovery_cnt);
+      l0_recovery_cnt_total.fetch_add(l0_recovery_cnt);
+      l0_persisted_cnt_total.fetch_add(l0_persisted_cnt);
+      merge_done_cnt_total.fetch_add(merge_done_cnt);
+      l1_recovery_cnt_total.fetch_add(l1_recovery_cnt);
+      mem_insert_cnt_total.fetch_add(mem_insert_cnt);
+      l0_insert_cnt_total.fetch_add(l0_insert_cnt);
+    }));
   }
+  for (auto& rw : recovery_workers) {
+    if (rw.joinable()) rw.join();
+  }
+  auto recovery_end_tp = std::chrono::steady_clock::now();
+  std::chrono::duration<double> recovery_duration = recovery_end_tp - recovery_begin_tp;
+  fprintf(stdout, "recovery time : %.3lf sec\n", recovery_duration.count());
+  fprintf(stdout, "recovery count:\n");
+  fprintf(stdout, "  -     memtable: %d\n", memtable_recovery_cnt_total.load());
+  fprintf(stdout, "  -           l0: %d\n", l0_recovery_cnt_total.load());
+  fprintf(stdout, "  - persisted l0: %d\n", l0_persisted_cnt_total.load());
+  fprintf(stdout, "  -           l1: %d\n", l1_recovery_cnt_total.load());
+  fprintf(stdout, "  -    merged l0: %d\n", merge_done_cnt_total.load());
+  fprintf(stdout, "mem insert cnt: %zu\n", mem_insert_cnt_total.load());
+  fprintf(stdout, " l0 insert cnt: %zu\n", l0_insert_cnt_total.load());
 }
 
 void ListDB::Close() {
   stop_ = true;
-  bg_thread_.join();
+  if (bg_thread_.joinable()) {
+    bg_thread_.join();
+  }
 
   for (int i = 0; i < kNumWorkers; i++) {
     worker_data_[i].stop = true;
     worker_data_[i].cv.notify_one();
-    worker_threads_[i].join();
+    if (worker_threads_[i].joinable()) {
+      worker_threads_[i].join();
+    }
   }
 
   // Save log cursor info
@@ -689,12 +773,14 @@ void ListDB::BackgroundThreadLoop() {
     std::deque<Task*> new_work_requests;
     std::deque<Task*> work_completions;
     std::unique_lock<std::mutex> lk(wq_mu_);
+    bool schedule_l0_compaction;
     wq_cv_.wait_for(lk, std::chrono::seconds(1), [&]{
       //return !work_request_queue_.empty() || !work_completion_queue_.empty();
       return !work_request_queue_.empty() || !memtable_flush_requests.empty();
     });
     new_work_requests.swap(work_request_queue_);
     work_completions.swap(work_completion_queue_);
+    schedule_l0_compaction = (l0_compaction_scheduler_status_ == ServiceStatus::kActive);
     lk.unlock();
 
     for (auto& task : work_completions) {
@@ -718,8 +804,7 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }
-
-    if (l0_compaction_scheduler_status_ == ServiceStatus::kActive) {
+    if (schedule_l0_compaction) {
       for (int i = 0; i < kNumShards; i++) {
         if (l0_compaction_state[i] == 0) {
           auto tl = ll_[i]->GetTableList(0);
@@ -771,7 +856,9 @@ void ListDB::BackgroundThreadLoop() {
           available_workers.pop_back();
         }
       }
+#ifdef L0_COMPACTION_ON_IDLE
       continue;
+#endif
     }
 
     //available_workers.clear();
@@ -935,6 +1022,7 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
   }
 
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  l0_table->SetManifest(task->imm->l0_manifest());
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   //task->imm->FinalizeFlush();
@@ -1001,12 +1089,16 @@ void ListDB::ManualFlushMemTable(int shard) {
   }
 
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  l0_table->SetManifest(reinterpret_cast<MemTable*>(table)->l0_manifest());
   reinterpret_cast<MemTable*>(table)->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   tl->CleanUpFlushedImmutables();
 }
 
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
+  auto l0_manifest = task->l0->manifest<pmem_l0_info>();
+  l0_manifest->status = Level0Status::kMergeInitiated;
+  // call clwb
 #if 0
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
@@ -1169,7 +1261,33 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
+#if 0
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+#else
+    // Init the new manifest for a new table
+    pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
+    auto db_pool = Pmem::pool<pmem_db>(0);
+    pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
+    auto db_root = db_pool.root();
+    auto shard_manifest = db_root->shard[task->shard];
+    //l1_manifest->id = ??;
+    BraidedPmemSkipList* l1_skiplist = new BraidedPmemSkipList();
+    for (int i = 0; i < kNumRegions; i++) {
+      l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
+    }
+    l1_skiplist->Init();
+    for (int i = 0; i < kNumRegions; i++) {
+      auto p_head = l1_skiplist->p_head(l1_pool_id_[i]);
+      PmemNode* head = (PmemNode*) p_head.get();
+      PmemNode* l0_head = l0_skiplist->head(l0_pool_id_[i]);
+      for (int h = 0; h < head->height(); h++) {
+        head->next[h] = l0_head->next[h];
+      }
+      l1_manifest->head[i] = p_head;
+    }
+    shard_manifest->l1_info = l1_manifest;
+    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l1_skiplist);
+#endif
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {
@@ -1184,6 +1302,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
         break;
       }
     }
+    // Update manifest
+    l0_manifest->status = Level0Status::kMergeDone;
+    // call clwb
     return;
   }
   auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
@@ -1206,7 +1327,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   // 1. Scan
   while (true) {
+#ifdef ZIPPER_COMPACTION_YIELD
     std::this_thread::yield();
+#endif
     auto l0_node = node_paddr.get<Node>();
     if (l0_node == nullptr) {
       break;
@@ -1258,12 +1381,18 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   //  print_debug = true;
   //}
   while (!zstack.empty()) {
+#ifdef ZIPPER_COMPACTION_YIELD
     std::this_thread::yield();
+#endif
     auto& z = zstack.top();
     auto l0_node = z->node_paddr.get<Node>();
     {
       l0_node->next[0] = z->preds[0]->next[0];
+      clwb(&l0_node->next[0], 8);
+      _mm_sfence();
       z->preds[0]->next[0] = z->node_paddr.dump();
+      clwb(&z->preds[0]->next[0], 8);
+      _mm_sfence();
       //uint64_t tag = l0_node->tag;
       //tag |= 0x100;
       //l0_node->tag = tag;
@@ -1296,6 +1425,10 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
         [&](const MyType1 &a, const MyType1 &b) { return a.first > b.first; });
   }
 #endif
+
+  // Update manifest
+  l0_manifest->status = Level0Status::kMergeDone;
+  // call clwb
 
   // Remove empty L0 from MemTableList
   //auto tl = ll_[task->shard]->GetTableList(0);
