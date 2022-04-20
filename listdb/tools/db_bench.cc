@@ -1102,21 +1102,19 @@ class Benchmark {
   DB* db() { return db_; }
 
  private:
-  int Put(DBClient* client, const std::string_view& key, const std::string_view& value) {
+  int listdb_Put(DBClient* client, const std::string_view& key, const std::string_view& value) {
     client->PutStringKV(key, value);
     return 0;
   }
 
-  int Get(DBClient* client, const std::string_view& key, std::string_view* value) {
+  int listdb_Get(DBClient* client, const std::string_view& key, std::string* value) {
     uint64_t value_addr;
     bool ret = client->GetStringKV(key, &value_addr);
     if (ret) {
       char* p = (char*) value_addr;
       size_t val_len = *((uint64_t*) p);
       p += sizeof(size_t);
-      std::string_view value_sv(p, val_len);
-      *value = value_sv;
-      //value->assign(value_sv);  // memcpy
+      value->assign(p, val_len);
       return 0;
     }
     return 1;
@@ -1501,6 +1499,7 @@ class Benchmark {
     RandomGenerator gen;
     //WriteBatch batch(/*reserved_bytes=*/0, /*max_bytes=*/0,
     //                 user_timestamp_size_);
+    int s;  // Status s;
     int64_t bytes = 0;
 
     std::unique_ptr<const char[]> key_guard;
@@ -1543,8 +1542,12 @@ class Benchmark {
         // once per write.
         thread->stats.ResetLastOpTime();
       }
-      thread->client->PutStringKV(key, val);
+      s = listdb_Put(thread->client, key, val);
       thread->stats.FinishedOps(nullptr, entries_per_batch_, kWrite);
+      if (s != 0/*!s.ok()*/) {
+        fprintf(stderr, "put error\n");
+        abort();
+      }
     }
     thread->stats.AddBytes(bytes);
   }
@@ -1636,15 +1639,15 @@ class Benchmark {
     //}
     std::unique_ptr<const char[]> key_guard;
     std::string_view key = AllocateKey(&key_guard);
-    uint64_t value_addr;
-    std::string value_read;
+    std::string value;
+    value.reserve(value_size);
 
     Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       key_rand = GetRandomKey(&thread->rand);
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       read++;
-      //Status s;
+      int s;  //Status s;
       //pinnable_val.Reset();
       //if (FLAGS_num_column_families > 1) {
       //  s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
@@ -1661,17 +1664,15 @@ class Benchmark {
       //  fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
       //  abort();
       //}
-      bool ret;
-      ret = thread->client->GetStringKV(key, &value_addr);
-      if (ret) {
-        char* p = (char*) value_addr;
-        size_t val_len = *((uint64_t*) p);
-        p += sizeof(size_t);
-        std::string_view value_sv(p, val_len);
-        //value_read.assign(value_sv);  // memcpy
+      s = listdb_Get(thread->client, key, &value);
+
+      if (s == 0/* s.ok()*/) {
         found++;
-        bytes += key.size() + val_len;
-      }
+        bytes += key.size() + value.size();
+      }/* else if (!s.IsNotFound()) {
+        fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+        abort();
+      }*/
 
       if (thread->shared->read_rate_limiter.get() != nullptr &&
           read % 256 == 255) {
@@ -1937,7 +1938,8 @@ class Benchmark {
     //Slice key = AllocateKey(&key_guard);
     std::string_view key = AllocateKey(&key_guard);
     //PinnableSlice pinnable_val;
-    std::string_view sv_val;
+    std::string value;
+    value.reserve(value_max);
     query.Initiate(ratio);
 
     // the limit of qps initiation
@@ -2026,11 +2028,11 @@ class Benchmark {
         //                           &pinnable_val);
         //}
         //pinnable_val.Reset();
-        s = Get(thread->client, key, &sv_val);
+        s = listdb_Get(thread->client, key, &value);
 
         if (s == 0/* s.ok()*/) {
           found++;
-          bytes += key.size() + sv_val.size();
+          bytes += key.size() + value.size();
         }/* else if (!s.IsNotFound()) {
           fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
           abort();
@@ -2053,7 +2055,7 @@ class Benchmark {
         //s = db_with_cfh->db->Put(
         //    write_options_, key,
         //    gen.Generate(static_cast<unsigned int>(val_size)));
-        s = Put(thread->client, key, gen.Generate(static_cast<unsigned int>(val_size)));
+        s = listdb_Put(thread->client, key, gen.Generate(static_cast<unsigned int>(val_size)));
         //if (s == 0) {
         //  bytes += key.size() + val_size;
         //}
