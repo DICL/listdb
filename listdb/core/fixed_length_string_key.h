@@ -75,13 +75,15 @@ inline uint64_t FixedLengthStringKey<N>::key_num() const {
 
 template <std::size_t N>
 inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other) const {
-#if 0
+#ifdef DB_BENCH_LEVELDB_KEY
+  #if 0
   return strncmp(data_, other.data_, N);
-#endif
-#if 0
+  #endif
+  #if 1
   return memcmp(data_, other.data_, N);
-#endif
-#if 1
+  #endif
+#else
+  #if 1
   size_t pos = 0;
   while (pos + 8 <= N) {
     uint64_t* a = (uint64_t*) (data_ + pos);
@@ -95,8 +97,8 @@ inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other
     }
   }
   return memcmp(data_ + pos, other.data_ + pos, N - pos);
-#endif
-#if 0
+  #endif
+  #if 0
   size_t pos = 0;
   while (pos < N) {
     if (data_[pos] != other.data_[pos]) {
@@ -105,6 +107,7 @@ inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other
     pos++;
   }
   return 0;
+  #endif
 #endif
 }
 

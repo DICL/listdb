@@ -8,6 +8,7 @@ set(CMAKE_CXX_COMPILER "g++")
 option(DEBUG "build debug mode." OFF)
 option(STRING_KEY "string key mode." OFF)
 option(WISCKEY "Store values in Wisckey manner." OFF)
+option(LEVELDB_KEY "snprintf" OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
@@ -31,6 +32,13 @@ if(WISCKEY)
 else()
   message("[X] WISCKEY disabled.")
 endif(WISCKEY)
+
+if(LEVELDB_KEY)
+  message("[O] LEVELDB_KEY ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDB_BENCH_LEVELDB_KEY")
+else()
+  message("[X] LEVELDB_KEY disabled.")
+endif(LEVELDB_KEY)
 
 ##
 # GFLAGS

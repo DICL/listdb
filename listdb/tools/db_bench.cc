@@ -893,7 +893,11 @@ class Benchmark {
   }
 
   std::string_view AllocateKey(std::unique_ptr<const char[]>* key_guard) {
+#ifndef DB_BENCH_LEVELDB_KEY
     char* data = new char[key_size_];
+#else
+    char* data = new char[1024];
+#endif
     const char* const_data = data;
     key_guard->reset(const_data);
     return std::string_view(key_guard->get(), key_size_);
@@ -914,6 +918,7 @@ class Benchmark {
   //     |        key 00000         |
   //     ----------------------------
   void GenerateKeyFromInt(uint64_t v, int64_t num_keys, std::string_view* key) {
+#ifndef DB_BENCH_LEVELDB_KEY
     char* start = const_cast<char*>(key->data());
     char* pos = start;
 
@@ -929,6 +934,10 @@ class Benchmark {
     if (key_size_ > pos - start) {
       memset(pos, '0', key_size_ - (pos - start));
     }
+#else
+    char* buffer = const_cast<char*>(key->data());
+    std::snprintf(buffer, 1024, "%016d", (int) v);
+#endif
   }
 
   void Run() {
