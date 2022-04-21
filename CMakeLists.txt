@@ -8,6 +8,7 @@ set(CMAKE_CXX_COMPILER "g++")
 option(DEBUG "build debug mode." OFF)
 option(STRING_KEY "string key mode." OFF)
 option(WISCKEY "Store values in Wisckey manner." OFF)
+option(SKIPLIST_CACHE "SkipListCache." OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
@@ -31,6 +32,13 @@ if(WISCKEY)
 else()
   message("[X] WISCKEY disabled.")
 endif(WISCKEY)
+
+if(SKIPLIST_CACHE)
+  message("[O] SKIPLIST CACHE ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_SKIPLIST_CACHE")
+else()
+  message("[X] SKIPLIST CACHE KEY disabled.")
+endif(SKIPLIST_CACHE)
 
 ##
 # GFLAGS
@@ -81,6 +89,7 @@ if(STRING_KEY)
 set(test_srcs
   listdb/pmem/pmem_test.cc
   listdb/lib/numa_test.cc
+  listdb/core/skiplist_cache_test.cc
   )
 else()
 set(test_srcs
@@ -88,6 +97,7 @@ set(test_srcs
   listdb/lib/numa_test.cc
   listdb/db_client_test.cc
   listdb/index/braided_pmem_skiplist_test.cc
+  listdb/core/skiplist_cache_test.cc
   )
 endif(STRING_KEY)
 foreach (test_src ${test_srcs})

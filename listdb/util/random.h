@@ -3,6 +3,7 @@
 
 #include <climits>
 #include <random>
+#include <thread>
 
 #include "listdb/port/likely.h"
 

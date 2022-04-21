@@ -18,7 +18,7 @@
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 48;
+constexpr size_t kStringKeyLength = 8;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t
@@ -43,6 +43,13 @@ constexpr int kMaxHeight = 15;
 #ifdef LISTDB_L1_LRU
 constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
+#endif
+
+#ifdef LISTDB_SKIPLIST_CACHE
+constexpr uint16_t kSkipListCacheMaxHeight = 12;
+constexpr uint16_t kSkipListCacheBranching = 4;
+constexpr uint32_t kSkipListCacheScaledInverseBranching = (uint32_t{2147483647L} + 1) / kSkipListCacheBranching;
+constexpr size_t kSkipListCacheCapacity = (300ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
