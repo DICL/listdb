@@ -1367,16 +1367,20 @@ class Benchmark {
     if (arg[0].thread->op_time_arr) {
       fs::remove_all("op_time_output");
       fs::create_directories("op_time_output");
+      std::vector<std::thread> dump_threads;
       for (int i = 0; i < n; i++) {
-        std::stringstream fname_ss;
-        fname_ss << "op_time_output/" << arg[i].thread->tid << ".dat";
-        std::string fname = fname_ss.str();
-        std::fstream strm(fname, strm.out);
-        for (auto& it : *arg[i].thread->op_time_arr) {
-          strm << it.first << " " << it.second << std::endl;
-        }
-        strm.close();
+        dump_threads.push_back(std::thread([&, i]{
+          std::stringstream fname_ss;
+          fname_ss << "op_time_output/" << arg[i].thread->tid << ".dat";
+          std::string fname = fname_ss.str();
+          std::fstream strm(fname, strm.out);
+          for (auto& it : *arg[i].thread->op_time_arr) {
+            strm << it.first << " " << it.second << std::endl;
+          }
+          strm.close();
+        }));
       }
+      for (auto& t : dump_threads) { if (t.joinable()) t.join(); }
     }
 
     for (int i = 0; i < n; i++) {
