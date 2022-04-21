@@ -484,7 +484,7 @@ void ListDB::BackgroundThreadLoop() {
 }
 
 void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
-  td->rnd.SetSeed((td->id + 1) * (td->id + 1));
+  td->rnd.Reset((td->id + 1) * (td->id + 1));
   while (true) {
     std::unique_lock<std::mutex> lk(td->mu);
     td->cv.wait(lk, [&]{ return td->stop || !td->q.empty(); });

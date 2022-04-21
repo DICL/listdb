@@ -1,28 +1,36 @@
 #ifndef LISTDB_UTIL_RANDOM_H_
 #define LISTDB_UTIL_RANDOM_H_
 
+#include <climits>
 #include <random>
 
+#include "listdb/port/likely.h"
+
+// A very simple random number generator.  Not especially good at
+// generating truly random bits, but good enough for our needs in this
+// package.
 class Random {
  private:
+  enum : uint32_t {
+    M = 2147483647L  // 2^31-1
+  };
+  enum : uint64_t {
+    A = 16807  // bits 14, 8, 7, 5, 2, 1, 0
+  };
+
   uint32_t seed_;
+
+  static uint32_t GoodSeed(uint32_t s) { return (s & M) != 0 ? (s & M) : 1; }
+
  public:
-  explicit Random(uint32_t s) : seed_(s & 0x7fffffffu) {
-    if (seed_ == 0 || seed_ == 2147483647L) {
-      // Avoid bad seeds.
-      seed_ = 1;
-    }
-  }
-  void SetSeed(uint32_t s) {
-    seed_ = s;
-    if (seed_ == 0 || seed_ == 2147483647L) {
-      // Avoid bad seeds.
-      seed_ = 1;
-    }
-  }
+  // This is the largest value that can be returned from Next()
+  enum : uint32_t { kMaxNext = M };
+
+  explicit Random(uint32_t s) : seed_(GoodSeed(s)) {}
+
+  void Reset(uint32_t s) { seed_ = GoodSeed(s); }
+
   uint32_t Next() {
-    static const uint32_t M = 2147483647L;   // 2^31-1
-    static const uint64_t A = 16807;  // bits 14, 8, 7, 5, 2, 1, 0
     // We are computing
     //       seed_ = (seed_ * A) % M,    where M = 2^31-1
     //
@@ -41,13 +49,27 @@ class Random {
     }
     return seed_;
   }
+
+  uint64_t Next64() { return (uint64_t{Next()} << 32) | Next(); }
+
   // Returns a uniformly distributed value in the range [0..n-1]
   // REQUIRES: n > 0
   uint32_t Uniform(int n) { return Next() % n; }
 
   // Randomly returns true ~"1/n" of the time, and false otherwise.
   // REQUIRES: n > 0
-  bool OneIn(int n) { return (Next() % n) == 0; }
+  bool OneIn(int n) { return Uniform(n) == 0; }
+
+  // "Optional" one-in-n, where 0 or negative always returns false
+  // (may or may not consume a random value)
+  bool OneInOpt(int n) { return n > 0 && OneIn(n); }
+
+  // Returns random bool that is true for the given percentage of
+  // calls on average. Zero or less is always false and 100 or more
+  // is always true (may or may not consume a random value)
+  bool PercentTrue(int percentage) {
+    return static_cast<int>(Uniform(100)) < percentage;
+  }
 
   // Skewed: pick "base" uniformly from range [0,max_log] and then
   // return "base" random bits.  The effect is to pick a number in the
@@ -56,15 +78,59 @@ class Random {
     return Uniform(1 << Uniform(max_log + 1));
   }
 
-  std::string RandomString(int len) {
-    std::string ret;
-    ret.resize(len);
-    for (int i = 0; i < len; i++) {
-      ret[i] = static_cast<char>(' ' + Uniform(95));  // ' ' .. '~'
-    }
-    return ret;
-  }
+  // Returns a random string of length "len"
+  std::string RandomString(int len);
+
+  // Generates a random string of len bytes using human-readable characters
+  std::string HumanReadableString(int len);
+
+  // Generates a random binary data
+  std::string RandomBinaryString(int len);
+
+  // Returns a Random instance for use by the current thread without
+  // additional locking
+  static Random* GetTLSInstance();
 };
+
+Random* Random::GetTLSInstance() {
+  thread_local Random* tls_instance;
+  thread_local std::aligned_storage<sizeof(Random)>::type tls_instance_bytes;
+
+  auto rv = tls_instance;
+  if (UNLIKELY(rv == nullptr)) {
+    size_t seed = std::hash<std::thread::id>()(std::this_thread::get_id());
+    rv = new (&tls_instance_bytes) Random((uint32_t)seed);
+    tls_instance = rv;
+  }
+  return rv;
+}
+
+std::string Random::HumanReadableString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; ++i) {
+    ret[i] = static_cast<char>('a' + Uniform(26));
+  }
+  return ret;
+}
+
+std::string Random::RandomString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; i++) {
+    ret[i] = static_cast<char>(' ' + Uniform(95));  // ' ' .. '~'
+  }
+  return ret;
+}
+
+std::string Random::RandomBinaryString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; i++) {
+    ret[i] = static_cast<char>(Uniform(CHAR_MAX));
+  }
+  return ret;
+}
 
 // A good 64-bit random number generator based on std::mt19937_64
 class Random64 {
