@@ -9,7 +9,7 @@
 #include "listdb/util/random.h"
 
 // TODO(wkim): Undefine this after doing the relevant works. Refer `SkipListCache::size_`
-#define CACHE_SIZE_IS_MEMORY_FOOTPRINT
+#define CACHE_SIZE_IS_FIELD_COUNT
 
 template <std::size_t N>
 class SkipListCache {
@@ -67,6 +67,7 @@ class SkipListCache {
     bool IsFull() { return fields[N - 1].value != 0; }
 
     void MaybeShiftInsertField(const Key& key, int pnode_height, uint64_t offset) {
+      assert(IsFull() == false);
       unsigned int pos = 0;
       while (pos < N) {
         if (!fields[pos].IsEmpty() && fields[pos].key.Compare(key) >= 0) {
@@ -91,6 +92,17 @@ class SkipListCache {
       }
       fields[pos].Set(key, pnode_height, offset);
     }
+
+    void MaybeShiftDeleteFieldByPosition(unsigned int pos) {
+      while (pos < N) {
+        if (!fields[pos + 1].IsEmpty() && pos + 1 < N) {
+          fields[pos] = fields[pos + 1];
+        } else {
+          fields[pos].Reset();
+          return;
+        }
+      }
+    }
   };
 
   struct Cursor {
@@ -114,7 +126,7 @@ class SkipListCache {
   };
 
   // Constructor
-  SkipListCache(const int pool_id);
+  SkipListCache(const int pool_id, size_t capacity = kSkipListCacheCapacity);
 
   // Not thread-safe.
   // Only one background worker thread calls this.
@@ -141,22 +153,25 @@ class SkipListCache {
 
   void MaybeUpdateCursor(int height, const Key& key, Node* node);
 
+  int EvictSome(int height_upper);
+
   const int pool_id_;
   Node* head_;
+  size_t capacity_;
   // NOTE: size_ and capacity_ must represent used and free memory space respectively.
   // Since this requires a Merge operation, which is not implemented yet, for now, size_ represents the number of fields
   // occupied regardless of the actual memory consumption.
   // TODO(wkim): Impl. Merge and change the semantic of size and capacity.
   std::atomic<size_t> size_;
-  size_t capacity_ = kSkipListCacheCapacity;
   Cursor smallest_cursor_[kMaxHeight_];
   std::mutex mu_;
 };
 
 template <std::size_t N>
-SkipListCache<N>::SkipListCache(const int pool_id)
+SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
   : pool_id_(pool_id),
     head_(NewNode(uint64_t{0}, kMaxHeight_)),
+    capacity_(capacity),
     size_(0) {
   for (int i = 0; i < kMaxHeight_; i++) {
     head_->next[i].store(nullptr, std::memory_order_relaxed);
@@ -166,107 +181,108 @@ SkipListCache<N>::SkipListCache(const int pool_id)
 
 template <std::size_t N>
 int SkipListCache<N>::Insert(PmemNode* const p) {
+#ifdef CACHE_SIZE_IS_FIELD_COUNT
+  size_t curr_size = size_.load(std::memory_order_acquire);
+  if (curr_size + sizeof(Field) > capacity_) {
+    int num_evicted = EvictSome(p->height());
+    fprintf(stdout, "Full. evict_cnt=%d\n", num_evicted);
+    if (num_evicted == 0) {
+      // Full. Nothing to evict
+      return 1;
+    }
+  }
+#endif
+
   Key& key = p->key;
 
   // Insert new node into SkipList
   Node* preds[kMaxHeight_];
   Node* succs[kMaxHeight_];
-  //while (true) {
-    size_t curr_size = size_.load(std::memory_order_acquire);
-    Node* n = FindPosition(key, preds, succs);
-    if (n == nullptr) {
-      // Create a new node
-      int height = RandomHeight();
-      Node* x = NewNode(key, height, p);
-      for (int i = 0; i < height; i++) {
-        x->next[i].store(succs[i], std::memory_order_relaxed);
-        preds[i]->next[i].store(x, std::memory_order_release);
-      }
-      MaybeUpdateCursor(p->height(), key, x);
-    } else if (!n->IsFull()) {
-      n->MaybeShiftInsertField(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
-      MaybeUpdateCursor(p->height(), key, n);
-    } else if (curr_size + sizeof(Field) <= capacity_) {
-      // Split
-      fprintf(stdout, "split\n");
 
-      //for (int i = 0; i < kMaxHeight_; i++) {
-      //  if (smallest_cursor_[i].node == n) {
-      //  }
-
-      // Determine a split key
-      // preds -> A{ split_key } -> n{ old_key }
-      auto& split_field = n->fields[N/2];
-      auto& split_key = split_field.key;
-      PmemNode* split_pnode = DecodeFieldValue(split_field);
-
-      // Create a new node
-      int height = RandomHeight();
-#ifndef CACHE_SIZE_IS_MEMORY_FOOTPRINT
-      size_t node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
-      if (curr_size + node_size > capacity_) {
-        size_t available_space_for_height = capacity_ - (curr_size + (sizeof(Node) - 8));
-        height = available_space_for_height / 8;
-        node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
-        while (curr_size + node_size > capacity_ && height > 1) {
-          height--;
-          node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
-        }
-      }
-      size_.fetch_add(node_size, std::memory_order_release);
-#else
-      size_.fetch_add(sizeof(Field));
+  Node* n = FindPosition(key, preds, succs);
+  if (n == nullptr) {
+    // Create a new node
+    int height = RandomHeight();
+    Node* x = NewNode(key, height, p);
+    for (int i = 0; i < height; i++) {
+      x->next[i].store(succs[i], std::memory_order_relaxed);
+      preds[i]->next[i].store(x, std::memory_order_release);
+    }
+#ifdef CACHE_SIZE_IS_FIELD_COUNT
+    MaybeUpdateCursor(p->height(), key, x);
+    size_.fetch_add(sizeof(Field));
 #endif
-      Node* x = NewNode(split_key, height, split_pnode);  // TODO(wkim): Impl. NewNode(Field&, height)
+  } else if (!n->IsFull()) {
+    n->MaybeShiftInsertField(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
+    MaybeUpdateCursor(p->height(), key, n);
+#ifdef CACHE_SIZE_IS_FIELD_COUNT
+    size_.fetch_add(sizeof(Field));
+#endif
+  } else {
+    // Split
+    fprintf(stdout, "split\n");
 
-      bool insert_to_new_node = key.Compare(split_key) <= 0;
-      // Copy fields having the key < split_key
-      // smallest_cursor_ may be updated if a cursor points to the node containing the field to move to the new node.
-      int pos = 1;
-      if (insert_to_new_node) {
-        for (unsigned int i = N/2 + 1; i < N; i++) {
-          // Insertion in descending order prevents field shifts.
-          if (UNLIKELY(n->fields[i].key.Compare(key) < 0)) {
-            x->fields[pos++].Set(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
-          }
-          x->fields[pos++] = n->fields[i];
-        }
-      } else {
-        for (unsigned int i = N/2 + 1; i < N; i++) {
-          // Insertion in descending order prevents field shifts.
-          x->fields[pos++] = n->fields[i];
-        }
-      }
-      MaybeMoveCursor(n, N/2 + 1, N, x);
+    // Determine a split key
+    // preds -> A{ split_key } -> n{ old_key }
+    auto& split_field = n->fields[N/2];
+    auto& split_key = split_field.key;
+    PmemNode* split_pnode = DecodeFieldValue(split_field);
 
-      // Link the newely created node
-      for (int i = 0; i < height; i++) {
-        x->next[i].store(succs[i], std::memory_order_relaxed);
-        preds[i]->next[i].store(x, std::memory_order_release);
+    // Create a new node
+    int height = RandomHeight();
+#ifdef CACHE_SIZE_IS_FIELD_COUNT
+    size_.fetch_add(sizeof(Field));
+#else
+    size_t node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
+    if (curr_size + node_size > capacity_) {
+      size_t available_space_for_height = capacity_ - (curr_size + (sizeof(Node) - 8));
+      height = available_space_for_height / 8;
+      node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
+      while (curr_size + node_size > capacity_ && height > 1) {
+        height--;
+        node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
       }
-      // Cleanup
-      for (unsigned int i = N-1; i >= N/2; i--) {
-        n->fields[i].Reset();
-      }
-      if (insert_to_new_node) {
-        MaybeUpdateCursor(p->height(), key, x);
-      } else {
-        n->MaybeShiftInsertField(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
-        MaybeUpdateCursor(p->height(), key, n);
+    }
+    size_.fetch_add(node_size, std::memory_order_release);
+#endif
+    Node* x = NewNode(split_key, height, split_pnode);  // TODO(wkim): Impl. NewNode(Field&, height)
+
+    bool insert_to_new_node = key.Compare(split_key) <= 0;
+    // Copy fields having the key < split_key
+    // smallest_cursor_ may be updated if a cursor points to the node containing the field to move to the new node.
+    int pos = 1;
+    if (insert_to_new_node) {
+      for (unsigned int i = N/2 + 1; i < N; i++) {
+        // Insertion in descending order prevents field shifts.
+        if (UNLIKELY(n->fields[i].key.Compare(key) < 0)) {
+          x->fields[pos++].Set(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
+        }
+        x->fields[pos++] = n->fields[i];
       }
     } else {
-      // Evict
-      fprintf(stdout, "evict\n");
-
-      // Select victims
-      int pnode_height = p->height();
-      
-      // evict smallest heights first
-
-      return 1;
+      for (unsigned int i = N/2 + 1; i < N; i++) {
+        // Insertion in descending order prevents field shifts.
+        x->fields[pos++] = n->fields[i];
+      }
     }
-    //break;
-  //}
+    MaybeMoveCursor(n, N/2 + 1, N, x);
+
+    // Link the newely created node
+    for (int i = 0; i < height; i++) {
+      x->next[i].store(succs[i], std::memory_order_relaxed);
+      preds[i]->next[i].store(x, std::memory_order_release);
+    }
+    // Cleanup
+    for (unsigned int i = N-1; i >= N/2; i--) {
+      n->fields[i].Reset();
+    }
+    if (insert_to_new_node) {
+      MaybeUpdateCursor(p->height(), key, x);
+    } else {
+      n->MaybeShiftInsertField(key, p->height(), PmemPtr::OffsetOfVaddr(pool_id_, p));
+      MaybeUpdateCursor(p->height(), key, n);
+    }
+  }
   return 0;
 }
 
@@ -274,6 +290,9 @@ template <std::size_t N>
 typename SkipListCache<N>::PmemNode* SkipListCache<N>::LookupLessThan(const Key& key) {
   Node* preds[kMaxHeight_];
   Node* n = FindPosition(key, preds, nullptr);
+  if (n == nullptr) {
+    return nullptr;
+  }
   for (unsigned int i = 0; i < N; i++) {
     if (n->fields[i].IsEmpty()) {
       break;
@@ -378,11 +397,77 @@ void SkipListCache<N>::MaybeUpdateCursor(int height, const Key& key, Node* node)
 }
 
 template <std::size_t N>
+int SkipListCache<N>::EvictSome(int height_upper) {
+  // Evict
+
+  // evict lowest heights first
+  static const int kEvictionBatchSize = 4;
+  int eviction_cnt = 0;
+  int level = 0;
+  bool collection_done = false;
+  while (level < height_upper && !collection_done) {
+    if (smallest_cursor_[level].IsEmpty()) {
+      level++;
+      continue;
+    }
+    std::vector<std::pair<Node*, int>> victims;
+    Node* x = smallest_cursor_[level].node.load(std::memory_order_acquire);
+    while (x != nullptr && !collection_done) {
+      // TODO(wkim): Split node when field[pos = 0] should be evicted
+      // Since fields[pos = 0] contains node key, we need to split the node to evict fields[pos = 0]
+      // For now, we don't evict the node key. Collect the victim infos upto pos = 1.
+      unsigned int pos = N - 1;
+      while (pos > 0) {
+        if (!x->fields[pos].IsEmpty() && x->fields[pos].height() - 1 == level) {
+          //fprintf(stdout, "cursor points to node key (level=%d)\n", level);
+          victims.emplace_back(x, pos);
+          if (eviction_cnt + victims.size() > kEvictionBatchSize) {
+            collection_done = true;
+            break;
+          }
+        }
+        pos--;
+      }
+      x = x->next[0].load(std::memory_order_acquire);
+    }
+    // Update cursor
+    if (victims.size() > 0) {
+      auto& new_smallest = victims.back();
+      Node* candidate = new_smallest.first;
+      int index = new_smallest.second;
+      smallest_cursor_[level].Set(candidate->fields[index].key, candidate);
+      victims.pop_back();
+    }
+    // Drop victims
+    auto it = victims.begin();
+    while (it != victims.end()) {
+      std::vector<int> positions;
+      Node* x = it->first;
+      while (it != victims.end()) {
+        if (it->first == x) {
+          positions.push_back(it->second);
+        }
+        ++it;
+      }
+      for (auto& pos : positions) {
+        x->MaybeShiftDeleteFieldByPosition(pos);
+      }
+    }
+    eviction_cnt += victims.size();
+    level++;
+  }
+
+  size_.fetch_sub(eviction_cnt);
+
+  return eviction_cnt;
+}
+
+template <std::size_t N>
 void SkipListCache<N>::GetDebugString(const std::string& name, std::string* buf) {
   std::stringstream ss;
   if (name == "cursor") {
     for (int i = 0; i < kMaxHeight_; i++) {
-      ss << i << ": " << smallest_cursor_[i].key.key_num() << std::endl;
+      ss << i + 1 << ": " << smallest_cursor_[i].key.key_num() << std::endl;
     }
     buf->assign(std::move(ss.str()));
   }

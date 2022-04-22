@@ -93,15 +93,15 @@ int main() {
   InitPoolSet();
   log_ = new PmemLog(pool_id, 0);
 
-  auto c = new SkipListCache<4>(pool_id);
+  int n = 40;
+
+  auto c = new SkipListCache<4>(pool_id, 16 * n / 2);
 
   std::unique_ptr<const char[]> key_guard;
   std::string_view key = AllocateKey(&key_guard);
 
   Random64 rand(999);
   std::vector<uint64_t> randints;
-
-  int n = 20;
 
   for (int i = 0; i < n; i++) {
     randints.push_back(rand.Uniform(n<<3) + 1);
