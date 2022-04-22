@@ -1,6 +1,7 @@
 #ifndef LISTDB_CORE_SKIPLIST_CACHE_H_
 #define LISTDB_CORE_SKIPLIST_CACHE_H_
 
+#include <algorithm>
 #include <sstream>
 
 #include "listdb/common.h"
@@ -17,13 +18,13 @@ class SkipListCache {
   using PmemNode = BraidedPmemSkipList::Node;
   static const uint16_t kMaxHeight_ = kSkipListCacheMaxHeight;
   static const uint16_t kBranching_ = kSkipListCacheBranching;
-  static const uint32_t kScaledInverseBranching_ = kSkipListCacheScaledInverseBranching;
 
   struct Field {
     Key key;
     std::atomic<uint64_t> value;  // {L0 node height, pmem address offset}
 
     Field() : key(0), value(0) { }
+    Field(const Key& k, uint64_t v) : key(k), value(v) { }
     //Field(const Key& k, int h, uint64_t o) : key(k), value((static_cast<uint64_t>(h) << 48) | o) { }
 
     void Set(const Key& k, int height, uint64_t offset) {
@@ -36,7 +37,7 @@ class SkipListCache {
       value.store(0, std::memory_order_release);
     }
 
-    bool IsEmpty() {
+    bool IsEmpty() const {
       return value.load(std::memory_order_acquire) == 0;
     }
 
@@ -163,7 +164,7 @@ class SkipListCache {
   // occupied regardless of the actual memory consumption.
   // TODO(wkim): Impl. Merge and change the semantic of size and capacity.
   std::atomic<size_t> size_;
-  Cursor smallest_cursor_[kMaxHeight_];
+  Cursor smallest_cursor_[kMaxHeight];
   std::mutex mu_;
 };
 
@@ -185,7 +186,7 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
   size_t curr_size = size_.load(std::memory_order_acquire);
   if (curr_size + sizeof(Field) > capacity_) {
     int num_evicted = EvictSome(p->height());
-    fprintf(stdout, "Full. evict_cnt=%d\n", num_evicted);
+    //fprintf(stdout, "Full. evict_cnt=%d\n", num_evicted);
     if (num_evicted == 0) {
       // Full. Nothing to evict
       return 1;
@@ -220,7 +221,7 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
 #endif
   } else {
     // Split
-    fprintf(stdout, "split\n");
+    //fprintf(stdout, "split\n");
 
     // Determine a split key
     // preds -> A{ split_key } -> n{ old_key }
@@ -288,26 +289,61 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
 
 template <std::size_t N>
 typename SkipListCache<N>::PmemNode* SkipListCache<N>::LookupLessThan(const Key& key) {
+#if 1
   Node* preds[kMaxHeight_];
   Node* n = FindPosition(key, preds, nullptr);
-  if (n == nullptr) {
-    return nullptr;
-  }
-  for (unsigned int i = 0; i < N; i++) {
-    if (n->fields[i].IsEmpty()) {
-      break;
+  if (n != nullptr) {
+#if 1
+    for (unsigned int i = 0; i < N; i++) {
+      if (n->fields[i].IsEmpty()) {
+        break;
+      }
+      if (n->fields[i].key.Compare(key) < 0) {
+        return DecodeFieldValue(n->fields[i]);
+      }
     }
-    if (n->fields[i].key.Compare(key) < 0) {
-      return DecodeFieldValue(n->fields[i]);
+#else
+    int pa = 0;
+    int pb = N;
+    int i;
+    while (true) {
+      i = (pb + pa) / 2;
+      if (n->fields[i].IsEmpty()) {
+        pb = i;
+        continue;
+      }
     }
+    Field search_key(key, 1);
+    auto found = std::upper_bound(n->fields, n->fields + N, search_key,
+        [&](const Field& a, const Field& b) { return b.IsEmpty() || a.key.Compare(b.key) > 0; });
+    if (!found->IsEmpty()) {
+      return DecodeFieldValue(*found);
+    }
+#endif
   }
-  // TODO(wkim): make cache head points to the L0 head
   if (preds[0] != head_) {
     n = preds[0];
     return DecodeFieldValue(n->fields[0]);
-  } else {
-    return nullptr;
   }
+  return nullptr;
+#else
+  Node* preds[kMaxHeight_];
+  Node* n = FindPosition(key, preds, nullptr);
+  if (preds[0] != head_) {
+    n = preds[0];
+    return DecodeFieldValue(n->fields[0]);
+  } else if (n != nullptr) {
+    for (unsigned int i = 0; i < N; i++) {
+      if (n->fields[i].IsEmpty()) {
+        break;
+      }
+      if (n->fields[i].key.Compare(key) < 0) {
+        return DecodeFieldValue(n->fields[i]);
+      }
+    }
+  }
+  return nullptr;
+#endif
 }
 
 template <std::size_t N>
@@ -328,7 +364,7 @@ int SkipListCache<N>::RandomHeight() {
   auto rnd = Random::GetTLSInstance();
   // Increase height with probability 1 in kBranching
   int height = 1;
-  while (height < kMaxHeight_ && rnd->Next() < kScaledInverseBranching_) {
+  while (height < kMaxHeight_ && rnd->Next() % kBranching_ == 0) {
     height++;
   }
   return height;
@@ -457,7 +493,7 @@ int SkipListCache<N>::EvictSome(int height_upper) {
     level++;
   }
 
-  size_.fetch_sub(eviction_cnt);
+  size_.fetch_sub(eviction_cnt * sizeof(Field));
 
   return eviction_cnt;
 }

@@ -19,6 +19,9 @@
 #ifdef LISTDB_L1_LRU
 #include "listdb/core/lru_skiplist.h"
 #endif
+#ifdef LISTDB_SKIPLIST_CACHE
+#include "listdb/core/skiplist_cache.h"
+#endif
 #include "listdb/core/pmem_blob.h"
 #include "listdb/core/pmem_log.h"
 //#include "listdb/core/pmem_db.h"
@@ -85,6 +88,12 @@ class ListDB {
   PmemBlob* value_blob(const int region, const int shard) { return value_blob_[region][shard]; }
 #endif
 
+  int pool_id_to_region(const int pool_id) { return pool_id_to_region_[pool_id]; }
+
+  int l0_pool_id(const int region) { return l0_pool_id_[region]; }
+
+  int l1_pool_id(const int region) { return l1_pool_id_[region]; }
+
   // Background Works
   void BackgroundThreadLoop();
 
@@ -115,7 +124,9 @@ class ListDB {
     return total_size;
   }
 #endif
-  
+#ifdef LISTDB_SKIPLIST_CACHE
+  SkipListCacheRep* skiplist_cache(int s, int r) { return cache_[s][r]; }
+#endif
 
  private:
 #ifdef LISTDB_WISCKEY
@@ -130,6 +141,8 @@ class ListDB {
 #endif
 
   std::unordered_map<int, int> pool_id_to_region_;
+  std::unordered_map<int, int> l0_pool_id_;
+  std::unordered_map<int, int> l1_pool_id_;
 
   std::queue<MemTableFlushTask*> memtable_flush_queue_;
   std::mutex bg_mu_;
@@ -149,6 +162,10 @@ class ListDB {
 #ifdef LISTDB_L1_LRU
   std::vector<std::pair<uint64_t, uint64_t>> sorted_arr_[kNumRegions][kNumShards];
   LruSkipList* cache_[kNumShards][kNumRegions];
+#endif
+
+#ifdef LISTDB_SKIPLIST_CACHE
+  SkipListCacheRep* cache_[kNumShards][kNumRegions];
 #endif
 };
 
@@ -183,6 +200,7 @@ void ListDB::Init() {
 
     int pool_id = Pmem::BindPoolSet<pmem_log_root>(poolset, "");
     pool_id_to_region_[pool_id] = i;
+    l0_pool_id_[i] = pool_id;
     auto pool = Pmem::pool<pmem_log_root>(pool_id);
 
     for (int j = 0; j < kNumShards; j++) {
@@ -246,6 +264,9 @@ void ListDB::Init() {
     }
   }
 #endif
+  for (int i = 0; i < kNumRegions; i++) {
+    l1_pool_id_[i] = l1_arena_[i][0]->pool_id();
+  }
 
   for (int i = 0; i < kNumShards; i++) {
     ll_[i] = new LevelList();
@@ -284,6 +305,13 @@ void ListDB::Init() {
   for (int i = 0; i < kNumShards; i++) {
     for (int j = 0; j < kNumRegions; j++) {
       cache_[i][j] = new LruSkipList(100000000);
+    }
+  }
+#endif
+#ifdef LISTDB_SKIPLIST_CACHE
+  for (int i = 0; i < kNumShards; i++) {
+    for (int j = 0; j < kNumRegions; j++) {
+      cache_[i][j] = new SkipListCacheRep(l1_arena_[j][i]->pool_id(), kSkipListCacheCapacity / kNumShards / kNumRegions);
     }
   }
 #endif
@@ -954,6 +982,13 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
         lru_height++;
       }
       cache_[task->shard][region]->Insert(l0_node->key, z->node_paddr.dump(), lru_height);
+    }
+#endif
+
+#ifdef LISTDB_SKIPLIST_CACHE
+    if (l0_node->height() >= 5) {
+      int region = pool_id_to_region_[z->node_paddr.pool_id()];
+      cache_[task->shard][region]->Insert(l0_node);
     }
 #endif
     zstack.pop();

@@ -13,6 +13,12 @@ int main() {
   fprintf(stderr, "Please install gflags to run db_bench\n");
   return 1;
 }
+#elif !defined(LISTDB_STRING_KEY) || !defined(LISTDB_WISCKEY)
+#include <cstdio>
+int main() {
+  fprintf(stderr, "Please configure cmake with -DSTRING_KEY=ON -DWISCKEY=ON to run db_bench\n");
+  return 1;
+}
 #else
 #include <chrono>
 #include <condition_variable>

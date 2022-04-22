@@ -48,7 +48,11 @@ void InitPoolSet() {
   }
 }
 
-static int key_size_ = 8;
+#ifdef LISTDB_STRING_KEY
+static int key_size_ = kStringKeyLength;
+#else
+static int key_size_ = sizeof(uint64_t);
+#endif
 
 std::string_view AllocateKey(std::unique_ptr<const char[]>* key_guard) {
   char* data = new char[key_size_];

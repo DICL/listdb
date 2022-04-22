@@ -37,7 +37,7 @@ if(SKIPLIST_CACHE)
   message("[O] SKIPLIST CACHE ENABLED.")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_SKIPLIST_CACHE")
 else()
-  message("[X] SKIPLIST CACHE KEY disabled.")
+  message("[X] SKIPLIST CACHE disabled.")
 endif(SKIPLIST_CACHE)
 
 ##
