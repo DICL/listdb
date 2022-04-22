@@ -104,7 +104,7 @@ int main() {
   int n = 20;
 
   for (int i = 0; i < n; i++) {
-    randints.push_back(rand.Uniform(1000000) + 1);
+    randints.push_back(rand.Uniform(n<<3) + 1);
     std::cout << randints.back() << " ";
   }
   std::cout << std::endl;
@@ -123,7 +123,7 @@ int main() {
     std::cout << "lookup key: " << lkey_int << std::endl;
     GenerateKeyFromInt(lkey_int, &key);
     Key& lookup_key = *((Key*) key.data());
-    PmemNode* lt = c->Lookup(lookup_key);
+    PmemNode* lt = c->LookupLessThan(lookup_key);
     std::cout << lt << std::endl;
   }
   {
@@ -131,7 +131,7 @@ int main() {
     std::cout << "lookup key: " << lkey_int << std::endl;
     GenerateKeyFromInt(lkey_int, &key);
     Key& lookup_key = *((Key*) key.data());
-    PmemNode* lt = c->Lookup(lookup_key);
+    PmemNode* lt = c->LookupLessThan(lookup_key);
     std::cout << lt << std::endl;
   }
   {
@@ -139,13 +139,13 @@ int main() {
     std::cout << "lookup key: " << lkey_int << std::endl;
     GenerateKeyFromInt(lkey_int, &key);
     Key& lookup_key = *((Key*) key.data());
-    PmemNode* lt = c->Lookup(lookup_key);
+    PmemNode* lt = c->LookupLessThan(lookup_key);
     std::cout << lt << std::endl;
   }
 
-  for (int i = 0; i < n; i++) {
-  }
-
+  std::string debug_str;
+  c->GetDebugString("cursor", &debug_str);
+  std::cout << debug_str << std::endl;
 
   return 0;
 }
