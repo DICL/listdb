@@ -135,6 +135,9 @@ class SkipListCache {
 
   PmemNode* LookupLessThan(const Key& key);
 
+  // Returns 0 if equal, -1 lessthan, 1 not found
+  int LookupLessThanOrEqualsTo(const Key& key, PmemNode** out);
+
   void GetDebugString(const std::string& name, std::string* buf);
 
  private:
@@ -344,6 +347,34 @@ typename SkipListCache<N>::PmemNode* SkipListCache<N>::LookupLessThan(const Key&
   }
   return nullptr;
 #endif
+}
+
+template <std::size_t N>
+int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, PmemNode** out) {
+  Node* preds[kMaxHeight_];
+  Node* n = FindPosition(key, preds, nullptr);
+  if (n != nullptr) {
+    for (unsigned int i = 0; i < N; i++) {
+      if (n->fields[i].IsEmpty()) {
+        break;
+      }
+      int cmp = n->fields[i].key.Compare(key);
+      if (cmp == 0) {
+        *out = DecodeFieldValue(n->fields[i]);
+        return 0;
+      } else if (cmp < 0) {
+        *out = DecodeFieldValue(n->fields[i]);
+        return -1;
+      }
+    }
+  }
+  if (preds[0] != head_) {
+    n = preds[0];
+    *out = DecodeFieldValue(n->fields[0]);
+    return -1;
+  }
+  *out = nullptr;
+  return 1;
 }
 
 template <std::size_t N>

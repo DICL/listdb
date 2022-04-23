@@ -206,7 +206,6 @@ void DBClient::Put(const Key& key, const Value& value) {
 
 bool DBClient::Get(const Key& key, Value* value_out) {
   int s = KeyShard(key);
-#if 1
   {
     MemTableList* tl = (MemTableList*) db_->GetTableList(0, s);
 
@@ -266,19 +265,6 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
-#else
-  if (1) {
-    if (bsl_[s] == nullptr) {
-      auto tl = (PmemTableList*) db_->GetTableList(1, s);
-      auto table = tl->GetFront();
-      auto pmem = (PmemTable*) table;
-      auto skiplist = pmem->skiplist();
-      bsl_[s] = skiplist;
-    }
-    bsl_[s]->Lookup(key, region_ + 2);
-    return true;
-  }
-#endif
   return false;
 }
 
@@ -577,11 +563,25 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 #endif
 #ifdef LISTDB_SKIPLIST_CACHE
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  #if 0
   PmemNode* rv = c->LookupLessThan(key);
   if (rv) {
     pred = rv;
     height = pred->height();
   }
+  #else
+  PmemNode* lte_pnode = nullptr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
+  if (lte_pnode) {
+    if (rv == 0) {
+      return PmemPtr(pool_id, (char*) lte_pnode);
+    } else {
+      pred = lte_pnode;
+      height = pred->height();
+    }
+  }
+
+  #endif
 #endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
