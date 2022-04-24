@@ -140,6 +140,8 @@ class SkipListCache {
 
   void GetDebugString(const std::string& name, std::string* buf);
 
+  size_t AcquireLoadSize() { return size_.load(std::memory_order_acquire); }
+
  private:
   Node* NewNode(const Key& key, const int height, PmemNode* p = nullptr);
 

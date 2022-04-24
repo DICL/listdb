@@ -11,7 +11,7 @@
 
 //#define GROUP_LOGGING
 //#define L1_COW
-//#define LOOKUP_CACHE
+#define LOOKUP_CACHE
 
 #ifdef LISTDB_SKIPLIST_CACHE
 constexpr size_t kSkipListCacheCardinality = 4;
