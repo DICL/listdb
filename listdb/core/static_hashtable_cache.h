@@ -46,7 +46,7 @@ void StaticHashTableCache::Insert(const Key& key, PmemNode* const p) {
 StaticHashTableCache::PmemNode* StaticHashTableCache::Lookup(const Key& key) {
   uint32_t pos = Hash(key);
   PmemNode* value = buckets_[pos].value.load(std::memory_order_seq_cst);
-  if (value->key.Compare(key) == 0) {
+  if (value && value->key.Compare(key) == 0) {
     return value;
   }
   return nullptr;
