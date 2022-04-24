@@ -20,10 +20,10 @@ else()
 endif(DEBUG)
 
 if(STRING_KEY)
-  message("[O] STRING KEY ENABLED.")
+  message("[O] STRING_KEY ENABLED.")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_STRING_KEY")
 else()
-  message("[X] STRING KEY disabled.")
+  message("[X] STRING_KEY disabled.")
 endif(STRING_KEY)
 
 if(WISCKEY)
@@ -34,10 +34,10 @@ else()
 endif(WISCKEY)
 
 if(SKIPLIST_CACHE)
-  message("[O] SKIPLIST CACHE ENABLED.")
+  message("[O] SKIPLIST_CACHE ENABLED.")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_SKIPLIST_CACHE")
 else()
-  message("[X] SKIPLIST CACHE disabled.")
+  message("[X] SKIPLIST_CACHE disabled.")
 endif(SKIPLIST_CACHE)
 
 ##

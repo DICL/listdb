@@ -294,50 +294,9 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
 
 template <std::size_t N>
 typename SkipListCache<N>::PmemNode* SkipListCache<N>::LookupLessThan(const Key& key) {
-#if 1
   Node* preds[kMaxHeight_];
   Node* n = FindPosition(key, preds, nullptr);
   if (n != nullptr) {
-#if 1
-    for (unsigned int i = 0; i < N; i++) {
-      if (n->fields[i].IsEmpty()) {
-        break;
-      }
-      if (n->fields[i].key.Compare(key) < 0) {
-        return DecodeFieldValue(n->fields[i]);
-      }
-    }
-#else
-    int pa = 0;
-    int pb = N;
-    int i;
-    while (true) {
-      i = (pb + pa) / 2;
-      if (n->fields[i].IsEmpty()) {
-        pb = i;
-        continue;
-      }
-    }
-    Field search_key(key, 1);
-    auto found = std::upper_bound(n->fields, n->fields + N, search_key,
-        [&](const Field& a, const Field& b) { return b.IsEmpty() || a.key.Compare(b.key) > 0; });
-    if (!found->IsEmpty()) {
-      return DecodeFieldValue(*found);
-    }
-#endif
-  }
-  if (preds[0] != head_) {
-    n = preds[0];
-    return DecodeFieldValue(n->fields[0]);
-  }
-  return nullptr;
-#else
-  Node* preds[kMaxHeight_];
-  Node* n = FindPosition(key, preds, nullptr);
-  if (preds[0] != head_) {
-    n = preds[0];
-    return DecodeFieldValue(n->fields[0]);
-  } else if (n != nullptr) {
     for (unsigned int i = 0; i < N; i++) {
       if (n->fields[i].IsEmpty()) {
         break;
@@ -347,15 +306,20 @@ typename SkipListCache<N>::PmemNode* SkipListCache<N>::LookupLessThan(const Key&
       }
     }
   }
+  if (preds[0] != head_) {
+    n = preds[0];
+    return DecodeFieldValue(n->fields[0]);
+  }
   return nullptr;
-#endif
 }
 
+//#define SKIPLIST_CACHE_BINARY_SEARCH
 template <std::size_t N>
 int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, PmemNode** out) {
   Node* preds[kMaxHeight_];
   Node* n = FindPosition(key, preds, nullptr);
   if (n != nullptr) {
+#ifndef SKIPLIST_CACHE_BINARY_SEARCH
     for (unsigned int i = 0; i < N; i++) {
       if (n->fields[i].IsEmpty()) {
         break;
@@ -369,6 +333,37 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, PmemNode** out) {
         return -1;
       }
     }
+#else
+    unsigned int pa = 0;
+    unsigned int pb = N;
+    unsigned int i;
+    unsigned int last_lt_pos = N;
+    while (pa < pb) {
+      i = (pb + pa) / 2;
+      if (n->fields[i].IsEmpty()) {
+        pb = i;
+        continue;
+      }
+      int cmp = n->fields[i].key.Compare(key);
+      if (cmp == 0) {
+        *out = DecodeFieldValue(n->fields[i]);
+        return 0;
+      } else if (cmp > 0) {
+        pb = i;
+        // [0, N) -> [0, N/2) -> ... -> [0, 1) -> [0, 0)
+        continue;
+      } else {
+        last_lt_pos = i;
+        pa = i + 1;
+        // [0, N) -> [N/2 + 1, N) -> ... -> [N-1, N) -> [N, N)
+        continue;
+      }
+    }
+    if (last_lt_pos < N) {
+      *out = DecodeFieldValue(n->fields[last_lt_pos]);
+      return -1;
+    }
+#endif
   }
   if (preds[0] != head_) {
     n = preds[0];
@@ -378,6 +373,7 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, PmemNode** out) {
   *out = nullptr;
   return 1;
 }
+#undef SKIPLIST_CACHE_BINARY_SEARCH
 
 template <std::size_t N>
 typename SkipListCache<N>::Node* SkipListCache<N>::NewNode(const Key& key, const int height, PmemNode* p) {

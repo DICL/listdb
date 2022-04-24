@@ -12,11 +12,8 @@
 //#define GROUP_LOGGING
 //#define L1_COW
 #define LOOKUP_CACHE
+#define L0_STATIC_HASH
 
-#ifdef LISTDB_SKIPLIST_CACHE
-constexpr size_t kSkipListCacheCardinality = 4;
-#define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
-#endif
 
 #ifndef LISTDB_STRING_KEY
 #include "listdb/core/integer_key.h"
@@ -51,9 +48,14 @@ constexpr int kLruMaxHeight = 20;
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-constexpr uint16_t kSkipListCacheMaxHeight = 12;
+constexpr size_t kSkipListCacheCardinality = 4;
+#define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
+
+constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
-constexpr size_t kSkipListCacheCapacity = (500ull << 20);
+
+constexpr int kSkipListCacheMinPmemHeight = 6;
+constexpr size_t kSkipListCacheCapacity = (90ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
@@ -68,9 +70,14 @@ constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 //constexpr uint64_t kHTMask = 0x0fffffff;
 #ifndef LISTDB_SKIPLIST_CACHE
 //constexpr size_t kHTSize = kHTMask + 1;
-constexpr size_t kHTSize = 200ull * 1000 * 1000;
+constexpr size_t kHTSize = 150ull * 1000 * 1000;
 #else
-constexpr size_t kHTSize = ((1500ull<<20) - kSkipListCacheCapacity) / 16;
+#ifdef L0_STATIC_HASH
+//constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 8;
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
+#else
+constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 24;
+#endif
 #endif
 
 enum ValueType {

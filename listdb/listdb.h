@@ -24,6 +24,7 @@
 #endif
 #include "listdb/core/pmem_blob.h"
 #include "listdb/core/pmem_log.h"
+#include "listdb/core/static_hashtable_cache.h"
 //#include "listdb/core/pmem_db.h"
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
@@ -32,6 +33,7 @@
 #include "listdb/lsm/memtable_list.h"
 #include "listdb/lsm/pmemtable.h"
 #include "listdb/lsm/pmemtable_list.h"
+#include "listdb/util/clock.h"
 #include "listdb/util/random.h"
 
 namespace fs = std::experimental::filesystem::v1;
@@ -77,7 +79,11 @@ class ListDB {
   MemTable* GetMemTable(int shard);
 
 #ifdef LOOKUP_CACHE
+#ifdef L0_STATIC_HASH
+  StaticHashTableCache* GetHashTable(int shard);
+#else
   SimpleHashTable* GetHashTable(int shard);
+#endif
 #endif
 
   TableList* GetTableList(int level, int shard);
@@ -139,7 +145,11 @@ class ListDB {
   LevelList* ll_[kNumShards];
 
 #ifdef LOOKUP_CACHE
+#ifdef L0_STATIC_HASH
+  StaticHashTableCache* hash_table_[kNumShards];
+#else
   SimpleHashTable* hash_table_[kNumShards];
+#endif
 #endif
 
   std::unordered_map<int, int> pool_id_to_region_;
@@ -320,12 +330,18 @@ void ListDB::Init() {
 
 #ifdef LOOKUP_CACHE
   // HashTable
+#ifdef L0_STATIC_HASH
+  for (int i = 0; i < kNumShards; i++) {
+    hash_table_[i] = new StaticHashTableCache(kHTSize / kNumShards, i);
+  }
+#else
   for (int i = 0; i < 1; i++) {
     hash_table_[i] = new SimpleHashTable(kHTSize);
     for (size_t j = 0; j < kHTSize; j++) {
       hash_table_[i]->at(j)->version = 1UL;
     }
   }
+#endif
 #endif
 
   bg_thread_ = std::thread(std::bind(&ListDB::BackgroundThreadLoop, this));
@@ -494,10 +510,12 @@ void ListDB::BackgroundThreadLoop() {
       auto& worker = available_workers.back();
       auto& task = l0_compaction_requests.front();
       l0_compaction_requests.pop_front();
+
       std::unique_lock<std::mutex> wlk(worker->mu);
       worker->q.push(task);
       wlk.unlock();
       worker->cv.notify_one();
+
       task_to_worker[task] = worker->id;
       num_assigned_tasks[worker->id]++;
       l0_compaction_state[task->shard] = 2;  // assigned
@@ -560,10 +578,16 @@ inline MemTable* ListDB::GetMemTable(int shard) {
 }
 
 #ifdef LOOKUP_CACHE
-inline SimpleHashTable* ListDB::GetHashTable(int shard) {
-  //return hash_table_[shard];
-  return hash_table_[0];
-}
+#ifdef L0_STATIC_HASH
+  inline StaticHashTableCache* ListDB::GetHashTable(int shard) {
+    return hash_table_[shard];
+  }
+#else
+  inline SimpleHashTable* ListDB::GetHashTable(int shard) {
+    //return hash_table_[shard];
+    return hash_table_[0];
+  }
+#endif
 #endif
 
 inline TableList* ListDB::GetTableList(int level, int shard) {
@@ -628,7 +652,11 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
 
 #ifdef LOOKUP_CACHE
     //std::this_thread::yield();
+#ifdef L0_STATIC_HASH
+    hash_table->Insert(mem_node->key, node);
+#else
     hash_table->Add(mem_node->key, mem_node->value);
+#endif
 #endif
 
     //std::this_thread::yield();
@@ -694,7 +722,11 @@ void ListDB::ManualFlushMemTable(int shard) {
 
 #ifdef LOOKUP_CACHE
     //std::this_thread::yield();
+#ifdef L0_STATIC_HASH
+    hash_table->Insert(mem_node->key, node);
+#else
     hash_table->Add(mem_node->key, mem_node->value);
+#endif
 #endif
 
     //std::this_thread::yield();
@@ -988,7 +1020,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-    if (l0_node->height() >= 4) {
+    if (l0_node->height() >= kSkipListCacheMinPmemHeight) {
       int region = pool_id_to_region_[z->node_paddr.pool_id()];
       cache_[task->shard][region]->Insert(l0_node);
     }
@@ -1212,12 +1244,16 @@ int ListDB::GetStatString(const std::string& name, std::string* buf) {
   if (name == "l1_cache_size") {
   #ifdef LISTDB_SKIPLIST_CACHE
     size_t sum = 0;
+    size_t max = 0;
     for (int i = 0; i < kNumShards; i++) {
+      size_t shard_size = 0;
       for (int j = 0; j < kNumRegions; j++) {
-        sum += cache_[i][j]->AcquireLoadSize();
+        shard_size += cache_[i][j]->AcquireLoadSize();
       }
+      max = std::max<size_t>(max, shard_size);
+      sum += shard_size;
     }
-    ss << name << ": " << sum;
+    ss << name << ": " << sum << " (per shard max: " << max << ")";
   #else
     rv = 1;
   #endif

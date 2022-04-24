@@ -227,9 +227,17 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #ifdef LOOKUP_CACHE
     {
       auto ht = db_->GetHashTable(s);
+#ifdef L0_STATIC_HASH
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
+#else
       if (ht->Get(key, value_out)) {
         return true;
       }
+#endif
     }
 #endif
     pmem_get_cnt_++;
@@ -336,9 +344,17 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 #ifdef LOOKUP_CACHE
     {
       auto ht = db_->GetHashTable(s);
+#ifdef L0_STATIC_HASH
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#else
       if (ht->Get(key, value_out)) {
         return true;
       }
+#endif
     }
 #endif
     pmem_get_cnt_++;
@@ -577,7 +593,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       return PmemPtr(pool_id, (char*) lte_pnode);
     } else {
       pred = lte_pnode;
-      height = pred->height();
+      //height = pred->height();
+      height = kSkipListCacheMinPmemHeight;
     }
   }
 
