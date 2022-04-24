@@ -7,7 +7,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#ifndef GFLAGS
+#if !defined(GFLAGS)
 #include <cstdio>
 int main() {
   fprintf(stderr, "Please install gflags to run db_bench\n");

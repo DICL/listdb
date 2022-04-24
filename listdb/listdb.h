@@ -110,6 +110,8 @@ class ListDB {
   // Utility Functions
   void PrintDebugLsmState(int shard);
 
+  int GetStatString(const std::string& name, std::string* buf);
+
 #ifdef LISTDB_L1_LRU
   std::vector<std::pair<uint64_t, uint64_t>>& sorted_arr(int r, int s) { return sorted_arr_[r][s]; }
   LruSkipList* lru_cache(int s, int r) { return cache_[s][r]; }
@@ -986,7 +988,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-    if (l0_node->height() >= 5) {
+    if (l0_node->height() >= 4) {
       int region = pool_id_to_region_[z->node_paddr.pool_id()];
       cache_[task->shard][region]->Insert(l0_node);
     }
@@ -1202,6 +1204,29 @@ void ListDB::PrintDebugLsmState(int shard) {
   }
 
   fprintf(stdout, "mem: %d, L0: %d\n", mem_cnt, l0_cnt);
+}
+
+int ListDB::GetStatString(const std::string& name, std::string* buf) {
+  int rv = 0;
+  std::stringstream ss;
+  if (name == "l1_cache_size") {
+  #ifdef LISTDB_SKIPLIST_CACHE
+    size_t sum = 0;
+    for (int i = 0; i < kNumShards; i++) {
+      for (int j = 0; j < kNumRegions; j++) {
+        sum += cache_[i][j]->AcquireLoadSize();
+      }
+    }
+    ss << name << ": " << sum;
+  #else
+    rv = 1;
+  #endif
+  } else {
+    ss << "Unknown name: " << name;
+    rv = 1;
+  }
+  buf->assign(std::move(ss.str()));
+  return rv;
 }
 
 #endif  // LISTDB_LISTDB_H_
