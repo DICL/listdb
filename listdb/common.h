@@ -45,6 +45,12 @@ constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
 #endif
 
+#ifdef LISTDB_SKIPLIST_CACHE
+constexpr uint16_t kSkipListCacheMaxHeight = 12;
+constexpr uint16_t kSkipListCacheBranching = 4;
+constexpr size_t kSkipListCacheCapacity = (500ull << 20);
+#endif
+
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
@@ -55,8 +61,12 @@ constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 
 //constexpr uint64_t kHTMask = 0x0fffffff;
+#ifndef LISTDB_SKIPLIST_CACHE
 //constexpr size_t kHTSize = kHTMask + 1;
 constexpr size_t kHTSize = 200ull * 1000 * 1000;
+#else
+constexpr size_t kHTSize = ((1500ull<<20) - kSkipListCacheCapacity) / 16;
+#endif
 
 enum ValueType {
   kTypeAnchor = 0x0,

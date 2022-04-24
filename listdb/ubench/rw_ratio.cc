@@ -444,6 +444,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 #endif
   }
   fprintf(stdout, "\n");
+  std::string buf;
+  db->GetStatString("l1_cache_size", &buf);
+  fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
 
@@ -567,6 +570,19 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(stdout, "num_threads=%d\nread_ratio=%d\n", num_threads, read_ratio);
+  {
+    fprintf(stdout, "*** Cache Configurations ***\n");
+#ifdef LOOKUP_CACHE
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes\n", kHTSize, kHTSize * 16);
+#else
+    fprintf(stdout, "L0_cache_size: 0\n");
+#endif
+#ifdef LISTDB_SKIPLIST_CACHE
+    fprintf(stdout, "L1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
+#else
+    fprintf(stdout, "L1_cache_size: disabled.\n");
+#endif
+  }
 
   Numa::Init();
   std::vector<uint64_t> load_keys;
