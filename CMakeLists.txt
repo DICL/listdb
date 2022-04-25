@@ -132,6 +132,7 @@ set(ubench_srcs
   listdb/ubench/rw_ratio.cc
   listdb/ubench/tune_l1.cc
   listdb/ubench/string_kv_test.cc
+  listdb/ubench/ycsb_index_microbench.cc
   )
 foreach (ubench_src ${ubench_srcs})
   get_filename_component(ubench_name ${ubench_src} NAME_WE)
@@ -148,8 +149,12 @@ foreach (ubench_src ${ubench_srcs})
     pmemobj
     stdc++fs
     tbb
+    gflags
     #/home/wkim/Projects/libcds-2.3.3/build/bin/libcds.so
     )
+  if(gflags_FOUND)
+    target_link_libraries(${ubench_name} ${gflags_LIBRARIES})
+  endif()
   #target_include_directories(${ubench_name} PUBLIC
   #  /home/wkim/Projects/libcds-2.3.3
   #  )
