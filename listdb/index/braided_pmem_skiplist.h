@@ -36,7 +36,11 @@ class BraidedPmemSkipList {
 
   void PrintDebugScan();
 
+  Node* head() { return head_[primary_region_pool_id_]; }
+
   Node* head(int pool_id) { return head_[pool_id]; }
+
+  int primary_pool_id() { return primary_region_pool_id_; }
 
   PmemPtr head_paddr() { return PmemPtr(primary_region_pool_id_, (char*) head_[primary_region_pool_id_]); }
 

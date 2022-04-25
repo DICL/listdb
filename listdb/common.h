@@ -11,21 +11,23 @@
 
 //#define GROUP_LOGGING
 //#define L1_COW
-//#define LOOKUP_CACHE
+#define LOOKUP_CACHE
+#define L0_STATIC_HASH
+
 
 #ifndef LISTDB_STRING_KEY
 #include "listdb/core/integer_key.h"
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 48;
+constexpr size_t kStringKeyLength = 16;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t
 
 #define MO_RELAXED std::memory_order_relaxed
 
-constexpr int kNumRegions = 4;
+constexpr int kNumRegions = 2;
 constexpr int kNumShards = 128;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
@@ -46,9 +48,14 @@ constexpr int kLruMaxHeight = 20;
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-constexpr uint16_t kSkipListCacheMaxHeight = 12;
+constexpr size_t kSkipListCacheCardinality = 4;
+#define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
+
+constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
-constexpr size_t kSkipListCacheCapacity = (500ull << 20);
+
+constexpr int kSkipListCacheMinPmemHeight = 6;
+constexpr size_t kSkipListCacheCapacity = (90ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
@@ -63,9 +70,14 @@ constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 //constexpr uint64_t kHTMask = 0x0fffffff;
 #ifndef LISTDB_SKIPLIST_CACHE
 //constexpr size_t kHTSize = kHTMask + 1;
-constexpr size_t kHTSize = 200ull * 1000 * 1000;
+constexpr size_t kHTSize = 150ull * 1000 * 1000;
 #else
-constexpr size_t kHTSize = ((1500ull<<20) - kSkipListCacheCapacity) / 16;
+#ifdef L0_STATIC_HASH
+//constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 8;
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
+#else
+constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 24;
+#endif
 #endif
 
 enum ValueType {

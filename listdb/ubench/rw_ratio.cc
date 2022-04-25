@@ -356,7 +356,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  std::this_thread::sleep_for(std::chrono::seconds(35));
+  std::this_thread::sleep_for(std::chrono::seconds(20));
   db->PrintDebugLsmState(0);
 
   // Work
@@ -573,12 +573,21 @@ int main(int argc, char* argv[]) {
   {
     fprintf(stdout, "*** Cache Configurations ***\n");
 #ifdef LOOKUP_CACHE
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes\n", kHTSize, kHTSize * 16);
+#ifdef L0_STATIC_HASH
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
+            kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
+#else
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (SimpleHashTable)\n",
+            kHTSize, kHTSize * sizeof(SimpleHashTable::Bucket));
+#endif
 #else
     fprintf(stdout, "L0_cache_size: 0\n");
 #endif
 #ifdef LISTDB_SKIPLIST_CACHE
     fprintf(stdout, "L1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
+
+    std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
+    std::cout << "kSkipListCacheMinPmemHeight: " << kSkipListCacheMinPmemHeight << std::endl;
 #else
     fprintf(stdout, "L1_cache_size: disabled.\n");
 #endif

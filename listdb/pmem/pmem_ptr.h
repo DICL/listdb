@@ -29,6 +29,18 @@ class PmemPtr {
   template <typename T>
   static T* Decode(const uint64_t dump);
 
+  template <typename T>
+  static T* Compose(int16_t pool_id, uint64_t offset) {
+    if (offset == 0) {
+      return nullptr;
+    }
+    return (T*) ((uintptr_t) Pmem::pool(pool_id).handle() + offset);
+  }
+
+  static uint64_t OffsetOfVaddr(int16_t pool_id, void* vaddr) {
+    return (uintptr_t) vaddr - (uintptr_t) Pmem::pool(pool_id).handle();
+  }
+
  private:
   uint64_t data_;
 };
