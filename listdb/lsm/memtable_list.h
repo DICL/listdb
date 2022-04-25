@@ -58,7 +58,7 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   lk.unlock();
   MemTable* new_table = new MemTable(table_capacity);  // TODO(wkim): a table must have an ID
 
-  BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList();
+  BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList(arena_[0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
     l0_skiplist->BindArena(arena_[i]->pool_id(), arena_[i]);
   }

@@ -107,6 +107,8 @@ class ListDB {
 
   void FlushMemTable(MemTableFlushTask* task);
 
+  void FlushMemTableWAL(MemTableFlushTask* task);
+
   void ManualFlushMemTable(int shard);
 
   void ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
@@ -141,6 +143,7 @@ class ListDB {
   PmemBlob* value_blob_[kNumRegions][kNumShards];
 #endif
   PmemLog* log_[kNumRegions][kNumShards];
+  PmemLog* l0_arena_[kNumRegions][kNumShards];
   PmemLog* l1_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
 
@@ -153,6 +156,7 @@ class ListDB {
 #endif
 
   std::unordered_map<int, int> pool_id_to_region_;
+  std::unordered_map<int, int> log_pool_id_;
   std::unordered_map<int, int> l0_pool_id_;
   std::unordered_map<int, int> l1_pool_id_;
 
@@ -212,13 +216,48 @@ void ListDB::Init() {
 
     int pool_id = Pmem::BindPoolSet<pmem_log_root>(poolset, "");
     pool_id_to_region_[pool_id] = i;
-    l0_pool_id_[i] = pool_id;
+    log_pool_id_[i] = pool_id;
     auto pool = Pmem::pool<pmem_log_root>(pool_id);
 
     for (int j = 0; j < kNumShards; j++) {
       log_[i][j] = new PmemLog(pool_id, j);
     }
   }
+#ifndef LISTDB_WAL
+  // IUL
+  for (int i = 0; i < kNumRegions; i++) {
+    l0_pool_id_[i] = log_pool_id_[i];
+    for (int j = 0; j < kNumShards; j++) {
+      l0_arena_[i][j] = log_[i][j];
+    }
+  }
+#else
+  // WAL
+  for (int i = 0; i < kNumRegions; i++) {
+    std::stringstream pss;
+    pss << "/pmem" << i << "/wkim/listdb_nonunified_l0";
+    std::string path = pss.str();
+    fs::remove_all(path);
+    fs::create_directories(path);
+
+    std::string poolset = path + ".set";
+    std::fstream strm(poolset, strm.out);
+    strm << "PMEMPOOLSET" << std::endl;
+    strm << "OPTION SINGLEHDR" << std::endl;
+    strm << "400G " << path << "/" << std::endl;
+    strm.close();
+
+    int pool_id = Pmem::BindPoolSet<pmem_blob_root>(poolset, "");
+    pool_id_to_region_[pool_id] = i;
+    l0_pool_id_[i] = pool_id;
+    auto pool = Pmem::pool<pmem_blob_root>(pool_id);
+
+    for (int j = 0; j < kNumShards; j++) {
+      l0_arena_[i][j] = new PmemLog(pool_id, j);
+    }
+  }
+#endif
+
 
 #ifdef LISTDB_WISCKEY
   for (int i = 0; i < kNumRegions; i++) {
@@ -272,7 +311,7 @@ void ListDB::Init() {
 #else
   for (int i = 0; i < kNumRegions; i++) {
     for (int j = 0; j < kNumShards; j++) {
-      l1_arena_[i][j] = log_[i][j];
+      l1_arena_[i][j] = l0_arena_[i][j];
     }
   }
 #endif
@@ -298,7 +337,7 @@ void ListDB::Init() {
         wq_cv_.notify_one();
       });
       for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(j, log_[j][i]);
+        tl->BindArena(j, l0_arena_[j][i]);
       }
       ll_[i]->SetTableList(0, tl);
     }
@@ -545,7 +584,11 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
     lk.unlock();
 
     if (task->type == TaskType::kMemTableFlush) {
+#ifndef LISTDB_WAL
       FlushMemTable((MemTableFlushTask*) task);
+#else
+      FlushMemTableWAL((MemTableFlushTask*) task);
+#endif
       td->current_task = nullptr;
     } else if (task->type == TaskType::kL0Compaction) {
       ZipperCompactionL0(td, (L0CompactionTask*) task);
@@ -621,9 +664,9 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
   using Node = PmemNode;
   Node* preds[kNumRegions][kMaxHeight];
   Node* pred;
-  pred = l0_skiplist->head(log_[0][0]->pool_id());
+  pred = l0_skiplist->head(l0_arena_[0][0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = log_[i][0]->pool_id();
+    int pool_id = l0_arena_[i][0]->pool_id();
     for (int j = 1; j < kMaxHeight; j++) {
       preds[i][j] = l0_skiplist->head(pool_id);
     }
@@ -670,7 +713,100 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
   task->memtable_list->CleanUpFlushedImmutables();
 }
 
+void ListDB::FlushMemTableWAL(MemTableFlushTask* task) {
+  if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm);
+  // Check Reference Counter
+  while (task->imm->w_RefCount() > 0) {
+    continue;
+  }
+
+  // Flush (WAL)
+  auto l0_skiplist = task->imm->l0_skiplist();
+
+  auto skiplist = task->imm->skiplist();
+  auto mem_node = skiplist->head();
+  mem_node = mem_node->next[0].load(MO_RELAXED);
+
+  using Node = PmemNode;
+  Node* preds[kNumRegions][kMaxHeight];
+  Node* pred;
+  pred = l0_skiplist->head(l0_arena_[0][0]->pool_id());
+  for (int i = 0; i < kNumRegions; i++) {
+    int pool_id = l0_arena_[i][0]->pool_id();
+    for (int j = 1; j < kMaxHeight; j++) {
+      preds[i][j] = l0_skiplist->head(pool_id);
+    }
+  }
+
+#ifdef LOOKUP_CACHE
+  auto hash_table = GetHashTable(task->shard);
+#endif
+
+  while (mem_node) {
+    //std::this_thread::yield();
+#ifdef GROUP_LOGGING
+    while (((std::atomic<uint64_t>*) &mem_node->value)->load(std::memory_order_relaxed) == 0) continue;
+#endif
+    int mem_value_pool_id = ((PmemPtr*) &mem_node->value)->pool_id();
+    int region = pool_id_to_region_[mem_value_pool_id];
+
+    auto rnd = Random::GetTLSInstance();
+
+#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
+    static const unsigned int kBranching = 2;
+#else
+    static const unsigned int kBranching = 4;
+#endif
+    int height = 1;
+    if (rnd->Next() % std::max<int>(1, (kBranching / kNumRegions)) == 0) {
+      height++;
+      while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
+        height++;
+      }
+    }
+
+    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+    auto node_paddr = l0_arena_[region][task->shard]->Allocate(node_size);
+
+    Node* node = node_paddr.get<PmemNode>();
+    node->tag = height;
+    node->value = mem_node->value;
+    _mm_sfence();
+    node->key = mem_node->key;
+    clwb(node, sizeof(PmemNode) - sizeof(uint64_t));
+
+    pred->next[0] = node_paddr.dump();
+    _mm_sfence();
+    clwb(&pred->next[0], 8);
+    for (int i = 1; i < height; i++) {
+      //std::this_thread::yield();
+      preds[region][i]->next[i] = node_paddr.dump();
+      preds[region][i] = ((PmemPtr*) &(preds[region][i]->next[i]))->get<Node>();
+    }
+    pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
+
+#ifdef LOOKUP_CACHE
+    //std::this_thread::yield();
+#ifdef L0_STATIC_HASH
+    hash_table->Insert(mem_node->key, node);
+#else
+    hash_table->Add(mem_node->key, mem_node->value);
+#endif
+#endif
+
+    //std::this_thread::yield();
+    mem_node = mem_node->next[0].load(MO_RELAXED);
+  }
+
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  task->imm->SetPersistentTable((Table*) l0_table);
+  // TODO(wkim): Log this L0 table for recovery
+  //task->imm->FinalizeFlush();
+  task->memtable_list->CleanUpFlushedImmutables();
+}
+
 void ListDB::ManualFlushMemTable(int shard) {
+#ifndef LISTDB_WAL
   auto tl = reinterpret_cast<MemTableList*>(ll_[shard]->GetTableList(0));
 
   auto table = tl->GetFront();
@@ -693,9 +829,9 @@ void ListDB::ManualFlushMemTable(int shard) {
   using Node = PmemNode;
   Node* preds[kNumRegions][kMaxHeight];
   Node* pred;
-  pred = l0_skiplist->head(log_[0][0]->pool_id());
+  pred = l0_skiplist->head(l0_arena_[0][0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = log_[i][0]->pool_id();
+    int pool_id = l0_arena_[i][0]->pool_id();
     for (int j = 1; j < kMaxHeight; j++) {
       preds[i][j] = l0_skiplist->head(pool_id);
     }
@@ -737,6 +873,100 @@ void ListDB::ManualFlushMemTable(int shard) {
   reinterpret_cast<MemTable*>(table)->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   tl->CleanUpFlushedImmutables();
+#else
+  auto tl = reinterpret_cast<MemTableList*>(ll_[shard]->GetTableList(0));
+
+  auto table = tl->GetFront();
+  auto table2 = table->Next();
+
+  if (table->type() != TableType::kMemTable || (table2 != nullptr && table2->type() != TableType::kPmemTable)) {
+    fprintf(stdout, "ManualFlushMemTable failed\n");
+    return;
+  }
+
+  tl->NewFront();
+  
+  // Flush (IUL)
+  auto l0_skiplist = reinterpret_cast<MemTable*>(table)->l0_skiplist();
+
+  auto skiplist = reinterpret_cast<MemTable*>(table)->skiplist();
+  auto mem_node = skiplist->head();
+  mem_node = mem_node->next[0].load(MO_RELAXED);
+
+  using Node = PmemNode;
+  Node* preds[kNumRegions][kMaxHeight];
+  Node* pred;
+  pred = l0_skiplist->head(l0_arena_[0][0]->pool_id());
+  for (int i = 0; i < kNumRegions; i++) {
+    int pool_id = l0_arena_[i][0]->pool_id();
+    for (int j = 1; j < kMaxHeight; j++) {
+      preds[i][j] = l0_skiplist->head(pool_id);
+    }
+  }
+
+#ifdef LOOKUP_CACHE
+  auto hash_table = GetHashTable(shard);
+#endif
+
+  while (mem_node) {
+#ifdef GROUP_LOGGING
+    while (((std::atomic<uint64_t>*) &mem_node->value)->load(std::memory_order_relaxed) == 0) continue;
+#endif
+    int mem_value_pool_id = ((PmemPtr*) &mem_node->value)->pool_id();
+    int region = pool_id_to_region_[mem_value_pool_id];
+
+    auto rnd = Random::GetTLSInstance();
+
+#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
+    static const unsigned int kBranching = 2;
+#else
+    static const unsigned int kBranching = 4;
+#endif
+    int height = 1;
+    if (rnd->Next() % std::max<int>(1, (kBranching / kNumRegions)) == 0) {
+      height++;
+      while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
+        height++;
+      }
+    }
+
+    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+    auto node_paddr = l0_arena_[region][shard]->Allocate(node_size);
+
+    Node* node = node_paddr.get<PmemNode>();
+    node->tag = height;
+    node->value = mem_node->value;
+    _mm_sfence();
+    node->key = mem_node->key;
+    clwb(node, sizeof(PmemNode) - sizeof(uint64_t));
+
+    pred->next[0] = node_paddr.dump();
+    _mm_sfence();
+    clwb(&pred->next[0], 8);
+    for (int i = 1; i < height; i++) {
+      preds[region][i]->next[i] = node_paddr.dump();
+      preds[region][i] = ((PmemPtr*) &(preds[region][i]->next[i]))->get<Node>();
+    }
+    pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
+
+#ifdef LOOKUP_CACHE
+    //std::this_thread::yield();
+#ifdef L0_STATIC_HASH
+    hash_table->Insert(mem_node->key, node);
+#else
+    hash_table->Add(mem_node->key, mem_node->value);
+#endif
+#endif
+
+    //std::this_thread::yield();
+    mem_node = mem_node->next[0].load(MO_RELAXED);
+  }
+
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  reinterpret_cast<MemTable*>(table)->SetPersistentTable((Table*) l0_table);
+  // TODO(wkim): Log this L0 table for recovery
+  tl->CleanUpFlushedImmutables();
+#endif
 }
 
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
