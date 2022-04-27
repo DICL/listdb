@@ -25,6 +25,7 @@
 #include "listdb/core/pmem_blob.h"
 #include "listdb/core/pmem_log.h"
 #include "listdb/core/static_hashtable_cache.h"
+#include "listdb/core/double_hashing_cache.h"
 //#include "listdb/core/pmem_db.h"
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
@@ -78,12 +79,12 @@ class ListDB {
 
   MemTable* GetMemTable(int shard);
 
-#ifdef LOOKUP_CACHE
-#ifdef L0_STATIC_HASH
-  StaticHashTableCache* GetHashTable(int shard);
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
   SimpleHashTable* GetHashTable(int shard);
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+  StaticHashTableCache* GetHashTable(int shard);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+  DoubleHashingCache* GetHashTable(int shard);
 #endif
 
   TableList* GetTableList(int level, int shard);
@@ -144,12 +145,12 @@ class ListDB {
   PmemLog* l1_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
 
-#ifdef LOOKUP_CACHE
-#ifdef L0_STATIC_HASH
-  StaticHashTableCache* hash_table_[kNumShards];
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
   SimpleHashTable* hash_table_[kNumShards];
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+  StaticHashTableCache* hash_table_[kNumShards];
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+  DoubleHashingCache* hash_table_[kNumShards];
 #endif
 
   std::unordered_map<int, int> pool_id_to_region_;
@@ -328,20 +329,21 @@ void ListDB::Init() {
   }
 #endif
 
-#ifdef LOOKUP_CACHE
-  // HashTable
-#ifdef L0_STATIC_HASH
-  for (int i = 0; i < kNumShards; i++) {
-    hash_table_[i] = new StaticHashTableCache(kHTSize / kNumShards, i);
-  }
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
   for (int i = 0; i < 1; i++) {
     hash_table_[i] = new SimpleHashTable(kHTSize);
     for (size_t j = 0; j < kHTSize; j++) {
       hash_table_[i]->at(j)->version = 1UL;
     }
   }
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+  for (int i = 0; i < kNumShards; i++) {
+    hash_table_[i] = new StaticHashTableCache(kHTSize / kNumShards, i);
+  }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+  for (int i = 0; i < kNumShards; i++) {
+    hash_table_[i] = new DoubleHashingCache(kHTSize / kNumShards, i);
+  }
 #endif
 
   bg_thread_ = std::thread(std::bind(&ListDB::BackgroundThreadLoop, this));
@@ -577,17 +579,19 @@ inline MemTable* ListDB::GetMemTable(int shard) {
   return (MemTable*) mem;
 }
 
-#ifdef LOOKUP_CACHE
-#ifdef L0_STATIC_HASH
-  inline StaticHashTableCache* ListDB::GetHashTable(int shard) {
-    return hash_table_[shard];
-  }
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
   inline SimpleHashTable* ListDB::GetHashTable(int shard) {
     //return hash_table_[shard];
     return hash_table_[0];
   }
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+  inline StaticHashTableCache* ListDB::GetHashTable(int shard) {
+    return hash_table_[shard];
+  }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+  inline DoubleHashingCache* ListDB::GetHashTable(int shard) {
+    return hash_table_[shard];
+  }
 #endif
 
 inline TableList* ListDB::GetTableList(int level, int shard) {
@@ -629,7 +633,7 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
     }
   }
 
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
   auto hash_table = GetHashTable(task->shard);
 #endif
 
@@ -650,13 +654,12 @@ void ListDB::FlushMemTable(MemTableFlushTask* task) {
     pred->next[0] = mem_node->value;
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
 
-#ifdef LOOKUP_CACHE
-    //std::this_thread::yield();
-#ifdef L0_STATIC_HASH
-    hash_table->Insert(mem_node->key, node);
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     hash_table->Add(mem_node->key, mem_node->value);
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    hash_table->Insert(mem_node->key, node);
 #endif
 
     //std::this_thread::yield();
@@ -701,7 +704,7 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
   }
 
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
   auto hash_table = GetHashTable(shard);
 #endif
 
@@ -720,13 +723,12 @@ void ListDB::ManualFlushMemTable(int shard) {
     pred->next[0] = mem_node->value;
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
 
-#ifdef LOOKUP_CACHE
-    //std::this_thread::yield();
-#ifdef L0_STATIC_HASH
-    hash_table->Insert(mem_node->key, node);
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     hash_table->Add(mem_node->key, mem_node->value);
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    hash_table->Insert(mem_node->key, node);
 #endif
 
     //std::this_thread::yield();
