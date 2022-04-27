@@ -5,6 +5,10 @@
 #include "listdb/lib/murmur3.h"
 #include "listdb/lib/sha1.h"
 
+#define DOUBLE_HASHING_T_A 1
+#define DOUBLE_HASHING_T_B 2
+#define LISTDB_DOUBLE_HASHING DOUBLE_HASHING_T_B
+
 class DoubleHashingCache {
  public:
   using PmemNode = BraidedPmemSkipList::Node;
@@ -41,6 +45,7 @@ DoubleHashingCache::DoubleHashingCache(size_t size, int shard)
 }
 
 void DoubleHashingCache::Insert(const Key& key, PmemNode* const p) {
+#if LISTDB_DOUBLE_HASHING == DOUBLE_HASHING_T_A
   uint32_t h = Hash1(key);
   uint32_t pos = h % size_;
   PmemNode* old_value = buckets_[pos].value.load(std::memory_order_seq_cst);
@@ -49,9 +54,24 @@ void DoubleHashingCache::Insert(const Key& key, PmemNode* const p) {
     buckets_[pos2].value.store(old_value, std::memory_order_seq_cst);
   }
   buckets_[pos].value.store(p, std::memory_order_seq_cst);
+#elif LISTDB_DOUBLE_HASHING == DOUBLE_HASHING_T_B
+  uint32_t h = Hash1(key);
+  uint32_t pos = h % size_;
+  PmemNode* old_value = buckets_[pos].value.load(std::memory_order_seq_cst);
+  if (old_value != nullptr) {
+    uint32_t pos2 = (h + Hash2(key)) % size_;
+    buckets_[pos2].value.store(p, std::memory_order_seq_cst);
+  } else {
+    buckets_[pos].value.store(p, std::memory_order_seq_cst);
+  }
+#else
+  fprintf(stderr, "DEFINE LISTDB_DOUBLE_HASHING <type>\n");
+  abort();
+#endif
 }
 
 DoubleHashingCache::PmemNode* DoubleHashingCache::Lookup(const Key& key) {
+#if LISTDB_DOUBLE_HASHING == DOUBLE_HASHING_T_A
   uint32_t h = Hash1(key);
   uint32_t pos = h % size_;
   PmemNode* value = buckets_[pos].value.load(std::memory_order_seq_cst);
@@ -65,6 +85,24 @@ DoubleHashingCache::PmemNode* DoubleHashingCache::Lookup(const Key& key) {
     }
   }
   return nullptr;
+#elif LISTDB_DOUBLE_HASHING == DOUBLE_HASHING_T_B
+  uint32_t h = Hash1(key);
+  uint32_t pos = h % size_;
+  PmemNode* value = buckets_[pos].value.load(std::memory_order_seq_cst);
+  if (value && value->key.Compare(key) == 0) {
+    return value;
+  } else {
+    uint32_t pos2 = (h + Hash2(key)) % size_;
+    PmemNode* value = buckets_[pos2].value.load(std::memory_order_seq_cst);
+    if (value && value->key.Compare(key) == 0) {
+      return value;
+    }
+  }
+  return nullptr;
+#else
+  fprintf(stderr, "DEFINE LISTDB_DOUBLE_HASHING <type>\n");
+  abort();
+#endif
 }
 
 inline uint32_t DoubleHashingCache::Hash1(const Key& key) {
