@@ -579,7 +579,7 @@ int main(int argc, char* argv[]) {
     fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
             kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
 #elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (DoubleHashingCache)\n",
             kHTSize, kHTSize * sizeof(DoubleHashingCache::Bucket));
 #else
     fprintf(stdout, "L0_cache_size: 0\n");
@@ -593,6 +593,9 @@ int main(int argc, char* argv[]) {
 #else
     fprintf(stdout, "L1_cache_size: disabled.\n");
 #endif
+
+    fprintf(stdout, "L0_CACHE_TYPE: %d\n", LISTDB_L0_CACHE);
+    fprintf(stdout, "PROBING_DISTANCE: %d\n", LISTDB_L0_CACHE_PROBING_DISTANCE);
   }
 
   Numa::Init();

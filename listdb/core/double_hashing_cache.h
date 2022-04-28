@@ -10,9 +10,6 @@
 #ifndef LISTDB_DOUBLE_HASHING
 #define LISTDB_DOUBLE_HASHING DOUBLE_HASHING_T_B
 #endif
-#ifndef LISTDB_DOUBLE_HASHING_PROBING_DISTANCE
-#define LISTDB_DOUBLE_HASHING_PROBING_DISTANCE 2
-#endif
 
 class DoubleHashingCache {
  public:
@@ -37,7 +34,7 @@ class DoubleHashingCache {
   uint32_t Hash2(const Key& key);
 
  private:
-  const static int probing_distance_ = LISTDB_DOUBLE_HASHING_PROBING_DISTANCE;
+  const static int probing_distance_ = LISTDB_L0_CACHE_PROBING_DISTANCE;
 
   const size_t size_;
   const int shard_;
