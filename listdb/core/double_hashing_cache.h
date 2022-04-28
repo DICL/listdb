@@ -7,7 +7,12 @@
 
 #define DOUBLE_HASHING_T_A 1
 #define DOUBLE_HASHING_T_B 2
+#ifndef LISTDB_DOUBLE_HASHING
 #define LISTDB_DOUBLE_HASHING DOUBLE_HASHING_T_B
+#endif
+#ifndef LISTDB_DOUBLE_HASHING_PROBING_DISTANCE
+#define LISTDB_DOUBLE_HASHING_PROBING_DISTANCE 2
+#endif
 
 class DoubleHashingCache {
  public:
@@ -32,6 +37,8 @@ class DoubleHashingCache {
   uint32_t Hash2(const Key& key);
 
  private:
+  const static int probing_distance_ = LISTDB_DOUBLE_HASHING_PROBING_DISTANCE;
+
   const size_t size_;
   const int shard_;
   const uint32_t seed_;
@@ -57,13 +64,23 @@ void DoubleHashingCache::Insert(const Key& key, PmemNode* const p) {
 #elif LISTDB_DOUBLE_HASHING == DOUBLE_HASHING_T_B
   uint32_t h = Hash1(key);
   uint32_t pos = h % size_;
-  PmemNode* old_value = buckets_[pos].value.load(std::memory_order_seq_cst);
-  if (old_value != nullptr) {
-    uint32_t pos2 = (h + Hash2(key)) % size_;
-    buckets_[pos2].value.store(p, std::memory_order_seq_cst);
-  } else {
-    buckets_[pos].value.store(p, std::memory_order_seq_cst);
+  PmemNode* expected = nullptr;
+  if (buckets_[pos].value.compare_exchange_strong(expected, p)) {
+    return;
   }
+  uint32_t h2 = Hash2(key);
+  unsigned int cnt = 1;
+  pos = (h + cnt * h2) % size_;
+  while (cnt < probing_distance_) {
+    expected = nullptr;
+    if (buckets_[pos].value.compare_exchange_strong(expected, p)) {
+      return;
+    } else {
+      cnt++;
+      pos = (h + cnt * h2) % size_;
+    }
+  }
+  buckets_[pos].value.store(p, std::memory_order_seq_cst);
 #else
   fprintf(stderr, "DEFINE LISTDB_DOUBLE_HASHING <type>\n");
   abort();
@@ -92,10 +109,17 @@ DoubleHashingCache::PmemNode* DoubleHashingCache::Lookup(const Key& key) {
   if (value && value->key.Compare(key) == 0) {
     return value;
   } else {
-    uint32_t pos2 = (h + Hash2(key)) % size_;
-    PmemNode* value = buckets_[pos2].value.load(std::memory_order_seq_cst);
-    if (value && value->key.Compare(key) == 0) {
-      return value;
+    uint32_t h2 = Hash2(key);
+    unsigned int cnt = 1;
+    while (cnt <= probing_distance_) {
+      pos = (h + cnt * h2) % size_;
+      value = buckets_[pos].value.load(std::memory_order_seq_cst);
+      if (value && value->key.Compare(key) == 0) {
+        return value;
+      } else {
+        cnt++;
+        continue;
+      }
     }
   }
   return nullptr;

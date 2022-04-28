@@ -244,6 +244,12 @@ bool DBClient::Get(const Key& key, Value* value_out) {
         *value_out = rv->value;
         return true;
       }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
 #endif
     }
 #endif
@@ -362,6 +368,12 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
         return true;
       }
 #elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
       ListDB::PmemNode* rv = ht->Lookup(key);
       if (rv) {
         *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
