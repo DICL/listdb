@@ -807,7 +807,7 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task) {
     }
   }
 
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
   auto hash_table = GetHashTable(task->shard);
 #endif
 
@@ -860,13 +860,14 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task) {
     }
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
 
-#ifdef LOOKUP_CACHE
-    //std::this_thread::yield();
-#ifdef L0_STATIC_HASH
-    hash_table->Insert(mem_node->key, node);
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     hash_table->Add(mem_node->key, mem_node->value);
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+    hash_table->Insert(mem_node->key, node);
 #endif
 
     REPORT_FLUSH_OPS(1);
@@ -970,7 +971,7 @@ void ListDB::ManualFlushMemTable(int shard) {
 
   tl->NewFront();
   
-  // Flush (IUL)
+  // Flush (WAL)
   auto l0_skiplist = reinterpret_cast<MemTable*>(table)->l0_skiplist();
 
   auto skiplist = reinterpret_cast<MemTable*>(table)->skiplist();
@@ -988,7 +989,7 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
   }
 
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
   auto hash_table = GetHashTable(shard);
 #endif
 
@@ -1039,13 +1040,14 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
 
-#ifdef LOOKUP_CACHE
-    //std::this_thread::yield();
-#ifdef L0_STATIC_HASH
-    hash_table->Insert(mem_node->key, node);
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     hash_table->Add(mem_node->key, mem_node->value);
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    hash_table->Insert(mem_node->key, node);
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+    hash_table->Insert(mem_node->key, node);
 #endif
 
     REPORT_FLUSH_OPS(1);

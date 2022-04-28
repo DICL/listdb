@@ -53,6 +53,8 @@ DEFINE_bool(load_only, false, "load only");
 
 DEFINE_string(workload_dir, "", "example) ~/RECIPE/index-microbench/workloads_100M_10M_zipf");
 
+DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
+
 //#define COUNT_FOUND
 
 namespace fs = std::experimental::filesystem::v1;
@@ -205,6 +207,27 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     work_time.resize(FLAGS_works);
   }
 #endif
+
+  enum class CpuBindType {
+    kNone,
+    kCpuNumaRoundRobin,
+    kNumaRoundRobin
+  };
+  CpuBindType bind_type;
+  //int num_cpus = numa_num_configured_cpus();
+  //int num_sockets = numa_num_configured_nodes();
+  std::cout << "Thread bind type: ";
+  if (FLAGS_bind_type == "cpu_numa_rr") {
+    bind_type = CpuBindType::kCpuNumaRoundRobin;
+    std::cout << "CpuBindType::kCpuNumaRoundRobin";
+  } else if (FLAGS_bind_type == "numa_rr") {
+    bind_type = CpuBindType::kNumaRoundRobin;
+    std::cout << "CpuBindType::kNumaRoundRobin";
+  } else {
+    bind_type = CpuBindType::kNone;
+    std::cout << "CpuBindType::kNone";
+  }
+  std::cout << std::endl;
   
   // Load
   {
@@ -215,7 +238,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     const size_t num_ops_per_thread = FLAGS_loads / num_threads;
     for (int id = 0; id < num_threads; id++) {
       loaders.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
+        if (bind_type == CpuBindType::kCpuNumaRoundRobin) {
+          SetAffinity(Numa::CpuSequenceRR(id));
+        } else if (bind_type == CpuBindType::kNumaRoundRobin) {
+          numa_run_on_node(id % kNumRegions);
+        }
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
@@ -279,7 +306,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     const size_t num_ops_per_thread = FLAGS_works / num_threads;
     for (int id = 0; id < num_threads; id++) {
       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
+        if (bind_type == CpuBindType::kCpuNumaRoundRobin) {
+          SetAffinity(Numa::CpuSequenceRR(id));
+        } else if (bind_type == CpuBindType::kNumaRoundRobin) {
+          numa_run_on_node(id % kNumRegions);
+        }
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
