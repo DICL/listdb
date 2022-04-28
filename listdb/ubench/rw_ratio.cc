@@ -572,17 +572,19 @@ int main(int argc, char* argv[]) {
   fprintf(stdout, "num_threads=%d\nread_ratio=%d\n", num_threads, read_ratio);
   {
     fprintf(stdout, "*** Cache Configurations ***\n");
-#ifdef LOOKUP_CACHE
-#ifdef L0_STATIC_HASH
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
-            kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
-#else
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     fprintf(stdout, "L0_cache_size: %zu = %zu bytes (SimpleHashTable)\n",
             kHTSize, kHTSize * sizeof(SimpleHashTable::Bucket));
-#endif
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
+            kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (DoubleHashingCache)\n",
+            kHTSize, kHTSize * sizeof(DoubleHashingCache::Bucket));
 #else
     fprintf(stdout, "L0_cache_size: 0\n");
 #endif
+
 #ifdef LISTDB_SKIPLIST_CACHE
     fprintf(stdout, "L1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
 
@@ -591,6 +593,9 @@ int main(int argc, char* argv[]) {
 #else
     fprintf(stdout, "L1_cache_size: disabled.\n");
 #endif
+
+    fprintf(stdout, "L0_CACHE_TYPE: %d\n", LISTDB_L0_CACHE);
+    fprintf(stdout, "PROBING_DISTANCE: %d\n", LISTDB_L0_CACHE_PROBING_DISTANCE);
   }
 
   Numa::Init();

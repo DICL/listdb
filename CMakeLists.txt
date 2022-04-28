@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
 project(listdb)
 
+message("${CMAKE_C_FLAGS}")
+message("${CMAKE_CXX_FLAGS}")
+
 set(CMAKE_CXX_COMPILER "g++")
 #set(CMAKE_VERBOSE_MAKEFILE ON)
 
@@ -12,11 +15,11 @@ option(SKIPLIST_CACHE "SkipListCache." OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
-  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -g")
+  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -g ${CMAKE_C_FLAGS}")
 else()
   message("[X] RELEASE MODE: DEBUG disabled.")
   #set(CMAKE_C_FLAGS "-Wall -Wsign-compare -pg")
-  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -O3 -g -DNDEBUG")
+  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -O3 -g -DNDEBUG ${CMAKE_C_FLAGS}")
 endif(DEBUG)
 
 if(STRING_KEY)
@@ -58,6 +61,9 @@ endif()
 # Compiler options
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfatal-errors ")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++17 -march=native ")
+
+message("${CMAKE_C_FLAGS}")
+message("${CMAKE_CXX_FLAGS}")
 
 ##
 # Link options

@@ -11,9 +11,17 @@
 
 //#define GROUP_LOGGING
 //#define L1_COW
-#define LOOKUP_CACHE
-#define L0_STATIC_HASH
+#define L0_CACHE_T_SIMPLE 1
+#define L0_CACHE_T_STATIC 2
+#define L0_CACHE_T_DOUBLE_HASHING 3
+#define L0_CACHE_T_LINEAR_PROBING 4
+//#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
 
+#ifdef LISTDB_L0_CACHE
+#ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
+#define LISTDB_L0_CACHE_PROBING_DISTANCE 1
+#endif
+#endif
 
 #ifndef LISTDB_STRING_KEY
 #include "listdb/core/integer_key.h"
@@ -72,11 +80,10 @@ constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 //constexpr size_t kHTSize = kHTMask + 1;
 constexpr size_t kHTSize = 150ull * 1000 * 1000;
 #else
-#ifdef L0_STATIC_HASH
-//constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 8;
+#if LISTDB_L0_CACHE != L0_CACHE_T_SIMPLE
 constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
 #else
-constexpr size_t kHTSize = ((1536ull<<20) - kSkipListCacheCapacity) / 24;
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 24;
 #endif
 #endif
 
