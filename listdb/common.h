@@ -62,15 +62,15 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr int kSkipListCacheMinPmemHeight = 6;
-constexpr size_t kSkipListCacheCapacity = (180ull << 20);
+constexpr int kSkipListCacheMinPmemHeight = 8;
+constexpr size_t kSkipListCacheCapacity = (45ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 10;
+constexpr int kNumWorkers = 40;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
