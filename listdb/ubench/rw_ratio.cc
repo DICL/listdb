@@ -594,8 +594,10 @@ int main(int argc, char* argv[]) {
     fprintf(stdout, "L1_cache_size: disabled.\n");
 #endif
 
+#ifdef LISTDB_L0_CACHE
     fprintf(stdout, "L0_CACHE_TYPE: %d\n", LISTDB_L0_CACHE);
     fprintf(stdout, "PROBING_DISTANCE: %d\n", LISTDB_L0_CACHE_PROBING_DISTANCE);
+#endif
   }
 
   Numa::Init();

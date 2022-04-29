@@ -52,6 +52,8 @@ DEFINE_string(
     "\treadseq       -- read N times sequentially\n"
     "\treadrandom    -- read N times in random order\n");
 
+DEFINE_int32(write_threads, 0, "write_threads");
+
 DEFINE_int64(num, 1000000, "Number of key/values to place in database");
 
 DEFINE_int64(reads, -1, "Number of read operations to do.  "
@@ -1313,6 +1315,9 @@ class Benchmark {
 
   Stats RunBenchmark(int n, const std::string& name,
                      void (Benchmark::*method)(ThreadState*)) {
+    if (name == "fillrandom" && FLAGS_write_threads > 0) {
+      n = FLAGS_write_threads;
+    }
     SharedState shared;
     shared.total = n;
     shared.num_initialized = 0;
@@ -1456,7 +1461,7 @@ class Benchmark {
         case SEQUENTIAL:
           return next_++;
         case RANDOM:
-          return rand_->Next() % num_;
+          return (rand_->Next() % (num_ - 1)) + 1;
         case UNIQUE_RANDOM:
           assert(next_ < num_);
           return values_[next_++];
@@ -1615,7 +1620,7 @@ class Benchmark {
     uint64_t rand_int = rand->Next();
     int64_t key_rand;
     if (read_random_exp_range_ == 0) {
-      key_rand = rand_int % FLAGS_num;
+      key_rand = (rand_int % (FLAGS_num - 1)) + 1;
     } else {
       const uint64_t kBigInt = static_cast<uint64_t>(1U) << 62;
       long double order = -static_cast<long double>(rand_int % kBigInt) /
