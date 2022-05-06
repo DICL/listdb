@@ -43,6 +43,13 @@ else()
   message("[X] SKIPLIST_CACHE disabled.")
 endif(SKIPLIST_CACHE)
 
+if(WAL)
+  message("[O] WAL ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_WAL")
+else()
+  message("[X] WAL disabled.")
+endif(WAL)
+
 ##
 # GFLAGS
 find_package(gflags)

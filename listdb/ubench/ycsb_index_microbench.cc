@@ -41,7 +41,19 @@ DEFINE_int32(threads, 80, "Number of concurrent threads to run.");
 
 DEFINE_int32(shards, kNumShards, "num shards");
 
+#if 0
+DEFINE_string(load_history_file, "", "query history file");
+
+DEFINE_string(work_history_file, "", "query history file");
+#endif
+
+DEFINE_string(report_file, "", "report_file");
+
+DEFINE_bool(load_only, false, "load only");
+
 DEFINE_string(workload_dir, "", "example) ~/RECIPE/index-microbench/workloads_100M_10M_zipf");
+
+DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
 
 //#define COUNT_FOUND
 
@@ -161,154 +173,11 @@ void InitPoolSet() {
   }
 }
 
-void Run1(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
-          const std::vector<uint64_t>& work_keys) {
-  fprintf(stdout, "=== BraidedPmemSkipList (%d-shard) ===\n", num_shards);
-
-  InitPoolSet();
-  BraidedPmemSkipList* skiplist[num_shards];
-  PmemLog* arena[num_shards][kNumRegions];
-  for (int i = 0; i < num_shards; i++) {
-    auto sl = new BraidedPmemSkipList();
-    for (int j = 0; j < kNumRegions; j++) {
-      arena[i][j] = new PmemLog(pool_id_table[j], i);
-      sl->BindArena(pool_id_table[j], arena[i][j]);
-    }
-    sl->Init();
-    skiplist[i] = sl;
-  }
-
-  using Node = BraidedPmemSkipList::Node;
-  uint64_t shard_size = std::numeric_limits<uint64_t>::max() / num_shards;
-  
-  // Load
-  {
-    printf("Load %zu items\n", FLAGS_loads);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = FLAGS_loads / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        Random rnd(id);
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          static const unsigned int kBranching = 4;
-          int height = 2;
-          //if (height < kMaxHeight && ((rnd.Next() % (kBranching/2)) == 0)) {
-          //  height++;
-            while (height < kMaxHeight && ((rnd.Next() % kBranching) == 0)) {
-              height++;
-            }
-          //}
-          //const size_t alloc_size = Node::compute_alloc_size(load_keys[i], height);
-          //size_t node_size = util::AlignedSize(8, sizeof(Node) + (height-1)*sizeof(uint64_t));
-          size_t node_size = sizeof(Node) + (height-1)*sizeof(uint64_t);
-          
-          //int s = load_keys[i] % num_shards;
-          int s = load_keys[i] / shard_size;
-
-#if 1
-          auto node_paddr = arena[s][r]->Allocate(node_size);
-          Node* node = (Node*) node_paddr.get();
-#else
-          auto pool = Pmem::pool<pmem_log_root>(r);
-          pmem::obj::persistent_ptr<char[]> p_buf;
-          pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-          Node* node = (Node*) p_buf.get();
-          PmemPtr node_paddr = PmemPtr(r, ((uintptr_t) node - (uintptr_t) pool.handle()));
-#endif
-          //Node* node = Node::init_node((char*) buf, load_keys[i], (1ull<<8|kTypeValue), 0, height);
-          node->key = load_keys[i];
-          node->tag = height;
-          node->value = load_keys[i];
-          skiplist[s]->Insert(node_paddr);
-
-          //auto ret = skiplist[s]->Lookup(load_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (!found) {
-          //  fprintf(stdout, "Lookup returns NULL for key: %zu\n", load_keys[i]);
-          //} else if (load_keys[i] != *((uint64_t*) &found->key)) {
-          //  for (auto& lk : load_keys) {
-          //    if (lk == load_keys[i]) {
-          //      fprintf(stdout, "Key not found %zu (found = %zu)\n", load_keys[i], found->key);
-          //      fprintf(stdout, "Inserted\n");
-          //      exit(1);
-          //    }
-          //  }
-          //} else if (found->key.Compare(found->value) != 0) {
-          //  fprintf(stdout, "Invalid KV-pair found { %zu, %zu } (query key: %zu)\n", found->key, found->value, load_keys[i]);
-          //} else {
-          //  //fprintf(stdout, "Key found %zu\n", load_keys[i]);
-          //}
-        }
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load IOPS: %.3lf M\n", FLAGS_loads/dur_sec/1000000);
-  }
-  fprintf(stdout, "\n");
-
-  // Work
-  {
-    printf("WORK %zu queries\n", FLAGS_works);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-    std::vector<int> cnt(num_threads);
-    const size_t num_ops_per_thread = FLAGS_works / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          //int s = work_keys[i] % num_shards;
-          int s = work_keys[i] / shard_size;
-          skiplist[s]->Lookup(work_keys[i], r);
-          //auto ret = skiplist[s]->Lookup(work_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (found && work_keys[i] == (uint64_t) found->key) {
-          //  cnt[id]++;
-          //}
-          //auto ret = skiplist[s]->Lookup(work_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (!found) {
-          //  fprintf(stdout, "Lookup returns NULL for key: %zu\n", work_keys[i]);
-          //} else if (work_keys[i] != *((uint64_t*) &found->key)) {
-          //  for (auto& lk : load_keys) {
-          //    if (lk == work_keys[i]) {
-          //      fprintf(stdout, "Key not found %zu (found = %zu)\n", work_keys[i], found->key);
-          //      fprintf(stdout, "Inserted\n");
-          //      exit(1);
-          //    }
-          //  }
-          //} else if (found->key.Compare(found->value) != 0) {
-          //  fprintf(stdout, "Invalid KV-pair found { %zu, %zu } (query key: %zu)\n", found->key, found->value, work_keys[i]);
-          //}
-        }
-      });
-    }
-    for (auto& t :  workers) {
-      t.join();
-    }
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Work IOPS: %.3lf M\n", FLAGS_works/dur_sec/1000000);
-    //fprintf(stdout, "Found %d\n", cnt_sum);
-  }
-  fprintf(stdout, "\n");
+#if 0
+void FlushHistoryFile(std::vector<uint64_t>& hist, uint64_t begin_nano, int64_t size, std::string file) {
+  std::cout << "FlushHistoryFile is not implemented yet.\n";
 }
+#endif
 
 void Run2(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
           const std::vector<uint64_t>& work_keys) {
@@ -316,6 +185,49 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
   ListDB* db = new ListDB();
   db->Init();
+
+  Reporter* reporter = nullptr;
+  if (FLAGS_report_file != "") {
+    reporter = db->GetOrCreateReporter(FLAGS_report_file);
+    reporter->Start();
+  }
+  // make these default ON(=1)
+  // reporter->SetInternalCollectionState("memtable_flush", 1);
+  // reporter->SetInternalCollectionState("l0_compaction", 1);
+
+#if 0
+  std::vector<uint64_t> load_time;
+  std::vector<uint64_t> work_time;
+  bool record_load_history = (FLAGS_load_history_file == "") ? false : true;
+  if (record_load_history) {
+    load_time.resize(FLAGS_loads);
+  }
+  bool record_work_history = (FLAGS_work_history_file == "" && !FLAGS_load_only) ? false : true;
+  if (record_work_history) {
+    work_time.resize(FLAGS_works);
+  }
+#endif
+
+  enum class CpuBindType {
+    kNone,
+    kCpuNumaRoundRobin,
+    kNumaRoundRobin
+  };
+  CpuBindType bind_type;
+  //int num_cpus = numa_num_configured_cpus();
+  //int num_sockets = numa_num_configured_nodes();
+  std::cout << "Thread bind type: ";
+  if (FLAGS_bind_type == "cpu_numa_rr") {
+    bind_type = CpuBindType::kCpuNumaRoundRobin;
+    std::cout << "CpuBindType::kCpuNumaRoundRobin";
+  } else if (FLAGS_bind_type == "numa_rr") {
+    bind_type = CpuBindType::kNumaRoundRobin;
+    std::cout << "CpuBindType::kNumaRoundRobin";
+  } else {
+    bind_type = CpuBindType::kNone;
+    std::cout << "CpuBindType::kNone";
+  }
+  std::cout << std::endl;
   
   // Load
   {
@@ -326,13 +238,28 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     const size_t num_ops_per_thread = FLAGS_loads / num_threads;
     for (int id = 0; id < num_threads; id++) {
       loaders.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
+        if (bind_type == CpuBindType::kCpuNumaRoundRobin) {
+          SetAffinity(Numa::CpuSequenceRR(id));
+        } else if (bind_type == CpuBindType::kNumaRoundRobin) {
+          numa_run_on_node(id % kNumRegions);
+        }
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr;
+
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
           client->Put(load_keys[i], load_keys[i]);
+#if 0
+          //if (record_load_history) {
+          //  load_time[i] = Clock::NowNanos();
+          //}
+#endif
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
         }
+        delete reporter_client;
       });
     }
     for (auto& t : loaders) {
@@ -342,18 +269,26 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
     fprintf(stdout, "Load IOPS: %.3lf M\n", FLAGS_loads/dur_sec/1000000);
+
+    //uint64_t load_begin = std::chrono::duration_cast<std::chrono::nanoseconds>(begin_tp.time_since_epoch()).count();
+    //FlushHistoryFile(load_time, load_begin, FLAGS_loads, FLAGS_load_history_file);
+    std::string flush_stat;
+    db->GetStatString("flush_stats", &flush_stat);
+    fprintf(stdout, "%s\n", flush_stat.c_str());
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(3));
-  for (int i = 0; i < num_shards; i++) {
-    db->ManualFlushMemTable(i);
+  if (!FLAGS_load_only) {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    for (int i = 0; i < num_shards; i++) {
+      db->ManualFlushMemTable(i);
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(20));
+    db->PrintDebugLsmState(0);
   }
-  std::this_thread::sleep_for(std::chrono::seconds(20));
-  db->PrintDebugLsmState(0);
 
   // Work
-  {
+  if (!FLAGS_load_only) {
     printf("WORK %zu queries\n", FLAGS_works);
     //std::vector<std::chrono::duration<double>> latency;
     //latency.reserve(FLAGS_works);
@@ -374,7 +309,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     const size_t num_ops_per_thread = FLAGS_works / num_threads;
     for (int id = 0; id < num_threads; id++) {
       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
+        if (bind_type == CpuBindType::kCpuNumaRoundRobin) {
+          SetAffinity(Numa::CpuSequenceRR(id));
+        } else if (bind_type == CpuBindType::kNumaRoundRobin) {
+          numa_run_on_node(id % kNumRegions);
+        }
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
@@ -443,108 +382,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   delete db;
 }
 
-void Run3(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
-          const std::vector<uint64_t>& work_keys) {
-  fprintf(stdout, "=== lockfree_skiplist (%d-shard) ===\n", num_shards);
-
-  lockfree_skiplist skiplist[num_shards];
-  using Node = lockfree_skiplist::Node;
-  
-  // Load
-  {
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = FLAGS_loads / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        Random rnd(id);
-        SetAffinity(Numa::CpuSequenceRR(id));
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          static const unsigned int kBranching = 4;
-          int height = 1;
-          while (height < kMaxHeight && ((rnd.Next() % kBranching) == 0)) {
-            height++;
-          }
-          const size_t alloc_size = Node::compute_alloc_size(load_keys[i], height);
-          
-          int s = load_keys[i] % num_shards;
-
-          void* buf = aligned_alloc(8, alloc_size);
-          Node* node = Node::init_node((char*) buf, load_keys[i], 0, kTypeValue, height, 0);
-          //node->log_paddr = 0;
-          skiplist[s].Insert(node);
-        }
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load IOPS: %.3lf M\n", FLAGS_loads/dur_sec/1000000);
-  }
-
-  // Work
-  {
-    printf("WORK %zu queries\n", FLAGS_works);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-    std::vector<int> cnt(num_threads);
-    const size_t num_ops_per_thread = FLAGS_works / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        //int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          int s = work_keys[i] % num_shards;
-          skiplist[s].Lookup(work_keys[i]);
-        }
-      });
-    }
-    for (auto& t :  workers) {
-      t.join();
-    }
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Work IOPS: %.3lf M\n", FLAGS_works/dur_sec/1000000);
-    //fprintf(stdout, "Found %d\n", cnt_sum);
-  }
-  fprintf(stdout, "\n");
-}
-
-void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::string>* props) {
-  struct option long_options[] = {
-    { "num_threads", required_argument, 0, 0 },
-    { "num_shards", required_argument, 0, 0 },
-    { "read_ratio", required_argument, 0, 0 },
-    { 0, 0, 0, 0 }
-  };
-  const static char* optstring = "";
-  int c;
-  int i;
-  while ((c = getopt_long(argc, argv, optstring, long_options, &i)) != -1) {
-    switch (c) {
-      case 0: {
-        if (long_options[i].flag != 0) {
-          break;
-        }
-        props->emplace(long_options[i].name, optarg);
-        break;
-      }
-      default: {
-        abort();
-      }
-    }
-  }
-}
-
 std::string GetFileName(const std::string& base, bool is_load, const std::string& type, const std::string& query_dist) {
   std::string_view dist_short(query_dist.data(), 4);
   std::stringstream ss;
@@ -573,9 +410,7 @@ int main(int argc, char* argv[]) {
   FillLoadKeys(FLAGS_loads, &load_keys, load_file);
   FillWorkKeys(FLAGS_works, &work_ops, &work_keys, work_file);
 
-  //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
   Run2(num_threads, num_shards, load_keys, work_ops, work_keys);
-  //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
 
   return 0;
 }

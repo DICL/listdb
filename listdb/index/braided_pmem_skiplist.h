@@ -22,7 +22,7 @@ class BraidedPmemSkipList {
     int height() const { return tag & 0xf; }
   };
 
-  BraidedPmemSkipList(int primary_region_pool_id = 0);
+  BraidedPmemSkipList(int primary_region_pool_id);
 
   void BindArena(int pool_id, PmemLog* arena);
 
@@ -45,7 +45,7 @@ class BraidedPmemSkipList {
   PmemPtr head_paddr() { return PmemPtr(primary_region_pool_id_, (char*) head_[primary_region_pool_id_]); }
 
  private:
-  const int primary_region_pool_id_ = 0;
+  const int primary_region_pool_id_;
 #ifndef REGION_ARRAY
   std::map<int, PmemLog*> arena_;
   std::map<int, Node*> head_;
