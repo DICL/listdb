@@ -272,6 +272,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
     //uint64_t load_begin = std::chrono::duration_cast<std::chrono::nanoseconds>(begin_tp.time_since_epoch()).count();
     //FlushHistoryFile(load_time, load_begin, FLAGS_loads, FLAGS_load_history_file);
+    std::string flush_stat;
+    db->GetStatString("flush_stats", &flush_stat);
+    fprintf(stdout, "%s\n", flush_stat.c_str());
   }
   fprintf(stdout, "\n");
 

@@ -75,7 +75,11 @@ inline void MemTableList::EnqueueCompaction(Table* table) {
 }
 
 void MemTableList::CleanUpFlushedImmutables() {
-#if 1
+#if LISTDB_FLUSH_MEMTABLE_TO_L1 == 1
+  std::unique_lock<std::mutex> lk(mu_);
+  num_memtables_--;
+  cv_.notify_one();
+#else
   auto curr = GetFront();
   std::vector<Table*> tables;
   while (curr) {
@@ -118,10 +122,6 @@ void MemTableList::CleanUpFlushedImmutables() {
   std::unique_lock<std::mutex> lk(mu_);
   num_memtables_ -= flushed_cnt;
   lk.unlock();
-  cv_.notify_one();
-#else
-  std::unique_lock<std::mutex> lk(mu_);
-  num_memtables_--;
   cv_.notify_one();
 #endif
 }
