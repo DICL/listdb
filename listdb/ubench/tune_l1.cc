@@ -174,7 +174,7 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
   BraidedPmemSkipList* skiplist[num_shards];
   PmemLog* arena[num_shards][kNumRegions];
   for (int i = 0; i < num_shards; i++) {
-    auto sl = new BraidedPmemSkipList();
+    auto sl = new BraidedPmemSkipList(pool_id_table[0]);
     for (int j = 0; j < kNumRegions; j++) {
       arena[i][j] = new PmemLog(pool_id_table[j], i);
       sl->BindArena(pool_id_table[j], arena[i][j]);

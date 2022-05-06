@@ -60,9 +60,10 @@ inline FixedLengthStringKey<N>::FixedLengthStringKey(const int key) {
 
 template <std::size_t N>
 inline uint64_t FixedLengthStringKey<N>::key_num() const {
-  unsigned char buf[sizeof(uint64_t)];
-  memset(buf, 0, sizeof(buf));
-  memcpy(buf, this->data(), std::min(this->size(), sizeof(uint64_t)));
+  //unsigned char buf[sizeof(uint64_t)];
+  //memset(buf, 0, sizeof(buf));
+  //memmove(buf, this->data(), std::min(this->size(), sizeof(uint64_t)));
+  unsigned char* buf = (unsigned char*) data_;
   uint64_t number;
   number = static_cast<uint64_t>(buf[0]) << 56
         | static_cast<uint64_t>(buf[1]) << 48
@@ -77,20 +78,17 @@ inline uint64_t FixedLengthStringKey<N>::key_num() const {
 
 template <std::size_t N>
 inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other) const {
-#if 0
-  return strncmp(data_, other.data_, N);
-#endif
-#if 0
+#if 1
   return memcmp(data_, other.data_, N);
 #endif
-#if 1
+#if 0
   size_t pos = 0;
   while (pos + 8 <= N) {
-    uint64_t* a = (uint64_t*) (data_ + pos);
-    uint64_t* b = (uint64_t*) (other.data_ + pos);
-    if (*a < *b) {
+    uint64_t a = util::KeyNum((unsigned char*) (data_ + pos));
+    uint64_t b = util::KeyNum((unsigned char*) (other.data_ + pos));
+    if (a < b) {
       return -1;
-    } else if (*a > *b) {
+    } else if (a > b) {
       return 1;
     } else {
       pos += 8;
@@ -99,14 +97,15 @@ inline int FixedLengthStringKey<N>::Compare(const FixedLengthStringKey<N>& other
   return memcmp(data_ + pos, other.data_ + pos, N - pos);
 #endif
 #if 0
+  // NOTE: Fastest
+  const unsigned char* a = (const unsigned char*) data_;
+  const unsigned char* b = (const unsigned char*) other.data_;
   size_t pos = 0;
-  while (pos < N) {
-    if (data_[pos] != other.data_[pos]) {
-      return data_[pos] - other.data_[pos];
-    }
+  int ret = 0;
+  while (pos < N && (ret = a[pos] - b[pos]) != 0) {
     pos++;
   }
-  return 0;
+  return ret;
 #endif
 }
 

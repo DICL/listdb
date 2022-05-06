@@ -2,27 +2,31 @@ cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
 project(listdb)
 
+message("${CMAKE_C_FLAGS}")
+message("${CMAKE_CXX_FLAGS}")
+
 set(CMAKE_CXX_COMPILER "g++")
 #set(CMAKE_VERBOSE_MAKEFILE ON)
 
 option(DEBUG "build debug mode." OFF)
 option(STRING_KEY "string key mode." OFF)
 option(WISCKEY "Store values in Wisckey manner." OFF)
+option(SKIPLIST_CACHE "SkipListCache." OFF)
 
 if(DEBUG)
   message("[O] DEBUG MODE.")
-  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -g")
+  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -g ${CMAKE_C_FLAGS}")
 else()
   message("[X] RELEASE MODE: DEBUG disabled.")
   #set(CMAKE_C_FLAGS "-Wall -Wsign-compare -pg")
-  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -O3 -g -DNDEBUG")
+  set(CMAKE_C_FLAGS "-Wall -Wsign-compare -O3 -g -DNDEBUG ${CMAKE_C_FLAGS}")
 endif(DEBUG)
 
 if(STRING_KEY)
-  message("[O] STRING KEY ENABLED.")
+  message("[O] STRING_KEY ENABLED.")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_STRING_KEY")
 else()
-  message("[X] STRING KEY disabled.")
+  message("[X] STRING_KEY disabled.")
 endif(STRING_KEY)
 
 if(WISCKEY)
@@ -31,6 +35,20 @@ if(WISCKEY)
 else()
   message("[X] WISCKEY disabled.")
 endif(WISCKEY)
+
+if(SKIPLIST_CACHE)
+  message("[O] SKIPLIST_CACHE ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_SKIPLIST_CACHE")
+else()
+  message("[X] SKIPLIST_CACHE disabled.")
+endif(SKIPLIST_CACHE)
+
+if(WAL)
+  message("[O] WAL ENABLED.")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLISTDB_WAL")
+else()
+  message("[X] WAL disabled.")
+endif(WAL)
 
 ##
 # GFLAGS
@@ -43,6 +61,9 @@ endif()
 # Compiler options
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfatal-errors ")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++17 -march=native ")
+
+message("${CMAKE_C_FLAGS}")
+message("${CMAKE_CXX_FLAGS}")
 
 ##
 # Link options
@@ -81,6 +102,7 @@ if(STRING_KEY)
 set(test_srcs
   listdb/pmem/pmem_test.cc
   listdb/lib/numa_test.cc
+  listdb/core/skiplist_cache_test.cc
   )
 else()
 set(test_srcs
@@ -88,6 +110,7 @@ set(test_srcs
   listdb/lib/numa_test.cc
   listdb/db_client_test.cc
   listdb/index/braided_pmem_skiplist_test.cc
+  listdb/core/skiplist_cache_test.cc
   )
 endif(STRING_KEY)
 foreach (test_src ${test_srcs})
@@ -123,6 +146,7 @@ set(ubench_srcs
   listdb/ubench/tune_l1.cc
   listdb/ubench/recovery_test.cc
   listdb/ubench/string_kv_test.cc
+  listdb/ubench/ycsb_index_microbench.cc
   )
 foreach (ubench_src ${ubench_srcs})
   get_filename_component(ubench_name ${ubench_src} NAME_WE)
@@ -139,8 +163,12 @@ foreach (ubench_src ${ubench_srcs})
     pmemobj
     stdc++fs
     tbb
+    gflags
     #/home/wkim/Projects/libcds-2.3.3/build/bin/libcds.so
     )
+  if(gflags_FOUND)
+    target_link_libraries(${ubench_name} ${gflags_LIBRARIES})
+  endif()
   #target_include_directories(${ubench_name} PUBLIC
   #  /home/wkim/Projects/libcds-2.3.3
   #  )

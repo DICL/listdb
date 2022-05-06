@@ -1,6 +1,8 @@
 #ifndef LISTDB_CORE_PMEM_BLOB_H_
 #define LISTDB_CORE_PMEM_BLOB_H_
 
+#include <mutex>
+
 #include <libpmemobj++/persistent_ptr.hpp>
 #include <libpmemobj++/make_persistent_atomic.hpp>
 

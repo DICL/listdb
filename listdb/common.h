@@ -11,14 +11,24 @@
 
 //#define GROUP_LOGGING
 //#define L1_COW
-//#define LOOKUP_CACHE
+#define L0_CACHE_T_SIMPLE 1
+#define L0_CACHE_T_STATIC 2
+#define L0_CACHE_T_DOUBLE_HASHING 3
+#define L0_CACHE_T_LINEAR_PROBING 4
+//#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
+
+#ifdef LISTDB_L0_CACHE
+#ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
+#define LISTDB_L0_CACHE_PROBING_DISTANCE 1
+#endif
+#endif
 
 #ifndef LISTDB_STRING_KEY
 #include "listdb/core/integer_key.h"
 #define Key IntegerKey
 #else
 #include "listdb/core/fixed_length_string_key.h"
-constexpr size_t kStringKeyLength = 8;
+constexpr size_t kStringKeyLength = 16;
 #define Key FixedLengthStringKey<kStringKeyLength>
 #endif
 #define Value uint64_t
@@ -26,7 +36,7 @@ constexpr size_t kStringKeyLength = 8;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 128;
+constexpr int kNumShards = 256;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
 #endif
@@ -34,7 +44,7 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 8;
+constexpr int kMaxNumMemTables = 4;
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
@@ -43,6 +53,17 @@ constexpr int kMaxHeight = 15;
 #ifdef LISTDB_L1_LRU
 constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
+#endif
+
+#ifdef LISTDB_SKIPLIST_CACHE
+constexpr size_t kSkipListCacheCardinality = 4;
+#define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
+
+constexpr uint16_t kSkipListCacheMaxHeight = 15;
+constexpr uint16_t kSkipListCacheBranching = 4;
+
+constexpr int kSkipListCacheMinPmemHeight = 8;
+constexpr size_t kSkipListCacheCapacity = (45ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
@@ -55,8 +76,16 @@ constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 
 //constexpr uint64_t kHTMask = 0x0fffffff;
+#ifndef LISTDB_SKIPLIST_CACHE
 //constexpr size_t kHTSize = kHTMask + 1;
-constexpr size_t kHTSize = 200ull * 1000 * 1000;
+constexpr size_t kHTSize = 150ull * 1000 * 1000;
+#else
+#if LISTDB_L0_CACHE != L0_CACHE_T_SIMPLE
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
+#else
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 24;
+#endif
+#endif
 
 enum ValueType {
   kTypeAnchor = 0x0,

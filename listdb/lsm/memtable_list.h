@@ -76,7 +76,7 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   auto shard_manifest = db_root->shard[shard_id_];
   l0_manifest->id = shard_manifest->l0_cnt++;
   l0_manifest->status = Level0Status::kInitialized;
-  BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList();
+  BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList(arena_[0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
     l0_skiplist->BindArena(arena_[i]->pool_id(), arena_[i]);
   }
@@ -99,7 +99,11 @@ inline void MemTableList::EnqueueCompaction(Table* table) {
 }
 
 void MemTableList::CleanUpFlushedImmutables() {
-#if 1
+#if LISTDB_FLUSH_MEMTABLE_TO_L1 == 1
+  std::unique_lock<std::mutex> lk(mu_);
+  num_memtables_--;
+  cv_.notify_one();
+#else
   auto curr = GetFront();
   std::vector<Table*> tables;
   while (curr) {
@@ -142,10 +146,6 @@ void MemTableList::CleanUpFlushedImmutables() {
   std::unique_lock<std::mutex> lk(mu_);
   num_memtables_ -= flushed_cnt;
   lk.unlock();
-  cv_.notify_one();
-#else
-  std::unique_lock<std::mutex> lk(mu_);
-  num_memtables_--;
   cv_.notify_one();
 #endif
 }

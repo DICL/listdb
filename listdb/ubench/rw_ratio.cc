@@ -176,7 +176,7 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
   BraidedPmemSkipList* skiplist[num_shards];
   PmemLog* arena[num_shards][kNumRegions];
   for (int i = 0; i < num_shards; i++) {
-    auto sl = new BraidedPmemSkipList();
+    auto sl = new BraidedPmemSkipList(pool_id_table[0]);
     for (int j = 0; j < kNumRegions; j++) {
       arena[i][j] = new PmemLog(pool_id_table[j], i);
       sl->BindArena(pool_id_table[j], arena[i][j]);
@@ -356,7 +356,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  std::this_thread::sleep_for(std::chrono::seconds(35));
+  std::this_thread::sleep_for(std::chrono::seconds(20));
   db->PrintDebugLsmState(0);
 
   // Work
@@ -444,6 +444,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 #endif
   }
   fprintf(stdout, "\n");
+  std::string buf;
+  db->GetStatString("l1_cache_size", &buf);
+  fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
 
@@ -567,6 +570,35 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(stdout, "num_threads=%d\nread_ratio=%d\n", num_threads, read_ratio);
+  {
+    fprintf(stdout, "*** Cache Configurations ***\n");
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (SimpleHashTable)\n",
+            kHTSize, kHTSize * sizeof(SimpleHashTable::Bucket));
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
+            kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (DoubleHashingCache)\n",
+            kHTSize, kHTSize * sizeof(DoubleHashingCache::Bucket));
+#else
+    fprintf(stdout, "L0_cache_size: 0\n");
+#endif
+
+#ifdef LISTDB_SKIPLIST_CACHE
+    fprintf(stdout, "L1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
+
+    std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
+    std::cout << "kSkipListCacheMinPmemHeight: " << kSkipListCacheMinPmemHeight << std::endl;
+#else
+    fprintf(stdout, "L1_cache_size: disabled.\n");
+#endif
+
+#ifdef LISTDB_L0_CACHE
+    fprintf(stdout, "L0_CACHE_TYPE: %d\n", LISTDB_L0_CACHE);
+    fprintf(stdout, "PROBING_DISTANCE: %d\n", LISTDB_L0_CACHE_PROBING_DISTANCE);
+#endif
+  }
 
   Numa::Init();
   std::vector<uint64_t> load_keys;

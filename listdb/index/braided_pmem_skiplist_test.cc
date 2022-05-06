@@ -37,7 +37,7 @@ void InitPoolSet() {
 
 void InsertAndLookupSingleElement() {
   InitPoolSet();
-  auto sl = new BraidedPmemSkipList();
+  auto sl = new BraidedPmemSkipList(pool_id_table[0]);
   PmemLog* arena[kNumRegions];
   for (int i = 0; i < kNumRegions; i++) {
     arena[i] = new PmemLog(pool_id_table[i], 0);

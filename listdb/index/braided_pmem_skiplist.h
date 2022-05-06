@@ -24,7 +24,7 @@ class BraidedPmemSkipList {
     uint32_t l0_id() const { return (tag >> 32); }
   };
 
-  BraidedPmemSkipList(int primary_region_pool_id = 1);
+  BraidedPmemSkipList(int primary_region_pool_id);
 
   void BindArena(int pool_id, PmemLog* arena);
 
@@ -51,10 +51,9 @@ class BraidedPmemSkipList {
   pmem::obj::persistent_ptr<char[]> p_head(const int pool_id) { return p_head_[pool_id]; }
 
  private:
-  const int primary_region_pool_id_ = 1;
+  const int primary_region_pool_id_;
   std::map<int, PmemLog*> arena_;
   std::map<int, Node*> head_;
-  //std::vector<int> pool_ids_;
   std::map<int, pmem::obj::persistent_ptr<char[]>> p_head_;
 };
 

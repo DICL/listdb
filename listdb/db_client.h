@@ -38,7 +38,8 @@ class DBClient {
   
 
  private:
-  int RandomHeight();
+  int DramRandomHeight();
+  int PmemRandomHeight();
 
   static int KeyShard(const Key& key);
 
@@ -103,8 +104,8 @@ void DBClient::Put(const Key& key, const Value& value) {
 #ifndef GROUP_LOGGING
   int s = KeyShard(key);
 
-  uint64_t height = RandomHeight();
-  size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+  uint64_t pmem_height = PmemRandomHeight();
+  size_t iul_entry_size = sizeof(PmemNode) + (pmem_height - 1) * sizeof(uint64_t);
   size_t kv_size = key.size() + sizeof(Value);
 
   // Determine L0 id
@@ -115,12 +116,12 @@ void DBClient::Put(const Key& key, const Value& value) {
   auto log_paddr = log_[s]->Allocate(iul_entry_size);
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
 #ifdef LOG_NTSTORE
-  _mm_stream_pi((__m64*) &iul_entry->tag, (__m64) height);
+  _mm_stream_pi((__m64*) &iul_entry->tag, (__m64) pmem_height);
   _mm_stream_pi((__m64*) &iul_entry->value, (__m64) value);
   //_mm_sfence();
   _mm_stream_pi((__m64*) &iul_entry->key, (__m64) (uint64_t) key);
 #else
-  iul_entry->tag = (l0_id << 32) | height;
+  iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value;
   //clwb(&iul_entry->tag, 16);
   _mm_sfence();
@@ -130,11 +131,12 @@ void DBClient::Put(const Key& key, const Value& value) {
 #endif
 
   // Create skiplist node
-  MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (height - 1) * sizeof(uint64_t));
+  uint64_t dram_height = DramRandomHeight();
+  MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t));
   node->key = key;
-  node->tag = (l0_id << 32) | height;
+  node->tag = (l0_id << 32) | dram_height;
   node->value = log_paddr.dump();
-  memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
+  memset((void*) &node->next[0], 0, dram_height * sizeof(uint64_t));
 
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
@@ -208,7 +210,6 @@ void DBClient::Put(const Key& key, const Value& value) {
 
 bool DBClient::Get(const Key& key, Value* value_out) {
   int s = KeyShard(key);
-#if 1
   {
     MemTableList* tl = (MemTableList*) db_->GetTableList(0, s);
 
@@ -227,12 +228,33 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       }
       table = table->Next();
     }
-#ifdef LOOKUP_CACHE
+
+#ifdef LISTDB_L0_CACHE
     {
       auto ht = db_->GetHashTable(s);
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
       if (ht->Get(key, value_out)) {
         return true;
       }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
+#endif
     }
 #endif
     pmem_get_cnt_++;
@@ -240,7 +262,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = Lookup(key, region_, skiplist);
+      auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
         //fprintf(stdout, "found on pmem\n");
@@ -268,19 +290,6 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
-#else
-  if (1) {
-    if (bsl_[s] == nullptr) {
-      auto tl = (PmemTableList*) db_->GetTableList(1, s);
-      auto table = tl->GetFront();
-      auto pmem = (PmemTable*) table;
-      auto skiplist = pmem->skiplist();
-      bsl_[s] = skiplist;
-    }
-    bsl_[s]->Lookup(key, region_ + 2);
-    return true;
-  }
-#endif
   return false;
 }
 
@@ -292,8 +301,8 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   //}
   int s = KeyShard(key);
 
-  uint64_t height = RandomHeight();
-  size_t iul_entry_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+  uint64_t pmem_height = PmemRandomHeight();
+  size_t iul_entry_size = sizeof(PmemNode) + (pmem_height - 1) * sizeof(uint64_t);
   //size_t kv_size = key.size() + value.size();
 
   // Write value
@@ -311,8 +320,7 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   // Write log
   auto log_paddr = log_[s]->Allocate(iul_entry_size);
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
-  //iul_entry->tag = height;
-  iul_entry->tag = (l0_id << 32) | height;
+  iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value_paddr.dump();
   //clwb(&iul_entry->tag, 16);
   _mm_sfence();
@@ -321,13 +329,14 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 
   // Create skiplist node
+  uint64_t dram_height = DramRandomHeight();
+  size_t mem_node_size = sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t);
   MemNode* node = (MemNode*) malloc(mem_node_size);
   node->key = key;
-  node->tag = (l0_id << 32) | height;
-  //node->tag = height;
+  node->tag = (l0_id << 32) | dram_height;
   //node->value = value;
   node->value = log_paddr.dump();
-  memset((void*) &node->next[0], 0, height * sizeof(uint64_t));
+  memset((void*) &node->next[0], 0, dram_height * sizeof(uint64_t));
 
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
@@ -356,12 +365,32 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       }
       table = table->Next();
     }
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
     {
       auto ht = db_->GetHashTable(s);
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
       if (ht->Get(key, value_out)) {
         return true;
       }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#endif
     }
 #endif
     pmem_get_cnt_++;
@@ -411,8 +440,8 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 }
 #endif
 
-inline int DBClient::RandomHeight() {
-#ifdef LISTDB_L1_LRU
+inline int DBClient::PmemRandomHeight() {
+#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
   static const unsigned int kBranching = 2;
 #else
   static const unsigned int kBranching = 4;
@@ -430,6 +459,15 @@ inline int DBClient::RandomHeight() {
     height++;
   }
 #endif
+  return height;
+}
+
+inline int DBClient::DramRandomHeight() {
+  static const unsigned int kBranching = 4;
+  int height = 1;
+  while (height < kMaxHeight && ((rnd_.Next() % kBranching) == 0)) {
+    height++;
+  }
   return height;
 }
 
@@ -576,6 +614,29 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       height = pred->height();
     }
   }
+#endif
+#ifdef LISTDB_SKIPLIST_CACHE
+  auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  #if 0
+  PmemNode* rv = c->LookupLessThan(key);
+  if (rv) {
+    pred = rv;
+    height = pred->height();
+  }
+  #else
+  PmemNode* lte_pnode = nullptr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
+  if (lte_pnode) {
+    if (rv == 0) {
+      return PmemPtr(pool_id, (char*) lte_pnode);
+    } else {
+      pred = lte_pnode;
+      //height = pred->height();
+      height = kSkipListCacheMinPmemHeight;
+    }
+  }
+
+  #endif
 #endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
