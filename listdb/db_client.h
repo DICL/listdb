@@ -224,17 +224,30 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       }
       table = table->Next();
     }
-#ifdef LOOKUP_CACHE
+
+#ifdef LISTDB_L0_CACHE
     {
       auto ht = db_->GetHashTable(s);
-#ifdef L0_STATIC_HASH
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
+      if (ht->Get(key, value_out)) {
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
       ListDB::PmemNode* rv = ht->Lookup(key);
       if (rv) {
         *value_out = rv->value;
         return true;
       }
-#else
-      if (ht->Get(key, value_out)) {
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = rv->value;
         return true;
       }
 #endif
@@ -341,17 +354,29 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       }
       table = table->Next();
     }
-#ifdef LOOKUP_CACHE
+#ifdef LISTDB_L0_CACHE
     {
       auto ht = db_->GetHashTable(s);
-#ifdef L0_STATIC_HASH
+#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
+      if (ht->Get(key, value_out)) {
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
       ListDB::PmemNode* rv = ht->Lookup(key);
       if (rv) {
         *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
         return true;
       }
-#else
-      if (ht->Get(key, value_out)) {
+#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
+        return true;
+      }
+#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
+      ListDB::PmemNode* rv = ht->Lookup(key);
+      if (rv) {
+        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
         return true;
       }
 #endif

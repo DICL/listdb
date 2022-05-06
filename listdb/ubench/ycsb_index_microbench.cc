@@ -41,6 +41,8 @@ DEFINE_int32(threads, 80, "Number of concurrent threads to run.");
 
 DEFINE_int32(shards, kNumShards, "num shards");
 
+DEFINE_string(workload_dir, "", "example) ~/RECIPE/index-microbench/workloads_100M_10M_zipf");
+
 //#define COUNT_FOUND
 
 namespace fs = std::experimental::filesystem::v1;
@@ -563,9 +565,8 @@ int main(int argc, char* argv[]) {
   work_ops.reserve(FLAGS_works);
   work_keys.reserve(FLAGS_works);
 
-  std::string workload_path_base = "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf";
-  auto load_file = GetFileName(workload_path_base, true, FLAGS_workload, FLAGS_query_dist);
-  auto work_file = GetFileName(workload_path_base, false, FLAGS_workload, FLAGS_query_dist);
+  auto load_file = GetFileName(FLAGS_workload_dir, true, FLAGS_workload, FLAGS_query_dist);
+  auto work_file = GetFileName(FLAGS_workload_dir, false, FLAGS_workload, FLAGS_query_dist);
   std::cout << load_file << std::endl;
   std::cout << work_file << std::endl;
 
