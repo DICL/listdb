@@ -313,7 +313,8 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   value_p += sizeof(size_t);
   memcpy(value_p, value.data(), value.size());
 
-  size_t mem_node_size = sizeof(MemNode) + (height - 1) * sizeof(uint64_t);
+  uint64_t dram_height = DramRandomHeight();
+  size_t mem_node_size = sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t);
   auto mem = db_->GetWritableMemTable(mem_node_size, s);
   uint64_t l0_id = mem->l0_id();
 
@@ -329,8 +330,6 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 
   // Create skiplist node
-  uint64_t dram_height = DramRandomHeight();
-  size_t mem_node_size = sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t);
   MemNode* node = (MemNode*) malloc(mem_node_size);
   node->key = key;
   node->tag = (l0_id << 32) | dram_height;

@@ -334,7 +334,6 @@ void ListDB::Init() {
   #endif
 #endif
 
-
 #ifdef LISTDB_WISCKEY
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
@@ -512,14 +511,43 @@ void ListDB::Open() {
       log_[i][j] = new PmemLog(pool_id, j);
     }
   }
+#ifndef LISTDB_WAL
+  // IUL
+  for (int i = 0; i < kNumRegions; i++) {
+    l0_pool_id_[i] = log_pool_id_[i];
+    for (int j = 0; j < kNumShards; j++) {
+      l0_arena_[i][j] = log_[i][j];
+    }
+  }
+#else
+  std::cerr << "Open() for LISTDB_WAL is not implemented." << std:endl;
+  exit(1);
+#endif
+
+#ifdef LISTDB_WISCKEY
+  for (int i = 0; i < kNumRegions; i++) {
+    std::stringstream pss;
+    pss << "/pmem" << i << "/wkim/listdb_value";
+    std::string path = pss.str();
+    std::string poolset = path + ".set";
+
+    int pool_id = Pmem::BindPoolSet<pmem_blob_root>(poolset, "");
+    pool_id_to_region_[pool_id] = i;
+    auto pool = Pmem::pool<pmem_blob_root>(pool_id);
+
+    for (int j = 0; j < kNumShards; j++) {
+      value_blob_[i][j] = new PmemBlob(pool_id, j);
+    }
+  }
+#endif
 
 #ifdef L1_COW
-  std::cerr << "Open() for L0 CoW compaction is not implemented.\n";
+  std::cerr << "Open() for L0 CoW compaction is not implemented." << std:endl;
   exit(1);
 #else
   for (int i = 0; i < kNumRegions; i++) {
     for (int j = 0; j < kNumShards; j++) {
-      l1_arena_[i][j] = log_[i][j];
+      l1_arena_[i][j] = l0_arena_[i][j];
     }
   }
 #endif
@@ -545,7 +573,7 @@ void ListDB::Open() {
         wq_cv_.notify_one();
       });
       for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(j, log_[j][i]);
+        tl->BindArena(j, l0_arena_[j][i]);
       }
       ll_[i]->SetTableList(0, tl);
     }
@@ -599,7 +627,7 @@ void ListDB::Open() {
         if (l1_info) {
           l1_recovery_cnt++;
           // Prepare L1 SkipList
-          auto l1_skiplist = new BraidedPmemSkipList();
+          auto l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
           for (int j = 0; j < kNumRegions; j++) {
             int pool_id = l1_pool_id_[j];
             l1_skiplist->BindArena(pool_id, l1_arena_[j][i]);
@@ -674,11 +702,11 @@ void ListDB::Open() {
         // l0_manifests: oldest to newest
         for (auto& l0 : l0_manifests) {
           // Prepare L0 SkipList
-          auto l0_skiplist = new BraidedPmemSkipList();
+          auto l0_skiplist = new BraidedPmemSkipList(l0_arena_[0][0]->pool_id());
           for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = log_[j][i]->pool_id();
+            int pool_id = l0_arena_[j][i]->pool_id();
             int region = pool_id_to_region_[pool_id];
-            l0_skiplist->BindArena(pool_id, log_[j][i]);
+            l0_skiplist->BindArena(pool_id, l0_arena_[j][i]);
             l0_skiplist->BindHead(pool_id, (void*) l0->head[region].get());
           }
 
@@ -1218,6 +1246,7 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_time_usec += (end_micros - begin_micros);
 
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  l0_table->SetManifest(task->imm->l0_manifest());
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   //task->imm->FinalizeFlush();
@@ -1539,6 +1568,7 @@ void ListDB::ManualFlushMemTable(int shard) {
   REPORT_DONE;  // Up report all remainings
 
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  l0_table->SetManifest(reinterpret_cast<MemTable*>(table)->l0_manifest());
   reinterpret_cast<MemTable*>(table)->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   tl->CleanUpFlushedImmutables();
@@ -1826,7 +1856,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     auto db_root = db_pool.root();
     auto shard_manifest = db_root->shard[task->shard];
     //l1_manifest->id = ??;
-    BraidedPmemSkipList* l1_skiplist = new BraidedPmemSkipList();
+    BraidedPmemSkipList* l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
     for (int i = 0; i < kNumRegions; i++) {
       l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
     }
