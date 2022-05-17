@@ -1,15 +1,15 @@
 #ifndef LISTDB_INDEX_BRAIDED_PMEM_SKIPLIST_H_
 #define LISTDB_INDEX_BRAIDED_PMEM_SKIPLIST_H_
 
+#include <x86intrin.h>
+
 #include <map>
 
-#include <x86intrin.h>
+#include <libpmemobj++/make_persistent_array_atomic.hpp>
 
 #include "listdb/pmem/pmem.h"
 #include "listdb/pmem/pmem_ptr.h"
 #include "listdb/core/pmem_log.h"
-
-//#define REGION_ARRAY
 
 class BraidedPmemSkipList {
  public:
@@ -20,11 +20,15 @@ class BraidedPmemSkipList {
     uint64_t next[1];
 
     int height() const { return tag & 0xf; }
+
+    uint32_t l0_id() const { return (tag >> 32); }
   };
 
   BraidedPmemSkipList(int primary_region_pool_id);
 
   void BindArena(int pool_id, PmemLog* arena);
+
+  void BindHead(const int pool_id, void* head_addr);
 
   void Init();
 
@@ -44,52 +48,45 @@ class BraidedPmemSkipList {
 
   PmemPtr head_paddr() { return PmemPtr(primary_region_pool_id_, (char*) head_[primary_region_pool_id_]); }
 
+  pmem::obj::persistent_ptr<char[]> p_head(const int pool_id) { return p_head_[pool_id]; }
+
  private:
   const int primary_region_pool_id_;
-#ifndef REGION_ARRAY
   std::map<int, PmemLog*> arena_;
   std::map<int, Node*> head_;
-#else
-  PmemLog* arena_[kNumRegions];
-  Node* head_[kNumRegions];
-#endif
-  //std::vector<int> pool_ids_;
+  std::map<int, pmem::obj::persistent_ptr<char[]>> p_head_;
 };
 
 BraidedPmemSkipList::BraidedPmemSkipList(const int primary_region_pool_id)
     : primary_region_pool_id_(primary_region_pool_id) { }
 
 void BraidedPmemSkipList::BindArena(const int pool_id, PmemLog* arena) {
-#ifndef REGION_ARRAY
   arena_.emplace(pool_id, arena);
-#else
-  arena_[pool_id] = arena;
-#endif
+}
+
+void BraidedPmemSkipList::BindHead(const int pool_id, void* head_addr) {
+  head_.emplace(pool_id, (Node*) head_addr);
 }
 
 void BraidedPmemSkipList::Init() {
-#ifndef REGION_ARRAY
   for (auto& it : arena_) {
     int pool_id = it.first;
     size_t head_size = sizeof(Node) + (kMaxHeight - 1) * sizeof(uint64_t);
+#if 0
     auto head_paddr = arena_[pool_id]->Allocate(head_size);
     Node* head = (Node*) head_paddr.get();
+#else
+    auto pool = it.second->pool();
+    pmem::obj::persistent_ptr<char[]> pmem_head_buf;
+    pmem::obj::make_persistent_atomic<char[]>(pool, pmem_head_buf, head_size);
+    p_head_[pool_id] = pmem_head_buf;
+    Node* head = (Node*) pmem_head_buf.get();
+#endif
     head->key = 0; 
     head->tag = kMaxHeight;
     memset(&head->next[0], 0, kMaxHeight * sizeof(uint64_t));
     head_.emplace(pool_id, head);
   }
-#else
-  for (int i = 0; i < kNumRegions; i++) {
-    size_t head_size = sizeof(Node) + (kMaxHeight - 1) * sizeof(uint64_t);
-    auto head_paddr = arena_[i]->Allocate(head_size);
-    Node* head = (Node*) head_paddr.get();
-    head->key = 0; 
-    head->tag = kMaxHeight;
-    memset(&head->next[0], 0, kMaxHeight * sizeof(uint64_t));
-    head_[i] = head;
-  }
-#endif
 }
 
 void BraidedPmemSkipList::Insert(PmemPtr node_paddr) {

@@ -30,6 +30,8 @@ class Table {
 
   int64_t w_RefCount () { return writer_ref_cnt_ - writer_unref_cnt_; }
 
+  void SetSize(const size_t size) { size_.store(size); }
+
   //void RetireSize(const size_t size) {
   //  size_retired_.fetch_add(size, std::memory_order_relaxed);
   //}

@@ -12,6 +12,10 @@ class IntegerKey {
   uint64_t key_num() const { return data_; }
   int Compare(const IntegerKey& other) const;
 
+  const char* data() const { return (char*) &data_; }
+
+  bool Valid() const { return data_ != 0; }
+
  private: 
   uint64_t data_;
 };

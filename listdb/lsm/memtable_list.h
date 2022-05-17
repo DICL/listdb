@@ -9,7 +9,7 @@
 
 class MemTableList : public TableList {
  public:
-  MemTableList(const size_t table_capacity);
+  MemTableList(const size_t table_capacity, const int shard_id);
 
   void BindEnqueueFunction(std::function<void(MemTable*)> enqueue_fn);
 
@@ -17,13 +17,14 @@ class MemTableList : public TableList {
 
   void CleanUpFlushedImmutables();
 
-  void NewFront();
+  void CreateNewFront();
 
  protected:
   virtual Table* NewMutable(size_t table_capacity, Table* next_table) override;
 
   virtual void EnqueueCompaction(Table* table) override;
 
+  const int shard_id_;
   const int max_num_memtables_ = kMaxNumMemTables;
   int num_memtables_ = 0;
   std::function<void(MemTable*)> enqueue_fn_;
@@ -34,7 +35,8 @@ class MemTableList : public TableList {
   std::condition_variable cv_;
 };
 
-MemTableList::MemTableList(const size_t table_capacity) : TableList(table_capacity) { }
+MemTableList::MemTableList(const size_t table_capacity, const int shard_id)
+    : TableList(table_capacity), shard_id_(shard_id) { }
 
 void MemTableList::BindEnqueueFunction(std::function<void(MemTable*)> enqueue_fn) {
   enqueue_fn_ = enqueue_fn;
@@ -58,13 +60,35 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   lk.unlock();
   MemTable* new_table = new MemTable(table_capacity);  // TODO(wkim): a table must have an ID
 
+  // Set the next table as full
+  if (next_table) {
+    auto next_memtable = (MemTable*) next_table;
+    auto next_l0_manifest = next_memtable->l0_manifest();
+    next_l0_manifest->status = Level0Status::kFull;
+    // call clwb
+  }
+
+  // Init the new manifest for a new table
+  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest;
+  auto db_pool = Pmem::pool<pmem_db>(0);
+  pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, l0_manifest);
+  auto db_root = db_pool.root();
+  auto shard_manifest = db_root->shard[shard_id_];
+  l0_manifest->id = shard_manifest->l0_cnt++;
+  l0_manifest->status = Level0Status::kInitialized;
   BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList(arena_[0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
     l0_skiplist->BindArena(arena_[i]->pool_id(), arena_[i]);
   }
   l0_skiplist->Init();
+  for (int i = 0; i < kNumRegions; i++) {
+    int pool_id = arena_[i]->pool_id();
+    l0_manifest->head[i] = l0_skiplist->p_head(pool_id);
+  }
+  l0_manifest->next = shard_manifest->l0_list_head->next;
+  shard_manifest->l0_list_head->next = l0_manifest;
   new_table->SetL0SkipList(l0_skiplist);
-
+  new_table->SetL0Manifest(l0_manifest);
   new_table->SetNext(next_table);
   return new_table;
 }
@@ -126,7 +150,7 @@ void MemTableList::CleanUpFlushedImmutables() {
 #endif
 }
 
-void MemTableList::NewFront() {
+void MemTableList::CreateNewFront() {
   std::unique_lock<std::mutex> lk(init_mu_);
   auto table = front_.load(MO_RELAXED);
   auto new_table = NewMutable(table_capacity_, table);

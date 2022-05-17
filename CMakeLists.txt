@@ -144,6 +144,7 @@ set(ubench_srcs
   listdb/ubench/eee.cc
   listdb/ubench/rw_ratio.cc
   listdb/ubench/tune_l1.cc
+  listdb/ubench/recovery_test.cc
   listdb/ubench/string_kv_test.cc
   listdb/ubench/ycsb_index_microbench.cc
   )

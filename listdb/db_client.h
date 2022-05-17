@@ -43,7 +43,9 @@ class DBClient {
 
   static int KeyShard(const Key& key);
 
+#ifdef LISTDB_EXPERIMENTAL_SEARCH_LEVEL_CHECK
   PmemPtr LevelLookup(const Key& key, const int pool_id, const int level, BraidedPmemSkipList* skiplist);
+#endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
 
@@ -106,6 +108,10 @@ void DBClient::Put(const Key& key, const Value& value) {
   size_t iul_entry_size = sizeof(PmemNode) + (pmem_height - 1) * sizeof(uint64_t);
   size_t kv_size = key.size() + sizeof(Value);
 
+  // Determine L0 id
+  auto mem = db_->GetWritableMemTable(kv_size, s);
+  uint64_t l0_id = mem->l0_id();
+
   // Write log
   auto log_paddr = log_[s]->Allocate(iul_entry_size);
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
@@ -115,7 +121,7 @@ void DBClient::Put(const Key& key, const Value& value) {
   //_mm_sfence();
   _mm_stream_pi((__m64*) &iul_entry->key, (__m64) (uint64_t) key);
 #else
-  iul_entry->tag = pmem_height;
+  iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value;
   //clwb(&iul_entry->tag, 16);
   _mm_sfence();
@@ -128,12 +134,10 @@ void DBClient::Put(const Key& key, const Value& value) {
   uint64_t dram_height = DramRandomHeight();
   MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t));
   node->key = key;
-  node->tag = dram_height;
-  //node->value = value;
+  node->tag = (l0_id << 32) | dram_height;
   node->value = log_paddr.dump();
   memset((void*) &node->next[0], 0, dram_height * sizeof(uint64_t));
 
-  auto mem = db_->GetWritableMemTable(kv_size, s);
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
   mem->w_UnRef();
@@ -292,13 +296,16 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #if defined(LISTDB_STRING_KEY) && defined(LISTDB_WISCKEY)
 void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_view& value) {
   Key& key = *((Key*) key_sv.data());
+  //if (!key.Valid()) {
+  //  fprintf(stdout, "key is not valid: %s, %zu, key_num=%zu\n", std::string(key_sv).c_str(), *((uint64_t*) key.data()), key.key_num());
+  //}
   int s = KeyShard(key);
 
   uint64_t pmem_height = PmemRandomHeight();
   size_t iul_entry_size = sizeof(PmemNode) + (pmem_height - 1) * sizeof(uint64_t);
   //size_t kv_size = key.size() + value.size();
 
-  // Write log
+  // Write value
   size_t value_alloc_size = util::AlignedSize(8, 8 + value.size());
   auto value_paddr = value_blob_[s]->Allocate(value_alloc_size);
   char* value_p = (char*) value_paddr.get();
@@ -306,9 +313,15 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   value_p += sizeof(size_t);
   memcpy(value_p, value.data(), value.size());
 
+  uint64_t dram_height = DramRandomHeight();
+  size_t mem_node_size = sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t);
+  auto mem = db_->GetWritableMemTable(mem_node_size, s);
+  uint64_t l0_id = mem->l0_id();
+
+  // Write log
   auto log_paddr = log_[s]->Allocate(iul_entry_size);
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
-  iul_entry->tag = pmem_height;
+  iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value_paddr.dump();
   //clwb(&iul_entry->tag, 16);
   _mm_sfence();
@@ -317,16 +330,13 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 
   // Create skiplist node
-  uint64_t dram_height = DramRandomHeight();
-  size_t mem_node_size = sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t);
   MemNode* node = (MemNode*) malloc(mem_node_size);
   node->key = key;
-  node->tag = dram_height;
+  node->tag = (l0_id << 32) | dram_height;
   //node->value = value;
   node->value = log_paddr.dump();
   memset((void*) &node->next[0], 0, dram_height * sizeof(uint64_t));
 
-  auto mem = db_->GetWritableMemTable(mem_node_size, s);
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
   mem->w_UnRef();
@@ -465,7 +475,8 @@ inline int DBClient::KeyShard(const Key& key) {
   //return key.key_num() / kShardSize;
 }
 
-PmemPtr DBClient::LevelLookup(const Key& key, const int pool_id, const int level, BraidedPmemSkipList* skiplist) {
+#ifdef LISTDB_EXPERIMENTAL_SEARCH_LEVEL_CHECK
+PmemPtr DBClient::LevelLookup(const Key& key, const int region, const int level, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
@@ -519,6 +530,7 @@ PmemPtr DBClient::LevelLookup(const Key& key, const int pool_id, const int level
   }
   return curr_paddr_dump;
 }
+#endif
 
 PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;

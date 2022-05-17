@@ -46,6 +46,7 @@ DEFINE_string(
     "readseq,"
     "readrandom,"
     "mixgraph",
+    "recoveryaftermixgraph"
     "Comma-separated list of operations to run in the specified order. Available benchmarks:\n"
     "\tfillseq       -- write N values in sequential key order in async mode\n"
     "\tfillrandom    -- write N values in random key order in async mode\n"
@@ -922,6 +923,7 @@ class Benchmark {
   //     |        key 00000         |
   //     ----------------------------
   void GenerateKeyFromInt(uint64_t v, int64_t num_keys, std::string_view* key) {
+    if (v == 0) v++;
     char* start = const_cast<char*>(key->data());
     char* pos = start;
 
@@ -1016,6 +1018,8 @@ class Benchmark {
       } else if (name == "readrandom") {
         method = &Benchmark::ReadRandom;
       } else if (name == "mixgraph") {
+        method = &Benchmark::MixGraph;
+      } else if (name == "recoveryaftermixgraph") {
         method = &Benchmark::MixGraph;
       } else if (name == "compact") {
         abort();
@@ -1349,23 +1353,21 @@ class Benchmark {
       threads.emplace_back(ThreadBody, &arg[i]);
     }
 
-    //shared.mu.Lock();
-    //while (shared.num_initialized < n) {
-    //  shared.cv.Wait();
-    //}
     std::unique_lock<std::mutex> lk(shared.mu);
     shared.cv.wait(lk, [&]{ return shared.num_initialized == n; });
 
     shared.start = true;
     shared.cv.notify_all();
-    //while (shared.num_done < n) {
-    //  shared.cv.Wait();
-    //}
     shared.cv.wait(lk, [&]{ return shared.num_done == n; });
-    //shared.mu.Unlock();
     lk.unlock();
 
     for (auto& t : threads) { if (t.joinable()) t.join(); }
+
+    // RecoveryAfterMixGraph
+    if (name == "recoveryaftermixgraph") {
+      RecoveryAfterMixGraph();
+    }
+
 
     // Stats for some threads can be excluded.
     Stats merge_stats;
@@ -1978,7 +1980,9 @@ class Benchmark {
     }
 
     Duration duration(FLAGS_duration, reads_);
-    thread->op_time_arr->emplace_back(-1, Clock::NowNanos());
+    if (thread->op_time_arr) {
+      thread->op_time_arr->emplace_back(-1, Clock::NowNanos());
+    }
     while (!duration.Done(1)) {
       int64_t ini_rand, rand_v, key_rand, key_seed;
       ini_rand = GetRandomKey(&thread->rand);
@@ -2116,7 +2120,9 @@ class Benchmark {
         thread->stats.FinishedOps(nullptr, 1, kSeek);
 #endif
       }
-      thread->op_time_arr->emplace_back(query_type, Clock::NowNanos());
+      if (thread->op_time_arr) {
+        thread->op_time_arr->emplace_back(query_type, Clock::NowNanos());
+      }
     }
     char msg[256];
     snprintf(msg, sizeof(msg),
@@ -2132,6 +2138,23 @@ class Benchmark {
     //}
   }
 
+  void RecoveryAfterMixGraph() {
+    fprintf(stdout, "> db_->PrintDebugLsmState(0);\n");
+    db_->PrintDebugLsmState(0);
+    fprintf(stdout, "> delete db_;\n");
+    delete db_;
+    fprintf(stdout, "> db_ = new ListDB();\n");
+    db_ = new ListDB();
+    fprintf(stdout, "> db_->Open();\n");
+    auto open_begin_tp = std::chrono::steady_clock::now();
+    db_->Open();
+    auto open_end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> open_dur = open_end_tp - open_begin_tp;
+    fprintf(stdout, "Open() time: %.3lf sec\n", open_dur.count());
+    fprintf(stdout, "> db_->PrintDebugLsmState(0);\n");
+    db_->PrintDebugLsmState(0);
+    fprintf(stdout, "\n");
+  }
 
 #ifdef IMNOTDEFINED
   bool binary_search(std::vector<int>& data, int start, int end, int key) {
