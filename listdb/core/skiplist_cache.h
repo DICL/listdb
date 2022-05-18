@@ -95,14 +95,12 @@ class SkipListCache {
     }
 
     void MaybeShiftDeleteFieldByPosition(unsigned int pos) {
-      while (pos < N) {
-        if (!fields[pos + 1].IsEmpty() && pos + 1 < N) {
-          fields[pos] = fields[pos + 1];
-        } else {
-          fields[pos].Reset();
-          return;
-        }
+      assert(pos != 0);
+      while (pos < N - 1 && !fields[pos + 1].IsEmpty()) {
+        fields[pos] = fields[pos + 1];
+        pos++;
       }
+      fields[pos].Reset();
     }
   };
 
@@ -162,23 +160,24 @@ class SkipListCache {
   int EvictSome(int height_upper);
 
   const int pool_id_;
+  const size_t capacity_;
   Node* head_;
-  size_t capacity_;
   // NOTE: size_ and capacity_ must represent used and free memory space respectively.
   // Since this requires a Merge operation, which is not implemented yet, for now, size_ represents the number of fields
   // occupied regardless of the actual memory consumption.
   // TODO(wkim): Impl. Merge and change the semantic of size and capacity.
   std::atomic<size_t> size_;
-  Cursor smallest_cursor_[kMaxHeight];
-  std::mutex mu_;
+  std::vector<Cursor> smallest_cursor_;
+  //std::mutex mu_;
 };
 
 template <std::size_t N>
 SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
   : pool_id_(pool_id),
-    head_(NewNode(uint64_t{0}, kMaxHeight_)),
     capacity_(capacity),
-    size_(0) {
+    head_(NewNode(uint64_t{0}, kMaxHeight_)),
+    size_(0),
+    smallest_cursor_(kMaxHeight) {
   for (int i = 0; i < kMaxHeight_; i++) {
     head_->next[i].store(nullptr, std::memory_order_relaxed);
   }
@@ -465,26 +464,26 @@ template <std::size_t N>
 int SkipListCache<N>::EvictSome(int height_upper) {
   // Evict
 
-  // evict lowest heights first
-  static const int kEvictionBatchSize = 4;
-  int eviction_cnt = 0;
-  int level = 0;
+  static const unsigned int kEvictionBatchSize = 4;
+  unsigned int eviction_cnt = 0;
+  int curr_height = 0;
   bool collection_done = false;
-  while (level < height_upper && !collection_done) {
-    if (smallest_cursor_[level].IsEmpty()) {
-      level++;
+  // evict lowest heights first
+  while (curr_height < height_upper && !collection_done) {
+    if (smallest_cursor_[curr_height].IsEmpty()) {
+      curr_height++;
       continue;
     }
     std::vector<std::pair<Node*, int>> victims;
-    Node* x = smallest_cursor_[level].node.load(std::memory_order_acquire);
+    Node* x = smallest_cursor_[curr_height].node.load(std::memory_order_acquire);
     while (x != nullptr && !collection_done) {
       // TODO(wkim): Split node when field[pos = 0] should be evicted
       // Since fields[pos = 0] contains node key, we need to split the node to evict fields[pos = 0]
       // For now, we don't evict the node key. Collect the victim infos upto pos = 1.
       unsigned int pos = N - 1;
       while (pos > 0) {
-        if (!x->fields[pos].IsEmpty() && x->fields[pos].height() - 1 == level) {
-          //fprintf(stdout, "cursor points to node key (level=%d)\n", level);
+        if (!x->fields[pos].IsEmpty() && x->fields[pos].height() - 1 == curr_height) {
+          //fprintf(stdout, "cursor points to node key (curr_height=%d)\n", curr_height);
           victims.emplace_back(x, pos);
           if (eviction_cnt + victims.size() > kEvictionBatchSize) {
             collection_done = true;
@@ -496,12 +495,14 @@ int SkipListCache<N>::EvictSome(int height_upper) {
       x = x->next[0].load(std::memory_order_acquire);
     }
     // Update cursor
-    if (victims.size() > 0) {
+    if (victims.size() > kEvictionBatchSize - eviction_cnt) {
       auto& new_smallest = victims.back();
-      Node* candidate = new_smallest.first;
-      int index = new_smallest.second;
-      smallest_cursor_[level].Set(candidate->fields[index].key, candidate);
+      Node* new_smallest_node = new_smallest.first;
+      int new_smallest_field_pos = new_smallest.second;
+      smallest_cursor_[curr_height].Set(new_smallest_node->fields[new_smallest_field_pos].key, new_smallest_node);
       victims.pop_back();
+    } else {
+      smallest_cursor_[curr_height].Reset();
     }
     // Drop victims
     auto it = victims.begin();
@@ -519,7 +520,7 @@ int SkipListCache<N>::EvictSome(int height_upper) {
       }
     }
     eviction_cnt += victims.size();
-    level++;
+    curr_height++;
   }
 
   size_.fetch_sub(eviction_cnt * sizeof(Field));

@@ -430,7 +430,8 @@ void ListDB::Init() {
 #if 1
   for (int i = 0; i < kNumShards; i++) {
     auto l1_tl = ll_[i]->GetTableList(1);
-    auto l1_table = (PmemTable*) l1_tl->GetFront();
+    // TODO: impl InitFrontOnce() and use it instead of GetFront()
+    [[maybe_unused]] auto l1_table = (PmemTable*) l1_tl->GetFront();
   }
 #endif
 
