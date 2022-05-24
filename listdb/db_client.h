@@ -123,11 +123,11 @@ void DBClient::Put(const Key& key, const Value& value) {
 #else
   iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value;
-  //clwb(&iul_entry->tag, 16);
+  clwb(&iul_entry->tag, 16);
   _mm_sfence();
   iul_entry->key = key;
-  //clwb(iul_entry, 8);
-  clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
+  clwb(iul_entry, 8);
+  //clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 #endif
 
   // Create skiplist node
@@ -323,11 +323,11 @@ void DBClient::PutStringKV(const std::string_view& key_sv, const std::string_vie
   PmemNode* iul_entry = (PmemNode*) log_paddr.get();
   iul_entry->tag = (l0_id << 32) | pmem_height;
   iul_entry->value = value_paddr.dump();
-  //clwb(&iul_entry->tag, 16);
+  clwb(&iul_entry->tag, 16);
   _mm_sfence();
   iul_entry->key = key;
-  //clwb(iul_entry, 8);
-  clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
+  clwb(iul_entry, key.size());
+  //clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 
   // Create skiplist node
   MemNode* node = (MemNode*) malloc(mem_node_size);

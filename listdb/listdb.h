@@ -112,6 +112,11 @@ class ListDB {
 
   //void Put(const Key& key, const Value& value);
 
+  void WaitForStableState();
+
+  Reporter* GetOrCreateReporter(const std::string& fname);
+
+  // private:
   MemTable* GetWritableMemTable(size_t kv_size, int shard);
 
   MemTable* GetMemTable(int shard);
@@ -142,8 +147,6 @@ class ListDB {
   int l0_pool_id(const int region) { return l0_pool_id_[region]; }
 
   int l1_pool_id(const int region) { return l1_pool_id_[region]; }
-
-  Reporter* GetOrCreateReporter(const std::string& fname);
 
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
@@ -211,9 +214,9 @@ class ListDB {
   std::unordered_map<int, int> l0_pool_id_;
   std::unordered_map<int, int> l1_pool_id_;
 
-  std::queue<MemTableFlushTask*> memtable_flush_queue_;
-  std::mutex bg_mu_;
-  std::condition_variable bg_cv_;
+  //std::queue<MemTableFlushTask*> memtable_flush_queue_;
+  //std::mutex bg_mu_;
+  //std::condition_variable bg_cv_;
 
   std::deque<Task*> work_request_queue_;
   std::deque<Task*> work_completion_queue_;
@@ -918,6 +921,11 @@ void ListDB::Close() {
   }
 
   Pmem::Clear();
+}
+
+void ListDB::WaitForStableState() {
+  // TODO(wkim): communicate with the background thread to get informed about the db state
+  return;
 }
 
 Reporter* ListDB::GetOrCreateReporter(const std::string& fname) {
