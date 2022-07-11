@@ -1,9 +1,10 @@
 ListDB
 =========
 
-Hello World!
+The implementation of ListDB.
 
-An improved version of the original brdb implementation.
+Paper link: https://www.usenix.org/conference/osdi22/presentation/kim
+
 
 Shield: [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
 
