@@ -67,7 +67,7 @@ constexpr size_t kSkipListCacheCapacity = (45ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
-constexpr int kNumPmemLevels = 1;
+constexpr int kNumPmemLevels = 2;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
 constexpr int kNumWorkers = 80;
@@ -101,7 +101,8 @@ enum class TableType {
 
 enum class TaskType {
   kMemTableFlush,
-  kL0Compaction
+  kL0Compaction,
+  kL1Compaction
 };
 
 inline void SetAffinity(int coreid) {

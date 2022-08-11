@@ -4,6 +4,9 @@
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/lsm/table.h"
 
+#include <libpmemobj++/p.hpp>
+#include <libpmemobj++/pool.hpp>
+
 class PmemTable : public Table {
  public:
   using Node = BraidedPmemSkipList::Node;
@@ -16,14 +19,14 @@ class PmemTable : public Table {
 
   BraidedPmemSkipList* skiplist() { return skiplist_; }
 
-  void SetManifest(pmem::obj::persistent_ptr_base manifest) { manifest_ = manifest; }
+  void SetManifest(pmem::obj::persistent_ptr<pmem_l0_info> manifest) { manifest_ = manifest; }
 
   template <typename T>
   pmem::obj::persistent_ptr<T> manifest() { return manifest_.raw(); }
 
  private:
   BraidedPmemSkipList* skiplist_;
-  pmem::obj::persistent_ptr_base manifest_;
+  pmem::obj::persistent_ptr<pmem_l0_info> manifest_;
 };
 
 PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)
