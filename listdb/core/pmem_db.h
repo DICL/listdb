@@ -18,6 +18,12 @@ enum class Level0Status {
   kMergeDone,
 };
 
+enum class Level1Status {
+  kMergeWaiting,
+  kMergeDone,
+};
+
+
 struct pmem_db {
   // TODO: place pointer to shard info here
   pmem::obj::persistent_ptr<pmem_db_shard> shard[kNumShards];
@@ -42,6 +48,7 @@ struct pmem_l0_info {
 
 struct pmem_l1_info {
   uint64_t id;
+  Level1Status status;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 

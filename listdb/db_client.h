@@ -48,12 +48,14 @@ class DBClient {
 #endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
+  PmemPtr LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
 
   ListDB* db_;
   int id_;
   int region_;
   int l0_pool_id_;
   int l1_pool_id_;
+  int l2_pool_id_;
   Random rnd_;
   PmemLog* log_[kNumShards];
 #ifdef LISTDB_WISCKEY
@@ -88,6 +90,7 @@ DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(r
   }
   l0_pool_id_ = db_->l0_pool_id(region_);
   l1_pool_id_ = db_->l1_pool_id(region_);
+  l2_pool_id_ = db_->l2_pool_id(region_);
 }
 
 void DBClient::SetRegion(int region) {
@@ -281,6 +284,24 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        //fprintf(stdout, "found on pmem\n");
+        *value_out = found->value;
+        return true;
+      }
+      table = table->Next();
+    }
+  }
+  {
+    // Level 2 Lookup
+    auto tl = (PmemTableList*) db_->GetTableList(2, s);
+    auto table = tl->GetFront();
+    while (table) {
+      auto pmem = (PmemTable*) table;
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
         //fprintf(stdout, "found on pmem\n");
@@ -637,6 +658,59 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
   #endif
 #endif
+  search_visit_cnt_++;
+  height_visit_cnt_[height - 1]++;
+
+  // NUMA-local upper layers
+  for (int i = height - 1; i >= 1; i--) {
+    while (true) {
+      curr_paddr_dump = pred->next[i];
+      curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+        search_visit_cnt_++;
+        height_visit_cnt_[i]++;
+        if (curr->key.Compare(key) < 0) {
+          pred = curr;
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  // Braided bottom layer
+  if (pred == skiplist->head(pool_id)) {
+    if (pool_id != skiplist->primary_pool_id()) {
+      search_visit_cnt_++;
+      height_visit_cnt_[kMaxHeight - 1]++;
+    }
+    pred = skiplist->head();
+  }
+  while (true) {
+    curr_paddr_dump = pred->next[0];
+    curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+    if (curr) {
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
+      if (curr->key.Compare(key) < 0) {
+        pred = curr;
+        continue;
+      }
+    }
+    //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
+    break;
+  }
+  return curr_paddr_dump;
+}
+
+PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard) {
+  printf("start\n");
+  using Node = PmemNode;
+  Node* pred = skiplist->head(pool_id);
+  uint64_t curr_paddr_dump;
+  Node* curr;
+  int height = pred->height();
+
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 

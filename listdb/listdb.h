@@ -157,6 +157,8 @@ class ListDB {
 
   int l1_pool_id(const int region) { return l1_pool_id_[region]; }
 
+  int l2_pool_id(const int region) { return l2_pool_id_[region]; }
+
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
 
@@ -927,7 +929,7 @@ void ListDB::BackgroundThreadLoop() {
 #if 0
   numa_run_on_node(0);
 #endif
-  static const int kWorkerQueueDepth = 3;
+  static const int kWorkerQueueDepth = 2;
   std::vector<int> num_assigned_tasks(kNumWorkers);
   std::unordered_map<Task*, int> task_to_worker;
   std::deque<Task*> memtable_flush_requests;
@@ -985,7 +987,6 @@ void ListDB::BackgroundThreadLoop() {
     if (schedule_l0_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
       for (int i = 0; i < kNumShards; i++) {
         if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
-        if(i==0) printf("task l0 compaction created\n");
           auto tl = ll_[i]->GetTableList(0);
           auto table = tl->GetFront();
           while (true) {
@@ -997,7 +998,6 @@ void ListDB::BackgroundThreadLoop() {
             }
           }//level list의 해당 샤드의 wal table list의 맨 마지막 table만 가져온다.
           if (table->type() == TableType::kPmemTable) {
-            if(i==0) printf("its real\n");
             auto task = new L0CompactionTask();
             task->type = TaskType::kL0Compaction;
             task->shard = i;
@@ -1007,9 +1007,6 @@ void ListDB::BackgroundThreadLoop() {
             l0_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
             req_comp_cnt[task->type].req_cnt++;
           }
-          else{
-            if(i==0) printf("its fake\n");
-          }
         }
       }
     }
@@ -1018,15 +1015,17 @@ void ListDB::BackgroundThreadLoop() {
         if (l1_compaction_state[i] == 0) {
           auto tl = ll_[i]->GetTableList(1);//이거 뭘 넘겨줘야 할까
           auto table = tl->GetFront();
+          int l1tablecnt = 0;
           while (true) {
             auto next_table = table->Next();
             if (next_table) {
               table = next_table;
+              l1tablecnt++;//l1 tablelist에 table이 두개이상 존재할때만 l1compaction이 이루어지도록 한다.
             } else {
               break;
             }
           }
-          if (table->type() == TableType::kPmemTable) {
+          if (l1tablecnt>1) {
             auto task = new L1CompactionTask();
             task->type = TaskType::kL1Compaction;
             task->shard = i;
@@ -1095,8 +1094,6 @@ void ListDB::BackgroundThreadLoop() {
       num_assigned_tasks[worker->id]++;
       l0_compaction_state[task->shard] = 2;  // assigned
 
-      if(task->shard == 0) printf("l0 compaction pushed\n");
-
       if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
         available_workers.pop_back();
       }//똑같은 방식으로 남은 작업자에게 l0_compaction_request 뽑아서 전달.
@@ -1121,7 +1118,6 @@ void ListDB::BackgroundThreadLoop() {
       num_assigned_tasks[worker->id]++;
       l1_compaction_state[task->shard] = 2;  // assigned
 
-      if(task->shard == 0) printf("l1 compaction pushed\n");
 
       if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
         available_workers.pop_back();
@@ -1144,10 +1140,53 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
     if (td->stop) {
       break;
     }//항상 언제 올지 모르는 stop을 잠깐 기다려서 신호 받고 지나간다.
-    auto task = td->q.front();//worker->q 에 어떤 일이 있는지 확인. 그것이 task가 된다.
+    
+    //우선순위 제일 높은것을 찾아내어 그것을 task로 정해주고 원상복귀한다.
+    std::queue<ListDB::Task *> temp_q;
+    auto task = td->q.front();
     td->q.pop();
+
+    int curr_priority = 9;
+
+    if(task->type == TaskType::kMemTableFlush) curr_priority = 0;
+    else if(task->type == TaskType::kL0Compaction) curr_priority = 1;
+    else curr_priority = 2;
+
+    //더 우선순위 높은걸 발견하면 그순간 들고있던 task를 push부터해준다.
+    while (!td->q.empty())
+    {
+        auto temp_task = td->q.front();
+        td->q.pop();
+
+        int temp_priority  = 9;
+
+        if(temp_task->type == TaskType::kMemTableFlush) temp_priority = 0;
+        else if(temp_task->type == TaskType::kL0Compaction) temp_priority = 1;
+        else temp_priority = 2;
+
+        if(temp_priority < curr_priority){
+          temp_q.push(task);
+          curr_priority = temp_priority;
+          task = temp_task;
+        }
+        else{
+          temp_q.push(temp_task);
+        }
+    }
+
+    //원상복귀
+    while (!temp_q.empty())
+    {
+        auto temp_task = temp_q.front();
+        temp_q.pop();
+
+        td->q.push(temp_task);
+    }
+    
     td->current_task = task;//지금 하고 있는 일 current task에 추가하기
     lk.unlock();
+
+
 
     if (task->type == TaskType::kMemTableFlush) {
 #ifndef LISTDB_WAL
@@ -1903,9 +1942,21 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
-
   auto l1_tl = ll_[task->shard]->GetTableList(1);
-  if (l1_tl->IsEmpty()) {
+
+  auto search_table = l1_tl->GetFront();
+  int l1tablecnt = 0;
+  while (true) {
+    auto next_table = search_table->Next();
+    if (next_table) {
+      search_table = next_table;
+      l1tablecnt++;//l1 tablelist에 table이 두개이상 존재할때만 l1compaction이 이루어지도록 한다.
+    } else {
+      break;
+    }
+  }
+
+  if (l1_tl->IsEmpty() || l1tablecnt<2) {
 #if 0
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
 #else
@@ -1933,7 +1984,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     shard_manifest->l1_info = l1_manifest;
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l1_skiplist);
 #endif
-    l1_tl->SetFront(l1_table);
+    l1_tl->PushFront(l1_table);//원래 SetFront 였음
+
+
     auto table = task->memtable_list->GetFront();
     while (true) {
       auto next_table = table->Next();
@@ -1952,6 +2005,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     // call clwb
     return;
   }
+
   auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
 
   struct ZipperItem {
@@ -2173,8 +2227,8 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 }
 
 void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task){
-  if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
-  /*
+  if (task->shard == 0) fprintf(stdout, "==1 compaction\n");
+
   //1.Scan and Redistribution
   using Node = PmemNode;
   auto l1_skiplist = task->l1->skiplist();
@@ -2185,6 +2239,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   std::vector<uint64_t> height_vector;
   std::vector<uint64_t> numa_vector;
 
+
   PmemPtr node_paddr = l1_skiplist->head_paddr();
   auto l1_node = node_paddr.get<Node>();
   //scan
@@ -2194,9 +2249,11 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     value_vector.push_back(l1_node->value);
     height_vector.push_back(l1_node->height());
     node_paddr = l1_node->next[0];
+    l1_node = node_paddr.get<Node>();
   }
-  printf("Scan complete.\n");
+  if (task->shard == 0) printf("Scan complete.\n");
   //scan이 끝났기 때문에 l1의 table을 버린다.
+
   auto table = task->l1table_list->GetFront();
   while (true) {
     auto next_table = table->Next();
@@ -2210,7 +2267,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       break;
     }
   }
-  printf("delete l1\n");
+
+  if (task->shard == 0) fprintf(stdout, "delete l1\n");
+
+  
   //redistribution
   int height_one_check = 0;
   int height_other_check = 0;
@@ -2225,7 +2285,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     }
   }
 
-  printf("Destributuion done.\n"); 
+  if (task->shard == 0) printf("Destributuion done.\n"); 
   
   //우선 로컬리티를 높이기 위해서 모든 노드를 next 정보 없이 nodeorderidx에 맞추어 할당부터 해준다.
   
@@ -2251,13 +2311,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   }
 
   
-
+if (task->shard == 0)  printf("start preparing insert.\n");
   for(int i=0; i<key_vector.size();i++){
-    printf("start preparing insert.\n");
-#ifdef L0_COMPACTION_YIELD
-    std::this_thread::yield();
-#endif
-  printf("yield done.\n");
 
     PmemPtr curr_paddr = preds[numa_vector[i]][kMaxHeight - 1]->next[kMaxHeight - 1];
     //최고 height에 대한 pred와 succ 찾기
@@ -2336,12 +2391,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
   //2.FindPosition, l2 skiplist에 대해서 한 노드별로 preds와 succs를 생성해준다. 각 누마별 첫 node는 로컬 head가 된다.
 
-  //삽입후 삽입한 노드를 
-
   //3.Insert
-  printf("done\n");
+  if (task->shard == 0) printf("all l1 compaction done\n");
 
-  */
 
 }
 
