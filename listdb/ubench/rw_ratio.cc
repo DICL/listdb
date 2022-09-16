@@ -269,6 +269,7 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
     std::vector<std::thread> workers;
     std::vector<int> cnt(num_threads);
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
+    
     for (int id = 0; id < num_threads; id++) {
        workers.emplace_back([&, id] {
         SetAffinity(Numa::CpuSequenceRR(id));
@@ -379,6 +380,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
       }
     }
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
+
+    std::atomic<int> lookup_fail_cnt=0;
+
     for (int id = 0; id < num_threads; id++) {
       workers.emplace_back([&, id] {
         SetAffinity(Numa::CpuSequenceRR(id));
@@ -392,7 +396,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           } else if (work_ops[i] == OP_READ) {
             uint64_t val_read;
 #ifndef COUNT_FOUND
-            client->Get(work_keys[i], &val_read);
+            if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
+            //client->Get(work_keys[i], &val_read);
 #else
             auto ret = client->Get(work_keys[i], &val_read);
             if (ret) cnt[id]++;
@@ -415,6 +420,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
     fprintf(stdout, "Work IOPS: %.3lf M\n", NUM_WORKS/dur_sec/1000000);
+    fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
 #ifdef COUNT_FOUND
     int cnt_sum = 0;
     for (int i = 0; i < num_threads; i++) {

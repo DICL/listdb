@@ -275,6 +275,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
+  /* disable lookup L1
   {
     // Level 1 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
@@ -293,6 +294,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
+  */
   {
     // Level 2 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(2, s);
@@ -704,7 +706,6 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 }
 
 PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard) {
-  printf("start\n");
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;

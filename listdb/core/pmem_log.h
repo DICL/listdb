@@ -67,6 +67,8 @@ class PmemLog {
 
   PmemPtr Allocate(const size_t size);
 
+
+
   int pool_id() { return pool_id_; }
 
   pmem::obj::pool<pmem_log_root> pool() { return pool_; }
@@ -174,8 +176,10 @@ PmemPtr PmemLog::Allocate(const size_t size) {
       buf = new_block->Allocate(size);
     }
   }
+  
   PmemPtr ret(pool_id_, (uint64_t) ((uintptr_t) buf - (uintptr_t) pool_.handle()));
   return ret;
 }
+
 
 #endif  // LISTDB_CORE_PMEM_LOG_H_
