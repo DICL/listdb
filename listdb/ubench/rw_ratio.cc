@@ -253,7 +253,9 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
       });
     }
     for (auto& t : loaders) {
+
       t.join();
+      
     }
     auto end_tp = std::chrono::steady_clock::now();
     std::chrono::duration<double> dur = end_tp - begin_tp;

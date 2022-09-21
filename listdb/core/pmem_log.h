@@ -59,6 +59,7 @@ class PmemLog {
 
     explicit Block(pmem::obj::persistent_ptr<pmem_log_block> p_block_);
     void* Allocate(const size_t size);
+    int cnt;
   };
   
   PmemLog(const int pool_id, const int shard_id);
@@ -66,6 +67,8 @@ class PmemLog {
   ~PmemLog();
 
   PmemPtr Allocate(const size_t size);
+  void* Allocate_adjacent_nodes_buf(const size_t size);
+  PmemPtr Allocate_adjacent_nodes_ptr(void* buf);
 
 
 
@@ -85,6 +88,9 @@ class PmemLog {
 };
 
 PmemLog::Block::Block(pmem::obj::persistent_ptr<pmem_log_block> p_block_) {
+
+  cnt = 0;
+
   assert(p_block_ != nullptr);
   p.store(p_block_->p);
   data = p_block_->data;
@@ -177,6 +183,36 @@ PmemPtr PmemLog::Allocate(const size_t size) {
     }
   }
   
+  PmemPtr ret(pool_id_, (uint64_t) ((uintptr_t) buf - (uintptr_t) pool_.handle()));
+  return ret;
+}
+
+void* PmemLog::Allocate_adjacent_nodes_buf(const size_t size) {
+  Block* block = GetCurrentBlock();
+  void* buf = nullptr;
+  if ((buf = block->Allocate(size)) == nullptr) {
+    std::lock_guard<std::mutex> lk(block_init_mu_);
+    block = front_.load(MO_RELAXED);
+    if ((buf = block->Allocate(size)) == nullptr) {
+      // TODO: write Block contents to pmem_log_block
+      pmem::obj::persistent_ptr<pmem_log_block> p_new_block;
+      pmem::obj::make_persistent_atomic<pmem_log_block>(pool_, p_new_block, p_log_->head);
+      
+
+      p_new_block->id = p_log_->block_cnt;
+      p_log_->block_cnt++;
+
+      p_log_->head = p_new_block;
+      auto new_block = new Block(p_new_block);
+      front_.store(new_block, MO_RELAXED);
+      buf = new_block->Allocate(size);
+    }
+  }
+  
+  return buf;
+}
+
+PmemPtr PmemLog::Allocate_adjacent_nodes_ptr(void* buf){
   PmemPtr ret(pool_id_, (uint64_t) ((uintptr_t) buf - (uintptr_t) pool_.handle()));
   return ret;
 }

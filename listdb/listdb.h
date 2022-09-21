@@ -2296,6 +2296,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   std::vector<uint64_t> numa_vector;
 
 
+
   PmemPtr node_paddr = l1_skiplist->head_paddr();
   auto l1_node = node_paddr.get<Node>();
   //scan
@@ -2320,12 +2321,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     node_cnt++;
 
   }//kNumRegions 수만큼의 노드의 height는 무조건 kmaxheight
-  int heigt_set_num = 1;
+  uint64_t heigt_set_num = 1;
   for(int i = 1; i<kMaxHeight; i++){
 	    heigt_set_num *= tmp_kBranching;
   }
 
-  int random_factor = kRnd->Next()% heigt_set_num;
+  uint64_t random_factor = kRnd->Next()% heigt_set_num;
 
   while (l1_node != nullptr) {
     key_vector.push_back(l1_node->key);
@@ -2334,11 +2335,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     int branching_factor = 1;
     for(int i = 1; i<kMaxHeight; i++){
 	    branching_factor *= tmp_kBranching;
-      if((((node_cnt/kNumRegions)+random_factor)%branching_factor)!=0){
+      if((((uint64_t)(node_cnt/kNumRegions)+random_factor)%branching_factor)!=0){
+        //if(task->shard == 0 && kRnd->Next()%100==0) printf("height is %d\n",i+1);
         height_vector.push_back(i+1);
         break;
       }
-      
+
       if(i==kMaxHeight-1){
         height_vector.push_back(i+1);
       }
@@ -2397,11 +2399,17 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   Node* preds[kNumRegions][kMaxHeight];
   uint64_t succs[kNumRegions][kMaxHeight];
 
+  //locality를 높인 allocation을 위한 변수
+  uint64_t Adjacent_Node_Num = 20;
+  uint64_t* adjacent_node_cnt = new uint64_t[kNumRegions]();
+
+  void** adjacent_node_buf = new void*[kNumRegions]();
+
   for (int i = 0; i < kNumRegions; i++) {
     int pool_id = l2_arena_[i][0]->pool_id();
     for (int j = 0; j < kMaxHeight; j++) {
-      //if(true){
-      if(j==0 || j==1 || j==kMaxHeight-1 || j==kMaxHeight-2 || j==kMaxHeight-3 || j==kMaxHeight-4){
+      if(true){
+      //if(j==0 || j==1 || j==kMaxHeight-1 || j==kMaxHeight-2 || j==kMaxHeight-3 || j==kMaxHeight-4){
         preds[i][j] = l2_skiplist->head(pool_id);
         succs[i][j] = 0;
       }
@@ -2469,11 +2477,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       succs[0][0] = curr_paddr.dump();
   }
 
+    
+
     size_t node_size = sizeof(PmemNode) + (height_vector[i] - 1) * 8;
-    //PmemPtr l2_node_paddr;
-    //if(task->shard == 0) l2_node_paddr = l2_arena_[numa_vector[i]][task->shard]->Allocate2(node_size);
-    //else l2_node_paddr = l2_arena_[numa_vector[i]][task->shard]->Allocate(node_size);
     auto l2_node_paddr = l2_arena_[numa_vector[i]][task->shard]->Allocate(node_size);
+
+    //printf("%p\n",l2_arena_[1][task->shard]->Test());
     auto l2_node = l2_node_paddr.get<Node>();
     l2_node->key = key_vector[i];
     l2_node->tag = height_vector[i];
