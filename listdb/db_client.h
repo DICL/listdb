@@ -213,6 +213,7 @@ void DBClient::Put(const Key& key, const Value& value) {
 
 bool DBClient::Get(const Key& key, Value* value_out) {
   int s = KeyShard(key);
+  /*
   {
     MemTableList* tl = (MemTableList*) db_->GetTableList(0, s);
 
@@ -260,7 +261,9 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #endif
     }
 #endif
+*/
     pmem_get_cnt_++;
+    /*
     while (table) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
@@ -275,7 +278,6 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
-  /* disable lookup L1
   {
     // Level 1 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
@@ -723,6 +725,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
+        //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld, numa : %d\n",(long)key,i,(long)curr->key,curr->numa);
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -731,6 +734,9 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
       break;
     }
   }
+
+  //uint64_t pool_id_tmp = ((PmemPtr)curr_paddr_dump).pool_id();
+  //if(shard==0) printf("region is %llu\n",pool_id_tmp);
 
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
@@ -746,6 +752,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
+      
       if (curr->key.Compare(key) < 0) {
         pred = curr;
         continue;

@@ -459,7 +459,6 @@ void ListDB::Init() {
 }
 
 void ListDB::Open() {
-  printf("open occured\n");
   std::string db_path = "/pmem/wkim/listdb";
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
@@ -938,10 +937,6 @@ void ListDB::BackgroundThreadLoop() {
   std::deque<Task*> l1_compaction_requests;
   std::vector<int> l0_compaction_state(kNumShards);
   std::vector<int> l1_compaction_state(kNumShards);
-  std::vector<bool> l0_compaction_occur(kNumShards);
-  for (auto flag : l0_compaction_occur){
-    flag = false;
-  }
 
   struct ReqCompCounter {
     size_t req_cnt = 0;
@@ -972,7 +967,6 @@ void ListDB::BackgroundThreadLoop() {
       task_to_worker.erase(it);
       if (task->type == TaskType::kL0Compaction) {//다른 worker가 kL0Compaction을 complete 해놨다면 이를 확인하고 해당 l0 compaction state를 0으로 바꿔놓는다. 이제 컴팩션 해도 된다는 뜻
         l0_compaction_state[task->shard] = 0;
-        l0_compaction_occur[task->shard] = true;
       }
       if (task->type == TaskType::kL1Compaction) {
         l1_compaction_state[task->shard] = 0;
@@ -1019,7 +1013,7 @@ void ListDB::BackgroundThreadLoop() {
     }
     if (schedule_l1_compaction) {
       for (int i = 0; i < kNumShards; i++) {
-        if (l1_compaction_state[i] == 0 && l0_compaction_occur == true) {
+        if (l1_compaction_state[i] == 0) {
           auto tl = ll_[i]->GetTableList(1);//이거 뭘 넘겨줘야 할까
           auto table = tl->GetFront();
           int l1tablecnt = 0;
@@ -1151,18 +1145,11 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
     
     //우선순위 제일 높은것을 찾아내어 그것을 task로 정해주고 원상복귀한다.
     std::queue<ListDB::Task *> temp_q;
-    auto task = td->q.front();
-    td->q.pop();
+    int min_priority = 9;
+    int pri_idx = 0;
+    int curr_idx = 0;
 
-    int curr_priority = 9;
-
-    if(task->type == TaskType::kMemTableFlush) curr_priority = 0;
-    else if(task->type == TaskType::kL0Compaction) curr_priority = 1;
-    else if(task->type == TaskType::kL1Compaction){
-      if(task->patience_stack > 6) curr_priority = 0;
-      else curr_priority = 2;
-      task->patience_stack++;
-    } 
+    ListDB::Task * task;
 
     //더 우선순위 높은걸 발견하면 그순간 들고있던 task를 push부터해준다.
     while (!td->q.empty())
@@ -1174,25 +1161,25 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
 
         if(temp_task->type == TaskType::kMemTableFlush) temp_priority = 0;
         else if(temp_task->type == TaskType::kL0Compaction) temp_priority = 1;
-        else temp_priority = 2;
+        else temp_priority = 1;
 
-        if(temp_priority < curr_priority){
-          temp_q.push(task);
-          curr_priority = temp_priority;
-          task = temp_task;
+        if(temp_priority < min_priority){
+          min_priority = temp_priority;
+          pri_idx = curr_idx;
         }
-        else{
-          temp_q.push(temp_task);
-        }
+        temp_q.push(temp_task);
+        curr_idx++;
     }
 
     //원상복귀
+    curr_idx = 0;
     while (!temp_q.empty())
     {
         auto temp_task = temp_q.front();
         temp_q.pop();
-
-        td->q.push(temp_task);
+        if(curr_idx==pri_idx) task = temp_task;
+        else td->q.push(temp_task);
+        curr_idx++;
     }
     
     td->current_task = task;//지금 하고 있는 일 current task에 추가하기
@@ -2165,7 +2152,8 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #endif
 
-  if (l1tablecnt<1 && !head_only_flag) {
+  //if (l1tablecnt<1 && !head_only_flag) {
+  if (!head_only_flag) { 
     // Init the new manifest for a new table
     pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
     auto db_pool = Pmem::pool<pmem_db>(0);
@@ -2291,7 +2279,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task){
   if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
 
-  //1.Scan and Redistribution
   using Node = PmemNode;
   auto kRnd = Random::GetTLSInstance();
   auto l1_skiplist = task->l1->skiplist();
@@ -2311,18 +2298,14 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     }
   }
 
-  
-  
-
-
-
   PmemPtr node_paddr = l1_skiplist->head_paddr();
   auto l1_node = node_paddr.get<Node>();
-  //scan
-  int MaxHeightNode_cnt = kNumRegions;
+  
   int node_cnt = 0;
   uint64_t tmp_kBranching = 4;
-
+  
+  //기존 l1 table의 정보를 scan하여 복사해준다. 우선 head 노드는 제외해주고 각 run의 numa별로 제일 첫 노드는 kmaxheight의 높이를 가져서 해당 run에 접근할 수 있게 한다.
+  int MaxHeightNode_cnt = kNumRegions;
   while (l1_node != nullptr && MaxHeightNode_cnt>0) {
     if(l1_node->key.key_num() == 0){
       node_paddr = l1_node->next[0];
@@ -2340,32 +2323,35 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     MaxHeightNode_cnt--;
     
     node_cnt++;
-
   }//kNumRegions 수만큼의 노드의 height는 무조건 kmaxheight
+
+  //높이를 골고루 설정할 수 있게 하기 위한 0~(kbranching)^(kmaxheight) 사이의 수인 random_factor을 설정해준다.
   uint64_t heigt_set_num = 1;
   for(int i = 1; i<kMaxHeight; i++){
 	    heigt_set_num *= tmp_kBranching;
   }
-
   uint64_t random_factor = kRnd->Next()% heigt_set_num;
 
   while (l1_node != nullptr) {
     key_vector.push_back(l1_node->key);
     value_vector.push_back(l1_node->value);
 
+    //각 노드의 높이는 최소2고 kbranching4기준 2,2,2,3,2,2,2,3,2,2,2,3,2,2,2,4,2,2,2,3 ... 와 같이 round robin 방식으로 골고루 설정해준다. 
     int branching_factor = 1;
     for(int i = 1; i<kMaxHeight; i++){
 	    branching_factor *= tmp_kBranching;
+      if(i==kMaxHeight-1){
+        height_vector.push_back(i+1);
+        height_cnt[node_cnt%kNumRegions][i]++;
+        break;
+      }
+
       if((((uint64_t)(node_cnt/kNumRegions)+random_factor)%branching_factor)!=0){
         height_vector.push_back(i+1);
         height_cnt[node_cnt%kNumRegions][i]++;
         break;
       }
       
-      if(i==kMaxHeight-1){
-        height_vector.push_back(i+1);
-        height_cnt[node_cnt%kNumRegions][i]++;
-      }
     }
 
     numa_vector.push_back(node_cnt%kNumRegions);
@@ -2375,21 +2361,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     node_cnt++;
   }
 
-  if (task->shard == 0) fprintf(stdout, "number of compactioned l1 nodes : %d\n", node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of compactioned l1 nodes : %d\n", node_cnt);
 
-  for(int i=0; i<kNumRegions; i++){
-    for(int j=0; j<kMaxHeight; j++){
-      size_t node_size = sizeof(PmemNode) + (j) * 8;
-      while(height_cnt[i][j]>0){
-        height_ptr_vector[i][j].push(l2_arena_[i][task->shard]->Allocate(node_size));
-        height_cnt[i][j]--;
-      }
-    }
-  }
-
-
-  //scan이 끝났기 때문에 l1의 table을 버린다.
-
+  //scan이 모두 끝났기 때문에 l1의 table을 버려준다.
   auto table = task->l1table_list->GetFront();
   while (true) {
     auto next_table = table->Next();
@@ -2404,61 +2378,58 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     }
   }
 
-
-/*
-  //redistribution
-  int height_other_check = kRnd->Next()%kNumRegions;
-  int height_other_check2 = kRnd->Next()%kNumRegions;
-  for(int i=0; i<key_vector.size(); i++){
-    if(height_vector[i]!=1 && height_vector[i]!=kMaxHeight){
-      numa_vector.push_back(height_other_check%kNumRegions);
-      height_other_check++;
+  //노드의 메모리공간을 미리 height 순서대로 할당하여 인접한 블럭에 locality가 높아지게 한다.
+    for(int i=0; i<kNumRegions; i++){//height별
+      for(int j=kMaxHeight-1; j>=0; j--){
+        size_t node_size = sizeof(PmemNode) + (j) * 8;
+        while(height_cnt[i][j]>0){
+          height_ptr_vector[i][j].push(l2_arena_[i][task->shard]->Allocate(node_size));
+          height_cnt[i][j]--;
+        }
+      }
     }
-    else{
-      numa_vector.push_back(height_other_check2%kNumRegions);
-      height_other_check2++;
-    }
-  }
-*/
   
-  //우선 로컬리티를 높이기 위해서 모든 노드를 next 정보 없이 nodeorderidx에 맞추어 할당부터 해준다.
+
   
   auto l2_tl = ll_[task->shard]->GetTableList(2);
   auto l2_skiplist = ((PmemTable*) l2_tl->GetFront())->skiplist();
 
   Node* preds[kNumRegions][kMaxHeight];
   uint64_t succs[kNumRegions][kMaxHeight];
-
+  //각 height에 대한 head를 preds에 담아준다.
   for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l2_arena_[i][0]->pool_id();
+    int pool_id = l2_arena_[i][task->shard]->pool_id();
     for (int j = 0; j < kMaxHeight; j++) {
+      //run에대해 global하게 head를 연결해주는 height를 설정한다.
       //if(true){
-      if(j==0 || j==1|| j==2 || j==kMaxHeight-1 || j==kMaxHeight-2 || j==kMaxHeight-3 || j==kMaxHeight-4){
+      if(j==0 || j==1 || j==kMaxHeight-1 || j==kMaxHeight-2 || j==kMaxHeight-3 ){
         preds[i][j] = l2_skiplist->head(pool_id);
         succs[i][j] = 0;
       }
       else{
-        //height 제일 높은것과 제일 낮은것 제외하고 임시로 head를 생성해준다.
+        //run에 대해 local하게 연결되는 height의 부분의 head는 임시 노드를 할당한다.
         size_t tmp_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * 8;
         auto tmp_node_paddr = l2_arena_[i][task->shard]->Allocate(tmp_node_size);
         auto tmp_node = tmp_node_paddr.get<Node>();
 
-        clwb(tmp_node, tmp_node_size);
-        _mm_sfence();
         preds[i][j] = tmp_node;
         succs[i][j] = 0;
+        clwb(tmp_node, tmp_node_size);
+        _mm_sfence();
       }
     }
   }
 
 
+  //상위 height 에 대한 pred와 succs 찾기
+  for(uint64_t i=0; i<(uint64_t)key_vector.size();i++){
+    
 
-  for(int i=0; i<key_vector.size();i++){
-    PmemPtr curr_paddr = preds[numa_vector[i]][height_vector[i]-1]->next[height_vector[i]-1];
     for (int t = height_vector[i] - 1; t > 0; t--) {
+      PmemPtr curr_paddr = preds[numa_vector[i]][t]->next[t];
       auto curr = curr_paddr.get<Node>();
       while (curr) {
-        if (curr->key.Compare(key_vector[i]) < 0) {
+        if ((long)curr->key < (long)key_vector[i]) {
           preds[numa_vector[i]][t] = curr;
           curr_paddr = curr->next[t];
           curr = curr_paddr.get<Node>();
@@ -2466,31 +2437,16 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         }
         break;
       }
+      if(t>1) preds[numa_vector[i]][t-1] = preds[numa_vector[i]][t];
       succs[numa_vector[i]][t] = curr_paddr.dump();
     }
     
-/*
-    PmemPtr curr_paddr = preds[numa_vector[i]][kMaxHeight - 1]->next[kMaxHeight - 1];
-    //최고 height에 대한 pred와 succ 찾기
-  auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(key_vector[i]) < 0) {
-          preds[numa_vector[i]][kMaxHeight-1] = curr;
-          curr_paddr = curr->next[kMaxHeight-1];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[numa_vector[i]][kMaxHeight-1] = curr_paddr.dump();
-
-*/
   //braided level에 대한 pred와 succ찾기
-  {
+  
       PmemPtr curr_paddr = preds[0][0]->next[0];
       auto curr = curr_paddr.get<Node>();
       while (curr) {
-        if (curr->key.Compare(key_vector[i]) < 0) {
+        if ((long)curr->key < (long)key_vector[i]) {
           preds[0][0] = curr;
           curr_paddr = curr->next[0];
           curr = curr_paddr.get<Node>();
@@ -2499,79 +2455,30 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         break;
       }
       succs[0][0] = curr_paddr.dump();
-  }
-
+  
+    //미리 할당해두었던 노드 메모리공간 사용
     size_t node_size = sizeof(PmemNode) + (height_vector[i] - 1) * 8;
-    //auto l2_node_paddr = l2_arena_[numa_vector[i]][task->shard]->Allocate(node_size);
-
     auto l2_node_paddr = height_ptr_vector[numa_vector[i]][height_vector[i]-1].front();
     height_ptr_vector[numa_vector[i]][height_vector[i]-1].pop();
+    //노드 데이터 설정
     auto l2_node = l2_node_paddr.get<Node>();
     l2_node->key = key_vector[i];
     l2_node->tag = height_vector[i];
     l2_node->value = value_vector[i];
-    l2_node->next[0] = preds[0][0]->next[0];
+    l2_node->next[0] = succs[0][0];
     for(int t=1; t<height_vector[i];t++){
-      l2_node->next[t] = preds[numa_vector[i]][t]->next[t];
+      l2_node->next[t] = succs[numa_vector[i]][t];
     }
     clwb(l2_node, node_size);
-    _mm_sfence();
+    
+    //삽입할 곳 이전노드의 포인터 변경
     preds[0][0]->next[0] = l2_node_paddr.dump();
     for(int t=1; t<height_vector[i];t++){
       preds[numa_vector[i]][t]->next[t] = l2_node_paddr.dump();
     }
-
-    /*
-    l2_node->next[0] = succs[0][0];
-    if(height_vector[i]==kMaxHeight) {
-      l2_node->next[kMaxHeight-1] = succs[numa_vector[i]][kMaxHeight-1];
-    }
-    
-    //최고높이와 0높이 빼고 연결해주기
-     
-    for(int k=1; k<height_vector[i]; k++){
-      if(k==kMaxHeight-1) break;
-      if(Region_curr[numa_vector[i]][k]!=nullptr){
-        Region_curr[numa_vector[i]][k]->next[k] = l2_node_paddr.dump();
-        PmemPtr region_node_paddr = Region_curr[numa_vector[i]][k]->next[k];
-        Region_curr[numa_vector[i]][k] = region_node_paddr.get<Node>();
-      }
-      else{
-        Region_curr[numa_vector[i]][k] = l2_node_paddr.get<Node>();
-      }
-    }
-    /*
-    preds[0][0]->next[0] = l2_node_paddr.dump();
-    if(height_vector[i]==kMaxHeight) {
-      preds[numa_vector[i]][kMaxHeight-1]->next[kMaxHeight-1] = l2_node_paddr.dump();
-    }
-    */
-
+    _mm_sfence();
   }
-  //모든 노드를 저장공간을 잘 할당하여 생성한 후 nodeorder에 삽입순서(키순서)대로 배열완료.
   
-
-
-
-
-
-
-
-
-
-
-  
-  
-
-  
-
-  
-
-  //2.FindPosition, l2 skiplist에 대해서 한 노드별로 preds와 succs를 생성해준다. 각 누마별 첫 node는 로컬 head가 된다.
-
-  //3.Insert
-
-
 }
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않는 cow 방식이지만 살펴볼 것

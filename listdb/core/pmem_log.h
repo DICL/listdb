@@ -59,6 +59,7 @@ class PmemLog {
 
     explicit Block(pmem::obj::persistent_ptr<pmem_log_block> p_block_);
     void* Allocate(const size_t size);
+    void* Allocate2(bool flag, const size_t size);
   };
   
   PmemLog(const int pool_id, const int shard_id);
@@ -66,6 +67,7 @@ class PmemLog {
   ~PmemLog();
 
   PmemPtr Allocate(const size_t size);
+  PmemPtr Allocate2(const size_t size);
 
 
 
@@ -181,6 +183,45 @@ PmemPtr PmemLog::Allocate(const size_t size) {
   PmemPtr ret(pool_id_, (uint64_t) ((uintptr_t) buf - (uintptr_t) pool_.handle()));
   return ret;
 }
+
+void* PmemLog::Block::Allocate2(bool flag, const size_t size) {
+  size_t before = p.fetch_add(size, MO_RELAXED);
+  if (before + size <= kPmemLogBlockSize) {
+    //if(flag == true) printf("new block generated and p is %p and expectation is %p\n",(void*) (data),(void*) (data + kPmemLogBlockSize));
+    return (void*) (data + before);
+  } else {
+    return nullptr;
+  }
+}
+
+PmemPtr PmemLog::Allocate2(const size_t size) {
+  Block* block = GetCurrentBlock();
+  void* buf = nullptr;
+  if ((buf = block->Allocate2(false, size)) == nullptr) {
+    std::lock_guard<std::mutex> lk(block_init_mu_);
+    block = front_.load(MO_RELAXED);
+    if ((buf = block->Allocate2(false, size)) == nullptr) {
+      // TODO: write Block contents to pmem_log_block
+      pmem::obj::persistent_ptr<pmem_log_block> p_new_block;
+      pmem::obj::make_persistent_atomic<pmem_log_block>(pool_, p_new_block, p_log_->head);
+
+      p_new_block->id = p_log_->block_cnt;
+      p_log_->block_cnt++;
+
+      p_log_->head = p_new_block;
+      auto new_block = new Block(p_new_block);
+      front_.store(new_block, MO_RELAXED);
+      buf = new_block->Allocate2(true, size);
+    }
+  }
+  
+  PmemPtr ret(pool_id_, (uint64_t) ((uintptr_t) buf - (uintptr_t) pool_.handle()));
+  return ret;
+}
+
+
+
+
 
 
 
