@@ -11,6 +11,10 @@
 #define LISTDB_DOUBLE_HASHING DOUBLE_HASHING_T_B
 #endif
 
+#ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
+#define LISTDB_L0_CACHE_PROBING_DISTANCE 1
+#endif
+
 class DoubleHashingCache {
  public:
   using PmemNode = BraidedPmemSkipList::Node;

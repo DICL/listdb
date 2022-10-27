@@ -14,11 +14,11 @@ int main() {
 
   uint64_t val_read;
   client->Get(10, &val_read);
-  std::cout << val_read << std::endl;
+  std::cout << *(PmemPtr::Decode<uint64_t>(val_read)) << std::endl;
   client->Get(1, &val_read);
-  std::cout << val_read << std::endl;
+  std::cout << *(PmemPtr::Decode<uint64_t>(val_read)) << std::endl;
   client->Get(5, &val_read);
-  std::cout << val_read << std::endl;
+  std::cout << *(PmemPtr::Decode<uint64_t>(val_read)) << std::endl;
 
   return 0;
 }
