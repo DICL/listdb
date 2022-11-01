@@ -2361,7 +2361,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     node_cnt++;
   }
 
-  if (task->shard == 0 ) fprintf(stdout, "number of compactioned l1 nodes : %d\n", node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %d\n", node_cnt);
 
   //scan이 모두 끝났기 때문에 l1의 table을 버려준다.
   auto table = task->l1table_list->GetFront();
@@ -2402,7 +2402,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     for (int j = 0; j < kMaxHeight; j++) {
       //run에대해 global하게 head를 연결해주는 height를 설정한다.
       //if(true){
-      if(j==0 || j==1 || j==kMaxHeight-1 || j==kMaxHeight-2 || j==kMaxHeight-3 ){
+      if(j==0 || j==1 || j==kMaxHeight-1 ){
         preds[i][j] = l2_skiplist->head(pool_id);
         succs[i][j] = 0;
       }

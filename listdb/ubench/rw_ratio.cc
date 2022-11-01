@@ -362,6 +362,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   std::this_thread::sleep_for(std::chrono::seconds(20));
   db->PrintDebugLsmState(0);
 
+
+
   // Work
   {
     printf("WORK %zu queries\n", NUM_WORKS);
