@@ -9,6 +9,8 @@
 #include <cassert>
 #include <cstdio>
 
+#define NPAIRS 100
+
 //#define GROUP_LOGGING
 //#define L1_COW
 #define L0_CACHE_T_SIMPLE 1

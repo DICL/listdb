@@ -71,6 +71,7 @@ class ListDB {
  public:
   using MemNode = lockfree_skiplist::Node;
   using PmemNode = BraidedPmemSkipList::Node;
+  using PmemNode2 = BraidedPmemSkipList::Node2;
 
   struct Task {
     TaskType type;
@@ -2280,90 +2281,208 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
 
   using Node = PmemNode;
+  using Node2 = PmemNode2;
   auto kRnd = Random::GetTLSInstance();
+  //get l1 skiplist
   auto l1_skiplist = task->l1->skiplist();
-
-  std::vector<Key> key_vector;
-  std::vector<uint64_t> value_vector;
-  std::vector<int> height_vector;
-  std::vector<uint64_t> numa_vector;
-
-  uint64_t** height_cnt = new uint64_t*[kNumRegions];
-  std::queue<PmemPtr>** height_ptr_vector = new std::queue<PmemPtr>*[kNumRegions];
-  for(int i = 0; i < kNumRegions; i++){
-    height_cnt[i] = new uint64_t[kMaxHeight];
-    height_ptr_vector[i] = new std::queue<PmemPtr>[kMaxHeight];
-    for(int j=0; j<kMaxHeight; j++){
-      height_cnt[i][j] = 0;
-    }
-  }
-
   PmemPtr node_paddr = l1_skiplist->head_paddr();
   auto l1_node = node_paddr.get<Node>();
+  //get l2 skiplist
+  auto l2_tl = ll_[task->shard]->GetTableList(2);
+  auto l2_skiplist = ((PmemTable*) l2_tl->GetFront())->skiplist();
   
-  int node_cnt = 0;
   uint64_t tmp_kBranching = 4;
   
-  //기존 l1 table의 정보를 scan하여 복사해준다. 우선 head 노드는 제외해주고 각 run의 numa별로 제일 첫 노드는 kmaxheight의 높이를 가져서 해당 run에 접근할 수 있게 한다.
-  int MaxHeightNode_cnt = kNumRegions;
-  while (l1_node != nullptr && MaxHeightNode_cnt>0) {
+  //set preds and succs
+  Node* heads[kNumRegions];
+  Node2* preds[kNumRegions][kMaxHeight];
+  uint64_t succs[kNumRegions][kMaxHeight];
+  //각 height에 대한 head를 preds에 담아준다.
+  bool head_only_flag = true;
+  for (int i = 0; i < kNumRegions; i++) {
+    int pool_id = l2_arena_[i][task->shard]->pool_id();
+    heads[i] = l2_skiplist->head(pool_id);
+    //check there is only head
+  }
+  for(int i=0; i<kNumRegions; i++){
+    auto l2_node_paddr = heads[i]->next[0];
+    auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+    if(l2_node != nullptr){
+      for(int j=0; j<kMaxHeight; j++){
+        preds[i][j] = l2_node;
+        succs[i][j] = 0;
+      }
+      head_only_flag = false;
+    }
+  }
+  //if no head, make head
+  if(head_only_flag == true){
+    for(int i=0; i<kNumRegions; i++){
+      //set random numa region and height
+      int height = kMaxHeight;
+      int region = i;
+
+      size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
+      auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
+      auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+      l2_node->key[0] = (long)i;
+      l2_node->value[0] = i;
+      l2_node->tag = height;
+      l2_node->cnt = 1;
+      for(int j=0; j<kMaxHeight; j++){
+        preds[i][j] = l2_node;
+        succs[i][j] = 0;
+      }
+            
+      heads[i]->next[0] = l2_node_paddr.dump();
+      for (int t = 1 ;t < height; t++) {
+        heads[i]->next[t] = l2_node_paddr.dump();
+      } 
+
+      if(i==0){
+        preds[0][0] = l2_node;
+      }
+      else{
+        preds[0][0]->next[0] = l2_node_paddr.dump();
+        preds[0][0] = l2_node;
+      }
+
+    }
+    head_only_flag = false;
+  }
+  //make head is done.
+  if (task->shard ==0){
+  PmemPtr curr_paddr = preds[0][0]->next[0];
+      auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+      while (curr) {
+        if ((long)curr->key[0] < (long)l1_node->key) {
+          preds[0][0] = curr;
+          curr_paddr = curr->next[0];
+          curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+          continue;
+        }
+        break;
+      }
+  }
+
+
+
+
+  //initialize node_cnt for checking number of compation nodes
+  int node_cnt = 0;
+  
+  //start loop and scan l1 nodes
+  while(l1_node != nullptr){
     if(l1_node->key.key_num() == 0){
       node_paddr = l1_node->next[0];
       l1_node = node_paddr.get<Node>();
       continue;
-    }//head 노드들은 제거해준다.
-    key_vector.push_back(l1_node->key);
-    value_vector.push_back(l1_node->value);
-    height_vector.push_back(kMaxHeight);
-    height_cnt[node_cnt%kNumRegions][kMaxHeight-1]++;
+    }//remove head nodes of l1     
 
-    numa_vector.push_back(node_cnt%kNumRegions);
-    node_paddr = l1_node->next[0];
-    l1_node = node_paddr.get<Node>();
-    MaxHeightNode_cnt--;
-    
-    node_cnt++;
-  }//kNumRegions 수만큼의 노드의 height는 무조건 kmaxheight
-
-  //높이를 골고루 설정할 수 있게 하기 위한 0~(kbranching)^(kmaxheight) 사이의 수인 random_factor을 설정해준다.
-  uint64_t heigt_set_num = 1;
-  for(int i = 1; i<kMaxHeight; i++){
-	    heigt_set_num *= tmp_kBranching;
-  }
-  uint64_t random_factor = kRnd->Next()% heigt_set_num;
-
-  while (l1_node != nullptr) {
-    key_vector.push_back(l1_node->key);
-    value_vector.push_back(l1_node->value);
-
-    //각 노드의 높이는 최소2고 kbranching4기준 2,2,2,3,2,2,2,3,2,2,2,3,2,2,2,4,2,2,2,3 ... 와 같이 round robin 방식으로 골고루 설정해준다. 
-    int branching_factor = 1;
-    for(int i = 1; i<kMaxHeight; i++){
-	    branching_factor *= tmp_kBranching;
-      if(i==kMaxHeight-1){
-        height_vector.push_back(i+1);
-        height_cnt[node_cnt%kNumRegions][i]++;
+    //search preds and succes except for braided level
+      PmemPtr curr_paddr = preds[0][0]->next[0];
+      auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+      while (curr) {
+        if ((long)curr->key[0] < (long)l1_node->key) {
+          preds[0][0] = curr;
+          curr_paddr = curr->next[0];
+          curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+          continue;
+        }
         break;
       }
+      succs[0][0] = curr_paddr.dump();
 
-      if((((uint64_t)(node_cnt/kNumRegions)+random_factor)%branching_factor)!=0){
-        height_vector.push_back(i+1);
-        height_cnt[node_cnt%kNumRegions][i]++;
-        break;
+      //check count and insert or split
+      Node2* insert_node;
+
+      if(preds[0][0]->cnt < NPAIRS){//if its not full, do insert
+        insert_node = preds[0][0];
       }
-      
-    }
+      else{//if node is full, do split
+        //set random numa region and height
+        int height = 2;
+        while (height < kMaxHeight && ((kRnd->Next() % tmp_kBranching) == 0)) {
+          height++;
+        }
+        int region = kRnd->Next()%kNumRegions;
+        int mid = preds[0][0]->cnt/2;
+        //find remain preds and succs
+        for (int t = kMaxHeight-1; t > 0; t--) {
+          PmemPtr curr_paddr = preds[region][t]->next[t];
+          auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+          while (curr) {
+            if ((long)curr->key[0] < (long)preds[0][0]->key[mid]) {
+              preds[region][t] = curr;
+              curr_paddr = curr->next[t];
+              curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+              continue;
+            }
+            break;
+          }
+          if(t>1) preds[region][t-1] = preds[region][t];
+          succs[region][t] = curr_paddr.dump();
+        }
 
-    numa_vector.push_back(node_cnt%kNumRegions);
+        size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
+        auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
+        auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+        
+        for (uint64_t i=mid; i<preds[0][0]->cnt; i++){
+          l2_node->key[i-mid] = preds[0][0]->key[i];
+          l2_node->value[i-mid] = preds[0][0]->value[i];
+        }
+        l2_node->cnt=preds[0][0]->cnt-mid;
+        preds[0][0]->cnt=mid;
+
+        l2_node->tag = height;
+        l2_node->next[0] = succs[0][0];
+        for (int i = 1; i < height; i++) {
+          l2_node->next[i] =  succs[region][i];
+        }
+        clwb(l2_node, node_size);
+        _mm_sfence();
+        preds[0][0]->next[0] = l2_node_paddr.dump();
+        for (int i = 1 ;i < height; i++) {
+          preds[region][i]->next[i] = l2_node_paddr.dump();
+        }
+
+        if(l2_node->key[0] < l1_node->key) insert_node = l2_node;
+        else insert_node = preds[0][0];
+      }
+      //do insert
+      for(uint64_t i = 0; i<=insert_node->cnt; i++){
+          if(i==insert_node->cnt){
+            insert_node->key[i] = l1_node->key;
+            insert_node->value[i] = l1_node->value;
+            insert_node->cnt++;
+            break;
+            }
+          if(insert_node->key[i]<l1_node->key) continue;
+          //if new key is biggest key in node
+
+          //shift to right
+          for(uint64_t j=insert_node->cnt-1;j>=i;j--){
+            insert_node->key[j+1] = insert_node->key[j];
+            insert_node->value[j+1] = insert_node->value[j];
+          }
+          
+          //insert to the right position
+          insert_node->key[i] = l1_node->key;
+          insert_node->value[i] = l1_node->value;
+          insert_node->cnt++;
+          break;
+        }
+
+
+    //Move on to next node of l1
+    node_cnt++; 
     node_paddr = l1_node->next[0];
     l1_node = node_paddr.get<Node>();
-
-    node_cnt++;
   }
+  
 
-  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %d\n", node_cnt);
-
-  //scan이 모두 끝났기 때문에 l1의 table을 버려준다.
+  //remove l1 table at l1 table list(because compaction done.)
   auto table = task->l1table_list->GetFront();
   while (true) {
     auto next_table = table->Next();
@@ -2378,108 +2497,26 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     }
   }
 
-  //노드의 메모리공간을 미리 height 순서대로 할당하여 인접한 블럭에 locality가 높아지게 한다.
-    for(int i=0; i<kNumRegions; i++){//height별
-      for(int j=kMaxHeight-1; j>=0; j--){
-        size_t node_size = sizeof(PmemNode) + (j) * 8;
-        while(height_cnt[i][j]>0){
-          height_ptr_vector[i][j].push(l2_arena_[i][task->shard]->Allocate(node_size));
-          height_cnt[i][j]--;
-        }
-      }
-    }
-  
-
-  
-  auto l2_tl = ll_[task->shard]->GetTableList(2);
-  auto l2_skiplist = ((PmemTable*) l2_tl->GetFront())->skiplist();
-
-  Node* preds[kNumRegions][kMaxHeight];
-  uint64_t succs[kNumRegions][kMaxHeight];
-  //각 height에 대한 head를 preds에 담아준다.
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l2_arena_[i][task->shard]->pool_id();
-    for (int j = 0; j < kMaxHeight; j++) {
-      //run에대해 global하게 head를 연결해주는 height를 설정한다.
-      //if(true){
-      if(j==0 || j==1 || j==kMaxHeight-1 ){
-        preds[i][j] = l2_skiplist->head(pool_id);
-        succs[i][j] = 0;
-      }
-      else{
-        //run에 대해 local하게 연결되는 height의 부분의 head는 임시 노드를 할당한다.
-        size_t tmp_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * 8;
-        auto tmp_node_paddr = l2_arena_[i][task->shard]->Allocate(tmp_node_size);
-        auto tmp_node = tmp_node_paddr.get<Node>();
-
-        preds[i][j] = tmp_node;
-        succs[i][j] = 0;
-        clwb(tmp_node, tmp_node_size);
-        _mm_sfence();
-      }
-    }
-  }
-
-
-  //상위 height 에 대한 pred와 succs 찾기
-  for(uint64_t i=0; i<(uint64_t)key_vector.size();i++){
-    
-
-    for (int t = height_vector[i] - 1; t > 0; t--) {
-      PmemPtr curr_paddr = preds[numa_vector[i]][t]->next[t];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if ((long)curr->key < (long)key_vector[i]) {
-          preds[numa_vector[i]][t] = curr;
-          curr_paddr = curr->next[t];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      if(t>1) preds[numa_vector[i]][t-1] = preds[numa_vector[i]][t];
-      succs[numa_vector[i]][t] = curr_paddr.dump();
-    }
-    
-  //braided level에 대한 pred와 succ찾기
-  
-      PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if ((long)curr->key < (long)key_vector[i]) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[0][0] = curr_paddr.dump();
-  
-    //미리 할당해두었던 노드 메모리공간 사용
-    size_t node_size = sizeof(PmemNode) + (height_vector[i] - 1) * 8;
-    auto l2_node_paddr = height_ptr_vector[numa_vector[i]][height_vector[i]-1].front();
-    height_ptr_vector[numa_vector[i]][height_vector[i]-1].pop();
-    //노드 데이터 설정
-    auto l2_node = l2_node_paddr.get<Node>();
-    l2_node->key = key_vector[i];
-    l2_node->tag = height_vector[i];
-    l2_node->value = value_vector[i];
-    l2_node->next[0] = succs[0][0];
-    for(int t=1; t<height_vector[i];t++){
-      l2_node->next[t] = succs[numa_vector[i]][t];
-    }
-    clwb(l2_node, node_size);
-    
-    //삽입할 곳 이전노드의 포인터 변경
-    preds[0][0]->next[0] = l2_node_paddr.dump();
-    for(int t=1; t<height_vector[i];t++){
-      preds[numa_vector[i]][t]->next[t] = l2_node_paddr.dump();
-    }
-    _mm_sfence();
-  }
+  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %d\n", node_cnt);
   
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않는 cow 방식이지만 살펴볼 것
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");//

@@ -16,6 +16,7 @@ class DBClient {
  public:
   using MemNode = ListDB::MemNode;
   using PmemNode = ListDB::PmemNode;
+  using PmemNode2 = ListDB::PmemNode2;
 
   DBClient(ListDB* db, int id, int region);
 
@@ -306,11 +307,16 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
-      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
-      if (found && found->key == key) {
-        //fprintf(stdout, "found on pmem\n");
-        *value_out = found->value;
-        return true;
+      ListDB::PmemNode2* found = (ListDB::PmemNode2*) found_paddr.get();
+      if(found){
+        for(uint64_t k=0;k<found->cnt;k++){
+              //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : -1, visited : %ld, cnt is %ld\n",(long)key,(long)found->key[k],found->cnt);
+              if ( found->key[k] == key ) {
+                  *value_out = found->value[k];
+                  return true;
+              }
+        }
+
       }
       table = table->Next();
     }
@@ -709,9 +715,14 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
 PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard) {
   using Node = PmemNode;
-  Node* pred = skiplist->head(pool_id);
+  using Node2 = PmemNode2;
+  Node* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
-  Node* curr;
+  uint64_t pred_paddr_dump;
+  curr_paddr_dump = tmp->next[0];
+  pred_paddr_dump = curr_paddr_dump;
+  Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+  Node2* curr;
   int height = pred->height();
 
   search_visit_cnt_++;
@@ -721,13 +732,14 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
       curr_paddr_dump = pred->next[i];
-      curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+      curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld, numa : %d\n",(long)key,i,(long)curr->key,curr->numa);
-        if (curr->key.Compare(key) < 0) {
+        //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->key[0]);
+        if (curr->key[0] <= key) {
           pred = curr;
+          pred_paddr_dump = curr_paddr_dump;
           continue;
         }
       }
@@ -739,29 +751,25 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
   //if(shard==0) printf("region is %llu\n",pool_id_tmp);
 
   // Braided bottom layer
-  if (pred == skiplist->head(pool_id)) {
-    if (pool_id != skiplist->primary_pool_id()) {
-      search_visit_cnt_++;
-      height_visit_cnt_[kMaxHeight - 1]++;
-    }
-    pred = skiplist->head();
-  }
   while (true) {
     curr_paddr_dump = pred->next[0];
-    curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+    curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
+      //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->key[0]);
+
       
-      if (curr->key.Compare(key) < 0) {
+      if (curr->key[0] <= key) {
         pred = curr;
+        pred_paddr_dump = curr_paddr_dump;
         continue;
       }
     }
     //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
     break;
   }
-  return curr_paddr_dump;
+  return pred_paddr_dump;
 }
 
 #endif  // LISTDB_DB_CLIENT_H_
