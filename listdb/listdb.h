@@ -2297,6 +2297,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   Node* heads[kNumRegions];
   Node2* preds[kNumRegions][kMaxHeight];
   uint64_t succs[kNumRegions][kMaxHeight];
+  uint64_t cnts[kNumRegions];
   //각 height에 대한 head를 preds에 담아준다.
   bool head_only_flag = true;
   for (int i = 0; i < kNumRegions; i++) {
@@ -2304,7 +2305,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     heads[i] = l2_skiplist->head(pool_id);
     //check there is only head
   }
-  for(int i=0; i<kNumRegions; i++){
+  for(int i=0; i<kNumRegions; i++){ 
     auto l2_node_paddr = heads[i]->next[0];
     auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
     if(l2_node != nullptr){
@@ -2348,22 +2349,26 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       }
 
     }
+    //set values of head for random height and balancing
+      //높이를 골고루 설정할 수 있게 하기 위한 0~(kbranching)^(kmaxheight) 사이의 수인 random_factor을 설정해준다.
+    uint64_t heigt_set_num = 1;
+    for(int i = 2; i<kMaxHeight; i++){
+        heigt_set_num *= tmp_kBranching;
+    }
+    uint64_t random_factor = kRnd->Next()% heigt_set_num;
+
+    for(int i=0; i<kNumRegions; i++){
+      heads[i]->value = random_factor;
+    }
+
     head_only_flag = false;
   }
   //make head is done.
-  if (task->shard ==0){
-  PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
-      while (curr) {
-        if ((long)curr->key[0] < (long)l1_node->key) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
-          continue;
-        }
-        break;
-      }
+  //set cnts
+  for(int i=0; i<kNumRegions; i++){
+      cnts[i] = heads[i]->value;
   }
+
 
 
 
@@ -2401,11 +2406,23 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       }
       else{//if node is full, do split
         //set random numa region and height
-        int height = 2;
-        while (height < kMaxHeight && ((kRnd->Next() % tmp_kBranching) == 0)) {
-          height++;
+        int region = 0;
+        uint64_t min_cnt = cnts[0]; 
+        for(int k=0; k<kNumRegions; k++){
+          if(cnts[k]<min_cnt){
+            min_cnt = cnts[k];
+            region = k;
+          }
         }
-        int region = kRnd->Next()%kNumRegions;
+        int height = 2;
+        uint64_t branching_factor = tmp_kBranching;
+        while (height < kMaxHeight) {
+          if(cnts[region]%branching_factor!=0) break;
+          height++;
+          branching_factor = branching_factor*tmp_kBranching;
+        }
+        cnts[region]++;
+        
         int mid = preds[0][0]->cnt/2;
         //find remain preds and succs
         for (int t = kMaxHeight-1; t > 0; t--) {
@@ -2479,6 +2496,11 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     node_cnt++; 
     node_paddr = l1_node->next[0];
     l1_node = node_paddr.get<Node>();
+  }
+
+  //set heads value
+  for(int i=0; i<kNumRegions; i++){
+      heads[i]->value = cnts[i];
   }
   
 
