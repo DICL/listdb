@@ -12,6 +12,7 @@
 #include <experimental/filesystem>
 #include <unordered_map>
 
+
 #include <getopt.h>
 
 #include "listdb/common.h"
@@ -359,13 +360,15 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  std::this_thread::sleep_for(std::chrono::seconds(20));
+  printf("sleep for waiting all compaction done..\n");
+  std::this_thread::sleep_for(std::chrono::seconds(30));
   db->PrintDebugLsmState(0);
 
 
 
   // Work
   {
+    
     printf("WORK %zu queries\n", NUM_WORKS);
     //std::vector<std::chrono::duration<double>> latency;
     //latency.reserve(NUM_WORKS);

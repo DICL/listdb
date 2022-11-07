@@ -214,7 +214,7 @@ void DBClient::Put(const Key& key, const Value& value) {
 
 bool DBClient::Get(const Key& key, Value* value_out) {
   int s = KeyShard(key);
-  /*
+  
   {
     MemTableList* tl = (MemTableList*) db_->GetTableList(0, s);
 
@@ -262,9 +262,9 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #endif
     }
 #endif
-*/
+
     pmem_get_cnt_++;
-    /*
+    
     while (table) {
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
@@ -279,6 +279,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
+  /*
   {
     // Level 1 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
