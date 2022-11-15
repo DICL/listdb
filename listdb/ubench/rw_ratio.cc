@@ -360,8 +360,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  printf("sleep for waiting all compaction done..\n");
-  std::this_thread::sleep_for(std::chrono::seconds(30));
+  const int sleeptime = 200;
+  printf("sleep %d for waiting all compaction done..\n",sleeptime);
+  std::this_thread::sleep_for(std::chrono::seconds(sleeptime));
   db->PrintDebugLsmState(0);
 
 

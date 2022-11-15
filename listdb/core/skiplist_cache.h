@@ -15,7 +15,7 @@
 template <std::size_t N>
 class SkipListCache {
  public:
-  using PmemNode = BraidedPmemSkipList::Node;
+  using PmemNode = BraidedPmemSkipList::Node2;
   static const uint16_t kMaxHeight_ = kSkipListCacheMaxHeight;
   static const uint16_t kBranching_ = kSkipListCacheBranching;
 
@@ -198,7 +198,7 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
   }
 #endif
 
-  Key& key = p->key;
+  Key& key = p->key[0];
 
   // Insert new node into SkipList
   Node* preds[kMaxHeight_];

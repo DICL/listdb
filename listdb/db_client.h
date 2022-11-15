@@ -311,7 +311,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       ListDB::PmemNode2* found = (ListDB::PmemNode2*) found_paddr.get();
       if(found){
         for(uint64_t k=0;k<found->cnt;k++){
-              //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : -1, visited : %ld, cnt is %ld\n",(long)key,(long)found->key[k],found->cnt);
+              //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : -1, visited : %ld, cnt is %ld\n",(long)key,(long)found->key[k],found->cnt);
               if ( found->key[k] == key ) {
                   *value_out = found->value[k];
                   return true;
@@ -646,29 +646,6 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
     }
   }
 #endif
-#ifdef LISTDB_SKIPLIST_CACHE
-  auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
-  #if 0
-  PmemNode* rv = c->LookupLessThan(key);
-  if (rv) {
-    pred = rv;
-    height = pred->height();
-  }
-  #else
-  PmemNode* lte_pnode = nullptr;
-  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
-  if (lte_pnode) {
-    if (rv == 0) {
-      return PmemPtr(pool_id, (char*) lte_pnode);
-    } else {
-      pred = lte_pnode;
-      //height = pred->height();
-      height = kSkipListCacheMinPmemHeight;
-    }
-  }
-
-  #endif
-#endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 
@@ -726,6 +703,31 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
   Node2* curr;
   int height = pred->height();
 
+  
+#ifdef LISTDB_SKIPLIST_CACHE
+  auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  #if 0
+  PmemNode2* rv = c->LookupLessThan(key);
+  if (rv) {
+    pred = rv;
+    height = pred->height();
+  }
+  #else
+  PmemNode2* lte_pnode = nullptr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
+  if (lte_pnode) {
+    if (rv == 0) {
+      return PmemPtr(pool_id, (char*) lte_pnode);
+    } else {
+      pred = lte_pnode;
+      pred_paddr_dump = PmemPtr(pool_id, (char*) lte_pnode).dump();
+      //height = pred->height();
+      height = kSkipListCacheMinPmemHeight;
+    }
+  }
+  #endif
+#endif
+
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 
@@ -737,7 +739,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->key[0]);
+        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->key[0]);
         if (curr->key[0] <= key) {
           pred = curr;
           pred_paddr_dump = curr_paddr_dump;
@@ -758,7 +760,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      //if((long)key == 7240508745151297615 || (long)key == 4269309296225000340 || (long)key == 8040638708068373385 || (long)key == 9166759042622233743) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->key[0]);
+      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->key[0]);
 
       
       if (curr->key[0] <= key) {

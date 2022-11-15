@@ -98,21 +98,6 @@ target_link_libraries(listdb
 
 # test
 #file(GLOB_RECURSE test_srcs ${LISTDB_SRC_DIR}/*_test.cc)
-if(STRING_KEY)
-set(test_srcs
-  listdb/pmem/pmem_test.cc
-  listdb/lib/numa_test.cc
-  listdb/core/skiplist_cache_test.cc
-  )
-else()
-set(test_srcs
-  listdb/pmem/pmem_test.cc
-  listdb/lib/numa_test.cc
-  listdb/db_client_test.cc
-  listdb/index/braided_pmem_skiplist_test.cc
-  listdb/core/skiplist_cache_test.cc
-  )
-endif(STRING_KEY)
 foreach (test_src ${test_srcs})
   get_filename_component(test_name ${test_src} NAME_WE)
   add_executable(${test_name} ${test_src}

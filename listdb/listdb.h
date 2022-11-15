@@ -418,7 +418,7 @@ void ListDB::Init() {
 #ifdef LISTDB_SKIPLIST_CACHE
   for (int i = 0; i < kNumShards; i++) {
     for (int j = 0; j < kNumRegions; j++) {
-      cache_[i][j] = new SkipListCacheRep(l1_arena_[j][i]->pool_id(), kSkipListCacheCapacity / kNumShards / kNumRegions);
+      cache_[i][j] = new SkipListCacheRep(l2_arena_[j][i]->pool_id(), kSkipListCacheCapacity / kNumShards / kNumRegions);
     }
   }
 #endif
@@ -2133,12 +2133,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     }
 #endif
 
-#ifdef LISTDB_SKIPLIST_CACHE
-    if (l0_node->height() >= kSkipListCacheMinPmemHeight) {
-      int region = pool_id_to_region_[z->node_paddr.pool_id()];
-      cache_[task->shard][region]->Insert(l0_node);
-    }
-#endif
     REPORT_COMPACTION_OPS(1);
     zstack.pop();
     delete z;
@@ -2291,7 +2285,11 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   auto l2_tl = ll_[task->shard]->GetTableList(2);
   auto l2_skiplist = ((PmemTable*) l2_tl->GetFront())->skiplist();
   
-  uint64_t tmp_kBranching = 4;
+#if defined(LISTDB_SKIPLIST_CACHE)
+    static const unsigned int tmp_kBranching = 2;
+#else
+    static const unsigned int tmp_kBranching = 4;
+#endif
   
   //set preds and succs
   Node* heads[kNumRegions];
@@ -2339,6 +2337,13 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       for (int t = 1 ;t < height; t++) {
         heads[i]->next[t] = l2_node_paddr.dump();
       } 
+
+      //apply cache
+#ifdef LISTDB_SKIPLIST_CACHE
+      if (height >= kSkipListCacheMinPmemHeight) {
+        cache_[task->shard][region]->Insert(l2_node);
+      }
+#endif
 
       if(i==0){
         preds[0][0] = l2_node;
@@ -2463,6 +2468,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         for (int i = 1 ;i < height; i++) {
           preds[region][i]->next[i] = l2_node_paddr.dump();
         }
+//apply cache
+#ifdef LISTDB_SKIPLIST_CACHE
+        if (height >= kSkipListCacheMinPmemHeight) {
+          cache_[task->shard][region]->Insert(l2_node);
+        }
+#endif
 
         if(l2_node->key[0] < l1_node->key) insert_node = l2_node;
         else insert_node = preds[0][0];
