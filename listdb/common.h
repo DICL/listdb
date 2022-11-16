@@ -64,7 +64,7 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr int kSkipListCacheMinPmemHeight = 7;
+constexpr int kSkipListCacheMinPmemHeight = 4;
 constexpr size_t kSkipListCacheCapacity = (45ull << 20);
 #endif
 

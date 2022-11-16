@@ -707,11 +707,13 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
 #ifdef LISTDB_SKIPLIST_CACHE
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
   #if 0
+  /*
   PmemNode2* rv = c->LookupLessThan(key);
   if (rv) {
     pred = rv;
     height = pred->height();
   }
+  */
   #else
   PmemNode2* lte_pnode = nullptr;
   int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
