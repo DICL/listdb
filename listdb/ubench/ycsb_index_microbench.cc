@@ -377,7 +377,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
   std::string buf;
-  db->GetStatString("l1_cache_size", &buf);
+  db->GetStatString("l2_cache_size", &buf);
   fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
