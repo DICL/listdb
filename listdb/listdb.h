@@ -1944,18 +1944,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   auto l0_skiplist = task->l0->skiplist();
   auto l1_tl = ll_[task->shard]->GetTableList(1);
 
-  auto search_table = l1_tl->GetFront();
-  int l1tablecnt = 0;
-  while (true) {
-    auto next_table = search_table->Next();
-    if (next_table) {
-      search_table = next_table;
-      l1tablecnt++;//l1 tablelist에 table이 두개이상 존재할때만 l1compaction이 이루어지도록 한다.
-    } else {
-      break;
-    }
-  }
-
   bool head_only_flag = false;
   if(!l1_tl->IsEmpty()){
     auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
@@ -2004,7 +1992,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
     l1_tl->PushFront(l1_table);//원래 SetFront 였음
 
-
+    
     auto table = task->memtable_list->GetFront();
     while (true) {
       auto next_table = table->Next();
@@ -2148,7 +2136,25 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
 
   //if (l1tablecnt<1 && !head_only_flag) {
-  if (!head_only_flag) { 
+  bool l0compaction_end = true;
+  auto test_table = task->memtable_list->GetFront();
+  while (true) {
+    auto test_next = test_table->Next();
+    if (test_next) {
+      if (test_next == (Table*) task->l0) {
+        test_table->SetNext(nullptr);
+        break;
+      }
+      test_table = test_next;
+      l0compaction_end = false;
+    } else {
+      break;
+    }
+  }
+    
+  ((PmemTable*) l1_tl->GetFront())->increase_l0_compaction_cnt();
+
+  if ((!head_only_flag && ((PmemTable*) l1_tl->GetFront())->l0_compaction_cnt() >= kLevelMultiplier ) || l0compaction_end) {
     // Init the new manifest for a new table
     pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
     auto db_pool = Pmem::pool<pmem_db>(0);
@@ -2515,7 +2521,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   }
   
 
-  //remove l1 table at l1 table list(because compaction done.)
+  //remove l1 table at l1 table list(because l1 compaction is done.)
   auto table = task->l1table_list->GetFront();
   while (true) {
     auto next_table = table->Next();
@@ -2681,7 +2687,7 @@ void ListDB::PrintDebugLsmState(int shard) {
 int ListDB::GetStatString(const std::string& name, std::string* buf) {
   int rv = 0;
   std::stringstream ss;
-  if (name == "l1_cache_size") {
+  if (name == "l2_cache_size") {
   #ifdef LISTDB_SKIPLIST_CACHE
     size_t sum = 0;
     size_t max = 0;

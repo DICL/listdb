@@ -46,7 +46,10 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 4;
+constexpr int kMaxNumMemTables = 27;
+//for LISTDB L2
+constexpr int kLevelMultiplier = 10;
+
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
@@ -65,7 +68,7 @@ constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
 constexpr int kSkipListCacheMinPmemHeight = 4;
-constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+constexpr size_t kSkipListCacheCapacity = (1024ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;

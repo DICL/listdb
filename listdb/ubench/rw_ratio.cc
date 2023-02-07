@@ -360,7 +360,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  const int sleeptime = 200;
+  const int sleeptime = 800;
   printf("sleep %d for waiting all compaction done..\n",sleeptime);
   std::this_thread::sleep_for(std::chrono::seconds(sleeptime));
   db->PrintDebugLsmState(0);
@@ -459,7 +459,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
   std::string buf;
-  db->GetStatString("l1_cache_size", &buf);
+  db->GetStatString("l2_cache_size", &buf);
   fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
@@ -600,12 +600,12 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-    fprintf(stdout, "L1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
+    fprintf(stdout, "L2_cache_size: %zu bytes\n", kSkipListCacheCapacity);
 
     std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
     std::cout << "kSkipListCacheMinPmemHeight: " << kSkipListCacheMinPmemHeight << std::endl;
 #else
-    fprintf(stdout, "L1_cache_size: disabled.\n");
+    fprintf(stdout, "L2_cache_size: disabled.\n");
 #endif
 
 #ifdef LISTDB_L0_CACHE
