@@ -28,7 +28,7 @@
 #include "listdb/util.h"
 #include "listdb/util/random.h"
 
-DEFINE_string(workload, "c", "ycsb a b c d ");
+DEFINE_string(workload, "a", "ycsb a b c d ");
 
 DEFINE_string(query_dist, "zipfian", "uniform zipfian");
 
@@ -37,7 +37,7 @@ DEFINE_int64(loads, 100'000'000, "Number of key/values to place in database");
 DEFINE_int64(works, 10'000'000, "Number of read operations to do.  "
              "If negative, do FLAGS_num reads.");
 
-DEFINE_int32(threads, 80, "Number of concurrent threads to run.");
+DEFINE_int32(threads, 50, "Number of concurrent threads to run.");
 
 DEFINE_int32(shards, kNumShards, "num shards");
 
@@ -51,7 +51,7 @@ DEFINE_string(report_file, "", "report_file");
 
 DEFINE_bool(load_only, false, "load only");
 
-DEFINE_string(workload_dir, "", "example) ~/RECIPE/index-microbench/workloads_100M_10M_zipf");
+DEFINE_string(workload_dir, "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
 
 DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
 
@@ -283,7 +283,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     for (int i = 0; i < num_shards; i++) {
       db->ManualFlushMemTable(i);
     }
-    std::this_thread::sleep_for(std::chrono::seconds(20));
+    uint64_t sleeptime = 100;
+    printf("sleep for %lu seconds\n",sleeptime);
+    std::this_thread::sleep_for(std::chrono::seconds(sleeptime));
     db->PrintDebugLsmState(0);
   }
 
@@ -307,6 +309,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
       }
     }
     const size_t num_ops_per_thread = FLAGS_works / num_threads;
+    //std::atomic<int> lookup_fail_cnt=0;
+
     for (int id = 0; id < num_threads; id++) {
       workers.emplace_back([&, id] {
         if (bind_type == CpuBindType::kCpuNumaRoundRobin) {
@@ -324,6 +328,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           } else if (work_ops[i] == OP_READ) {
             uint64_t val_read;
 #ifndef COUNT_FOUND
+            //if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
             client->Get(work_keys[i], &val_read);
 #else
             auto ret = client->Get(work_keys[i], &val_read);
@@ -347,6 +352,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
     fprintf(stdout, "Work IOPS: %.3lf M\n", FLAGS_works/dur_sec/1000000);
+    //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
 #ifdef COUNT_FOUND
     int cnt_sum = 0;
     for (int i = 0; i < num_threads; i++) {
