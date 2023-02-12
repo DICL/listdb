@@ -26,17 +26,25 @@ class TableList {
 
   Table* GetMutable(const size_t size);
 
+  uint64_t l1_table_cnt() {return l1_table_cnt_;}
+  void increase_l1_table_cnt(uint64_t n){l1_table_cnt_+= n;}
+  void decrease_l1_table_cnt(uint64_t n){l1_table_cnt_ -= n;}
+
+
  protected:
   virtual Table* NewMutable(size_t table_capacity, Table* next_table) = 0;
 
   virtual void EnqueueCompaction(Table* table) { return; };
 
+  uint64_t l1_table_cnt_;
   const size_t table_capacity_;
   std::mutex init_mu_;
   std::atomic<Table*> front_;
 };
 
-TableList::TableList(const size_t table_capacity) : table_capacity_(table_capacity), front_(nullptr) { }
+TableList::TableList(const size_t table_capacity) : table_capacity_(table_capacity), front_(nullptr) {
+  l1_table_cnt_ = 0;
+}
 
 void* TableList::Put(const Key& key, const Value& value) {
   const size_t kv_size = key.size() + 8;

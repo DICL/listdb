@@ -30,7 +30,7 @@
 
 DEFINE_string(workload, "a", "ycsb a b c d ");
 
-DEFINE_string(query_dist, "zipfian", "uniform zipfian");
+DEFINE_string(query_dist, "uniform", "uniform zipfian");
 
 DEFINE_int64(loads, 100'000'000, "Number of key/values to place in database");
 
@@ -51,7 +51,7 @@ DEFINE_string(report_file, "", "report_file");
 
 DEFINE_bool(load_only, false, "load only");
 
-DEFINE_string(workload_dir, "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
+DEFINE_string(workload_dir, "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
 
 DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
 
@@ -283,7 +283,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     for (int i = 0; i < num_shards; i++) {
       db->ManualFlushMemTable(i);
     }
-    uint64_t sleeptime = 100;
+    uint64_t sleeptime = 80;
     printf("sleep for %lu seconds\n",sleeptime);
     std::this_thread::sleep_for(std::chrono::seconds(sleeptime));
     db->PrintDebugLsmState(0);

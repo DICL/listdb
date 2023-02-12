@@ -279,7 +279,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
-  /*
+  
   {
     // Level 1 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
@@ -298,7 +298,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
-  */
+  
   {
     // Level 2 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(2, s);
