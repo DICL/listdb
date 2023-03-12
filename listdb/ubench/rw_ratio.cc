@@ -12,7 +12,6 @@
 #include <experimental/filesystem>
 #include <unordered_map>
 
-
 #include <getopt.h>
 
 #include "listdb/common.h"
@@ -33,10 +32,13 @@
 //#define QUERY_DISTRIBUTION "zipf"
 
 constexpr int NUM_THREADS = 50;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
+constexpr size_t NUM_LOADS = 40 * 1000 * 1000;
+constexpr size_t NUM_WORKS = 1 * 1000 * 1000;
 
 constexpr int NUM_SHARDS = kNumShards;
+
+constexpr int SLEEP_TIME = 30;
+constexpr int READ_RATIO = 200;//set 200 to do scan
 
 namespace fs = std::experimental::filesystem::v1;
 
@@ -91,13 +93,14 @@ void FillLoadKeys(const size_t num_loads, std::vector<uint64_t>* load_keys, cons
 }
 
 void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
-                  std::vector<uint64_t>* work_keys, const std::string& filename) {
+                  std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, const std::string& filename) {
   std::ifstream istrm(filename);
   size_t count = 0;
   size_t epoch = 10;
   while ((count < num_works) && istrm.good()) {
     std::string op;
     uint64_t key;
+    uint64_t scan_num;
     istrm >> op >> key;
     if (op == "INSERT") {
       work_ops->push_back(OP_INSERT);
@@ -108,6 +111,11 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
     } else if (op == "READ") {
       work_ops->push_back(OP_READ);
       work_keys->push_back(key);
+    } else if (op == "SCAN") {
+      work_ops->push_back(OP_SCAN);
+      work_keys->push_back(key);
+      istrm >> scan_num;
+      work_scan_nums->push_back(scan_num);
     } else {
       std::cout << "Invalid op: " << op << std::endl;
       exit(1);
@@ -137,11 +145,11 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 }
 
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
-                           std::vector<uint64_t>* work_keys, unsigned int read_ratio) {
+                           std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
   ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
-  FillWorkKeys(num_works, work_ops, work_keys, ss.str());
+  FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
 
 static pmem::obj::pool<pmem_log_root> pool_table[kNumRegions];
@@ -254,9 +262,7 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
       });
     }
     for (auto& t : loaders) {
-
       t.join();
-      
     }
     auto end_tp = std::chrono::steady_clock::now();
     std::chrono::duration<double> dur = end_tp - begin_tp;
@@ -272,7 +278,6 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
     std::vector<std::thread> workers;
     std::vector<int> cnt(num_threads);
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
-    
     for (int id = 0; id < num_threads; id++) {
        workers.emplace_back([&, id] {
         SetAffinity(Numa::CpuSequenceRR(id));
@@ -322,7 +327,7 @@ void Run1(const int num_threads, const int num_shards, const std::vector<uint64_
 }
 
 void Run2(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
-          const std::vector<uint64_t>& work_keys) {
+          const std::vector<uint64_t>& work_keys, const std::vector<uint64_t>& work_scan_nums) {
   fprintf(stdout, "=== ListDB (%d-shard) ===\n", num_shards);
 
   ListDB* db = new ListDB();
@@ -360,16 +365,14 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  const int sleeptime = 100;
-  printf("sleep %d for waiting all compaction done..\n",sleeptime);
-  std::this_thread::sleep_for(std::chrono::seconds(sleeptime));
+  fprintf(stdout, "sleep %d seconds...\n",SLEEP_TIME);
+  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
   db->PrintDebugLsmState(0);
-
-
 
   // Work
   {
-    
+
+
     printf("WORK %zu queries\n", NUM_WORKS);
     //std::vector<std::chrono::duration<double>> latency;
     //latency.reserve(NUM_WORKS);
@@ -410,7 +413,12 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
             auto ret = client->Get(work_keys[i], &val_read);
             if (ret) cnt[id]++;
 #endif
-          }
+          } else if (work_ops[i] == OP_SCAN) {
+            std::vector<uint64_t> val_scan;
+            val_scan.reserve(work_scan_nums[i]);
+            client->Scan(work_keys[i], work_scan_nums[i], &val_scan);
+          } 
+          
           //latency[i] = std::chrono::steady_clock::now() - query_begin;
         }
 
@@ -421,12 +429,15 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         }
       });
     }
+    
     for (auto& t :  workers) {
       t.join();
     }
     auto end_tp = std::chrono::steady_clock::now();
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
+
+
     fprintf(stdout, "Work IOPS: %.3lf M\n", NUM_WORKS/dur_sec/1000000);
     //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
 #ifdef COUNT_FOUND
@@ -571,7 +582,7 @@ int main(int argc, char* argv[]) {
   ParseCLA(argc, argv, &props);
   int num_threads = NUM_THREADS;
   int num_shards = NUM_SHARDS;
-  unsigned int read_ratio = 100;
+  unsigned int read_ratio = READ_RATIO; // set to 200 for scanning workload (load_r200_unif_int_1M_1M , run_r200_unif_int_1M_1M)
   for (auto& it : props) {
     std::cout << it.first << ": " << it.second << std::endl;
     if (it.first == "num_threads") {
@@ -618,15 +629,17 @@ int main(int argc, char* argv[]) {
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
+  std::vector<uint64_t> work_scan_nums;
   load_keys.reserve(NUM_LOADS);
   work_ops.reserve(NUM_WORKS);
   work_keys.reserve(NUM_WORKS);
+  work_scan_nums.reserve(NUM_WORKS);
   FillLoadKeysReadRatio(NUM_LOADS, NUM_WORKS, &load_keys, read_ratio);
   //FillLoadKeys(NUM_LOADS, &load_keys, "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
-  FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, read_ratio);
+  FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
 
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
-  Run2(num_threads, num_shards, load_keys, work_ops, work_keys);
+  Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
 
   return 0;
