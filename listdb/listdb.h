@@ -344,6 +344,30 @@ void ListDB::Init() {
   }
 #endif
 
+#ifdef LISTDB_WISCKEY
+  for (int i = 0; i < kNumRegions; i++) {
+    std::stringstream pss;
+    pss << "/pmem" << i << "/wkim/listdb_value";
+    std::string path = pss.str();
+    fs::remove_all(path);
+    fs::create_directories(path);
+
+    std::string poolset = path + ".set";
+    std::fstream strm(poolset, strm.out);
+    strm << "PMEMPOOLSET" << std::endl;
+    strm << "OPTION SINGLEHDR" << std::endl;
+    strm << "400G " << path << "/" << std::endl;
+    strm.close();
+
+    int pool_id = Pmem::BindPoolSet<pmem_blob_root>(poolset, "");
+    pool_id_to_region_[pool_id] = i;
+    auto pool = Pmem::pool<pmem_blob_root>(pool_id);
+
+    for (int j = 0; j < kNumShards; j++) {
+      value_blob_[i][j] = new PmemBlob(pool_id, j);
+    }
+  }
+#endif
 
 
   for (int i = 0; i < kNumRegions; i++) {
@@ -2285,6 +2309,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
 void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task){
   if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
+  
 
   using Node = PmemNode;
   using Node2 = PmemNode2;
@@ -2307,7 +2332,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       task->l1 = (PmemTable*)next_table;
 
       ////////////////////////////// 기존 파트 실행
-    
 
   
     //get l1 skiplist
@@ -2323,7 +2347,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   #else
       static const unsigned int tmp_kBranching = 4;
   #endif
-    
     //set preds and succs
     Node* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
@@ -2357,7 +2380,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
         auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
         auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
-        l2_node->key[0] = (long)i;
+        l2_node->key[0] = i;
         l2_node->value[0] = i;
         l2_node->tag = height;
         l2_node->cnt = 1;
@@ -2414,12 +2437,11 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         l1_node = node_paddr.get<Node>();
         continue;
       }//remove head nodes of l1     
-
       //search preds and succes except for braided level
         PmemPtr curr_paddr = preds[0][0]->next[0];
         auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
         while (curr) {
-          if ((long)curr->key[0] < (long)l1_node->key) {
+          if (curr->key[0] < l1_node->key) {
             preds[0][0] = curr;
             curr_paddr = curr->next[0];
             curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
@@ -2431,7 +2453,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
         //check count and insert or split
         Node2* insert_node;
-
         if(preds[0][0]->cnt < NPAIRS){//if its not full, do insert
           insert_node = preds[0][0];
         }
@@ -2460,7 +2481,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
             PmemPtr curr_paddr = preds[region][t]->next[t];
             auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
             while (curr) {
-              if ((long)curr->key[0] < (long)preds[0][0]->key[mid]) {
+              if (curr->key[0] < preds[0][0]->key[mid]) {
                 preds[region][t] = curr;
                 curr_paddr = curr->next[t];
                 curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
@@ -2514,13 +2535,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
               }
             if(insert_node->key[i]<l1_node->key) continue;
             //if new key is biggest key in node
-
             //shift to right
             for(uint64_t j=insert_node->cnt-1;j>=i;j--){
               insert_node->key[j+1] = insert_node->key[j];
               insert_node->value[j+1] = insert_node->value[j];
+              if(j==0) break;
             }
-            
             //insert to the right position
             insert_node->key[i] = l1_node->key;
             insert_node->value[i] = l1_node->value;
@@ -2554,7 +2574,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         break;
       }
     }
-
     l1_compaction_cnt++;
     if(l1_compaction_cnt >= kL2LevelMultiplier) break; //If done enough l1 compaction
 
@@ -2589,6 +2608,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않는 cow 방식이지만 살펴볼 것
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");//
 
+
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();//해당 memtable에 대한 skiplit를 가져온다.
 
@@ -2613,7 +2633,6 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
 
 
 
-
   while (true) {
     auto l0_node = node_paddr.get<Node>();
     if (l0_node == nullptr) {
@@ -2627,7 +2646,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
     for (int i = height - 1; i > 0; i--) {
       auto curr = curr_paddr.get<Node>();
       while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
+        if (curr->key.Compare(l0_node->key) <= 0) {
           preds[region][i] = curr;
           curr_paddr = curr->next[i];
           curr = curr_paddr.get<Node>();
@@ -2641,7 +2660,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
       PmemPtr curr_paddr = preds[0][0]->next[0];
       auto curr = curr_paddr.get<Node>();
       while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
+        if (curr->key.Compare(l0_node->key) <= 0) {
           preds[0][0] = curr;
           curr_paddr = curr->next[0];
           curr = curr_paddr.get<Node>();
@@ -2662,7 +2681,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
     for (int i = 1; i < height; i++) {
       l1_node->next[i] = succs[region][i];
     }
-    clwb(l1_node, node_size);//도장쾅쾅해주는것
+    clwb(l1_node, node_size);//도장쾅쾅해주는것 아마 이게 copy on write 이지 싶다..
     _mm_sfence();
     preds[0][0]->next[0] = l1_node_paddr.dump();
     for (int i = 1 ;i < height; i++) {

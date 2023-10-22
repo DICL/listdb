@@ -71,8 +71,8 @@ DEFINE_int32(duration, 0, "Time in seconds for the random-ops tests to run."
 DEFINE_string(value_size_distribution_type, "fixed",
               "Value size distribution type: fixed, uniform, normal");
 
-DEFINE_int32(value_size, 100, "Size of each value in fixed distribution");
-static unsigned int value_size = 100;
+DEFINE_int32(value_size, 256, "Size of each value in fixed distribution");
+static unsigned int value_size = 256;
 
 DEFINE_int32(value_size_min, 100, "Min size of random value");
 
@@ -1500,7 +1500,7 @@ class Benchmark {
     int64_t max_ops = num_ops * num_key_gens;
     int64_t ops_per_stage = max_ops;
 
-    Duration duration(test_duration, max_ops, ops_per_stage);
+    Duration duration(test_duration, max_ops, ops_per_stage);//duration class 생성. 반복시 사용 
     const uint64_t num_per_key_gen = num_/* + max_num_range_tombstones_*/;
     for (size_t i = 0; i < num_key_gens; i++) {
       key_gens[i].reset(new KeyGenerator(&(thread->rand), write_mode,
@@ -1524,6 +1524,8 @@ class Benchmark {
 
     int64_t stage = 0;
     int64_t num_written = 0;
+
+    //write 반복문 시작
     while ((num_per_key_gen != 0) && !duration.Done(entries_per_batch_)) {
       if (duration.GetStage() != stage) {
         stage = duration.GetStage();
@@ -1570,19 +1572,78 @@ class Benchmark {
   }
 
   void ReadSequential(ThreadState* thread) {
-    abort();
-    //if (db_.db != nullptr) {
-    //  ReadSequential(thread, db_.db);
-    //} else {
-    //  for (const auto& db_with_cfh : multi_dbs_) {
-    //    ReadSequential(thread, db_with_cfh.db);
-    //  }
+    
+    int64_t read = 0;
+    int64_t found = 0;
+    int64_t bytes = 0;
+    //int num_keys = 0;
+    int64_t key_rand = 0;
+    //ReadOptions options(FLAGS_verify_checksum, true);
+    //std::unique_ptr<const char[]> key_guard;
+    //Slice key = AllocateKey(&key_guard);
+    //PinnableSlice pinnable_val;
+    //std::unique_ptr<char[]> ts_guard;
+    //Slice ts;
+    //if (user_timestamp_size_ > 0) {
+    //  ts_guard.reset(new char[user_timestamp_size_]);
     //}
+    std::unique_ptr<const char[]> key_guard;
+    std::string_view key = AllocateKey(&key_guard);
+    std::string value;
+    value.reserve(value_size);
+
+    Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
+      GenerateKeyFromInt(key_rand, FLAGS_num, &key);
+      key_rand++;
+      read++;
+      int s;  //Status s;
+      //pinnable_val.Reset();
+      //if (FLAGS_num_column_families > 1) {
+      //  s = db_with_cfh->db->Get(options, db_with_cfh->GetCfh(key_rand), key,
+      //                           &pinnable_val, ts_ptr);
+      //} else {
+      //  s = db_with_cfh->db->Get(options,
+      //                           db_with_cfh->db->DefaultColumnFamily(), key,
+      //                           &pinnable_val, ts_ptr);
+      //}
+      //if (s.ok()) {
+      //  found++;
+      //  bytes += key.size() + pinnable_val.size() + user_timestamp_size_;
+      //} else if (!s.IsNotFound()) {
+      //  fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+      //  abort();
+      //}
+      s = listdb_Get(thread->client, key, &value);
+
+      if (s == 0/* s.ok()*/) {
+        found++;
+        bytes += key.size() + value.size();
+      }/* else if (!s.IsNotFound()) {
+        fprintf(stderr, "Get returned an error: %s\n", s.ToString().c_str());
+        abort();
+      }*/
+
+      if (thread->shared->read_rate_limiter.get() != nullptr &&
+          read % 256 == 255) {
+        thread->shared->read_rate_limiter->Request(256, Env::IO_HIGH, RateLimiter::OpType::kRead);
+      }
+
+      thread->stats.FinishedOps(nullptr, 1, kRead);
+    }
+
+    char msg[100];
+    snprintf(msg, sizeof(msg), "(%lu of %lu found)\n",
+             found, read);
+
+    thread->stats.AddBytes(bytes);
+    thread->stats.AddMessage(msg);
   }
 
   void ReadSequential(ThreadState* thread, DB* db) {
 #if 1
-    abort();
+    printf("pass readseq\n");//test juwon
+    //abort();
 #else
     ReadOptions options(FLAGS_verify_checksum, true);
     options.tailing = FLAGS_use_tailing_iterator;

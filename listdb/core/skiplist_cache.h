@@ -211,7 +211,6 @@ int SkipListCache<N>::EvictSome() {
   }
 
   size_.fetch_sub(eviction_cnt * sizeof(Field));
-  printf("end evict\n");
 
   return eviction_cnt;
 

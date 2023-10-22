@@ -9,7 +9,7 @@
 #include <cassert>
 #include <cstdio>
 
-#define NPAIRS 200
+#define NPAIRS 128
 
 //#define GROUP_LOGGING
 //#define L1_COW
@@ -68,8 +68,8 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr int kSkipListCacheMinPmemHeight = 5;
-constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+constexpr int kSkipListCacheMinPmemHeight = 3;
+constexpr size_t kSkipListCacheCapacity = (1ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;

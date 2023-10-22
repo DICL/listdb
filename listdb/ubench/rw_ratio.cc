@@ -32,13 +32,13 @@
 //#define QUERY_DISTRIBUTION "zipf"
 
 constexpr int NUM_THREADS = 50;
-constexpr size_t NUM_LOADS = 40 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 1 * 1000 * 1000;
+constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
 constexpr int NUM_SHARDS = kNumShards;
 
 constexpr int SLEEP_TIME = 30;
-constexpr int READ_RATIO = 200;//set 200 to do scan
+constexpr int READ_RATIO = 100;//set 200 to do scan
 
 namespace fs = std::experimental::filesystem::v1;
 
