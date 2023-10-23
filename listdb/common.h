@@ -36,7 +36,7 @@ constexpr size_t kStringKeyLength = 16;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 256;
+constexpr int kNumShards = 128;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
 #endif
@@ -44,7 +44,10 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 4;
+constexpr int kMaxNumMemTables = 16;
+
+//for LISTDB L2 
+constexpr int kL1LevelMultiplier = 9999;
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
@@ -62,15 +65,15 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr int kSkipListCacheMinPmemHeight = 5;
-constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+constexpr int kSkipListCacheMinPmemHeight = 10;
+constexpr size_t kSkipListCacheCapacity = (1ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 80;
+constexpr int kNumWorkers = 100;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
@@ -101,7 +104,8 @@ enum class TableType {
 
 enum class TaskType {
   kMemTableFlush,
-  kL0Compaction
+  kL0Compaction,
+  kL1Compaction
 };
 
 inline void SetAffinity(int coreid) {

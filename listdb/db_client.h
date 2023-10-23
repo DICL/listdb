@@ -25,6 +25,8 @@ class DBClient {
 
   bool Get(const Key& key, Value* value_out);
 
+  bool Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out);
+
 #if defined(LISTDB_STRING_KEY) && defined(LISTDB_WISCKEY)
   void PutStringKV(const std::string_view& key_sv, const std::string_view& value);
   bool GetStringKV(const std::string_view& key_sv, Value* value_out);
@@ -48,6 +50,7 @@ class DBClient {
 #endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
+  PmemPtr LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
 
   ListDB* db_;
   int id_;
@@ -287,6 +290,26 @@ bool DBClient::Get(const Key& key, Value* value_out) {
         *value_out = found->value;
         return true;
       }
+      table = table->Next();
+    }
+  }
+  return false;
+}
+
+bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out) {
+  int s = KeyShard(key);
+  
+  {
+    pmem_get_cnt_++;
+    // Level 1 LookupRange
+    auto tl = (PmemTableList*) db_->GetTableList(1, s);
+    auto table = tl->GetFront();
+    while (table) {
+      auto pmem = (PmemTable*) table;
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      LookupRangeL1(key, l1_pool_id_, skiplist, s, scan_num, values_out);
+      if (values_out->front()) return true;
       table = table->Next();
     }
   }
@@ -680,6 +703,98 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
     break;
   }
   return curr_paddr_dump;
+}
+
+PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
+
+  using Node = PmemNode;
+  Node* pred = skiplist->head(pool_id);
+  uint64_t curr_paddr_dump;
+  Node* curr;
+  int height = pred->height();
+
+#ifdef LISTDB_SKIPLIST_CACHE
+  auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  #if 0
+  PmemNode* rv = c->LookupLessThan(key);
+  if (rv) {
+    pred = rv;
+    height = pred->height();
+  }
+  #else
+  PmemNode* lte_pnode = nullptr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
+  if (lte_pnode) {
+    pred = lte_pnode;
+    //height = pred->height();
+    height = kSkipListCacheMinPmemHeight;
+  }
+
+  #endif
+#endif
+  search_visit_cnt_++;
+  height_visit_cnt_[height - 1]++;
+
+  // NUMA-local upper layers
+  for (int i = height - 1; i >= 1; i--) {
+    while (true) {
+      curr_paddr_dump = pred->next[i];
+      curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+        search_visit_cnt_++;
+        height_visit_cnt_[i]++;
+        if (curr->key.Compare(key) < 0) {
+          pred = curr;
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  // Braided bottom layer
+  if (pred == skiplist->head(pool_id)) {
+    if (pool_id != skiplist->primary_pool_id()) {
+      search_visit_cnt_++;
+      height_visit_cnt_[kMaxHeight - 1]++;
+    }
+    pred = skiplist->head();
+  }
+  while (true) {
+    curr_paddr_dump = pred->next[0];
+    curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+    if (curr) {
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
+      if (curr->key.Compare(key) < 0) {
+        pred = curr;
+        continue;
+      }
+    }
+    break;
+  }
+
+  uint64_t paddr_dump_output = curr_paddr_dump;
+  uint64_t scan_cnt = scan_num;
+  if(!curr || curr->key.Compare(key)!=0) return paddr_dump_output;
+  values_out->push_back(curr->value);
+  scan_cnt--;
+  while (scan_cnt>0) {
+    curr_paddr_dump = pred->next[0];
+    curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+    if (curr) {
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
+      values_out->push_back(curr->value);
+      scan_cnt--;
+      pred = curr;
+      continue;
+    }
+    break;
+  }
+
+
+  return paddr_dump_output;
 }
 
 #endif  // LISTDB_DB_CLIENT_H_

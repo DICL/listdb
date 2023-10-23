@@ -50,7 +50,7 @@ struct pmem_log_block {
 
 // PmemLog
 
-class PmemLog {
+class  PmemLog {
  public:
   struct Block {
     std::atomic<size_t> p;  // current end
