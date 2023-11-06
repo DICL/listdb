@@ -25,9 +25,9 @@ class BraidedPmemSkipList {
   };
 
   struct Node2 {
-    Key min_key;
     uint64_t tag;  // seqorder (56-bit), op (4-bit), height (4-bit)
     uint64_t kvpairs_ptr; // pointer of KVpairs structure below
+    Key min_key;
     uint64_t next[1];
 
     int height() const { return tag & 0xf; }

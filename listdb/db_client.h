@@ -365,9 +365,11 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 
 bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   int s = KeyShard(key);
+  pmem_get_cnt_++;
+  /*
   
   {
-    pmem_get_cnt_++;
+    
     // Level 1 LookupRange
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
@@ -375,12 +377,12 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
       auto pmem = (PmemTable*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      LookupRangeL1(key, l1_pool_id_, skiplist, s, scan_num, values_out);
-      if (values_out->front()) return true;
+      //LookupRangeL1(key, l1_pool_id_, skiplist, s, scan_num, values_out);
+      //if (values_out->front()) return true;
       table = table->Next();
     }
   }
-
+  */
   {
     // Level 2 LookupRange
     auto tl = (PmemTableList*) db_->GetTableList(2, s);
@@ -542,6 +544,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
   }
   {
     // Level 2 Lookup
+    
     auto tl = (PmemTableList*) db_->GetTableList(2, s);
     auto table = tl->GetFront();
     while (table) {
@@ -1037,8 +1040,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->min_key);
-        if (curr->min_key.Compare(key) <= 0) {
+        if (curr->min_key <= key) {
           pred = curr;
           continue;
         }
@@ -1057,66 +1059,54 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->min_key);
-
       
-      if (curr->min_key.Compare(key) <= 0) {
+      if (curr->min_key <= key) {
         pred = curr;
         continue;
       }
     }
-    //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
     break;
   }
 
   uint64_t scan_cnt = scan_num;
-  bool found_flag = false;
-  //check node has the finding key and if found, start push back values in values_out
+  uint64_t result_paddr = pred->kvpairs_ptr;
 
   auto pred_kvpairs_paddr = pred->kvpairs_ptr;
   auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
 
+  //start scan from given range
   for(uint64_t k=0;k<pred_kvpairs->cnt;k++){
-    if ( pred_kvpairs->key[k] == key ) {
-        found_flag = true;
-        values_out->push_back(pred_kvpairs->value[k]);
-        scan_cnt--;
-        if(scan_cnt<=0) break;
-    }
-    else if(found_flag == true){
-      values_out->push_back(pred_kvpairs->value[k]);
-      scan_cnt--;
-      if(scan_cnt<=0) break;
-    }
+    if(pred_kvpairs->key[k] < key) continue;
+    values_out->push_back(pred_kvpairs->value[k]);
+    scan_cnt--;
+    if(scan_cnt<=0) return result_paddr;
   }
-  if(found_flag == false) return pred->kvpairs_ptr;
 
+  //if scan counter remains, scan next nodes 
   while (scan_cnt>0) {
-    
+    //move on to next node
     curr_paddr_dump = pred->next[0];
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
-    auto curr_kvpairs_paddr = curr->kvpairs_ptr;
-    auto curr_kvpairs = (KVpairs*) ((PmemPtr*) &curr_kvpairs_paddr)->get();
 
     if (curr) {
+      auto curr_kvpairs_paddr = curr->kvpairs_ptr;
+      auto curr_kvpairs = (KVpairs*) ((PmemPtr*) &curr_kvpairs_paddr)->get();
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
       for(uint64_t k=0;k<curr_kvpairs->cnt;k++){
         values_out->push_back(curr_kvpairs->value[k]);
         scan_cnt--;
-        if(scan_cnt<=0) break;
+        if(scan_cnt<=0) return result_paddr;
       }      
       
       pred = curr;
       continue;
     }
-    //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
     break;
   }
 
 
-
-  return pred->kvpairs_ptr;
+  return result_paddr;
 }
 
 #endif  // LISTDB_DB_CLIENT_H_

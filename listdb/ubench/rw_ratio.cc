@@ -32,11 +32,11 @@
 //#define QUERY_DISTRIBUTION "zipf"
 
 constexpr int NUM_THREADS = 50;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr size_t NUM_LOADS = 10 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
-constexpr int SLEEP_TIME = 300;//time to waiting l0 compactions end
-constexpr int SLEEP_TIME2 = 30;//time to waiting l1 compactions end
+constexpr int SLEEP_TIME = 30;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 15;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -427,6 +427,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           } else if (work_ops[i] == OP_SCAN) {
             std::vector<uint64_t> val_scan;
             val_scan.reserve(work_scan_nums[i]);
+            
             client->Scan(work_keys[i], work_scan_nums[i], &val_scan);
           } 
           
