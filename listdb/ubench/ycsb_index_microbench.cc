@@ -51,7 +51,7 @@ DEFINE_string(report_file, "", "report_file");
 
 DEFINE_bool(load_only, false, "load only");
 
-DEFINE_string(workload_dir, "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
+DEFINE_string(workload_dir, "/juwon/index-microbench/workloads_100M_10M_unif", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
 
 DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
 

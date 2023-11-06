@@ -42,7 +42,10 @@ using DB = ListDB;
 DEFINE_string(
     benchmarks,
     "fillseq,"
+    "waitfor10sec,"
     "fillrandom,"
+    "L1Compaction,"
+    "waitfor30sec,"
     "readseq,"
     "readrandom,"
     "mixgraph",
@@ -55,7 +58,7 @@ DEFINE_string(
 
 DEFINE_int32(write_threads, 0, "write_threads");
 
-DEFINE_int64(num, 1000000, "Number of key/values to place in database");
+DEFINE_int64(num, 10000000, "Number of key/values to place in database");
 
 DEFINE_int64(reads, -1, "Number of read operations to do.  "
              "If negative, do FLAGS_num reads.");
@@ -1038,6 +1041,8 @@ class Benchmark {
         //WaitForCompaction();
       } else if (name == "flush") {
         Flush();
+      } else if (name == "L1Compaction") {
+        L1Compaction();
       } else if (name == "stats") {
         abort();
         //PrintStats("rocksdb.stats");
@@ -1136,6 +1141,14 @@ class Benchmark {
     std::this_thread::sleep_for(std::chrono::seconds(3));
     for (int i = 0; i < kNumShards; i++) {
       db_->ManualFlushMemTable(i);
+    }
+  }
+
+  //add for ListDB L2
+  void L1Compaction() {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    for (int i = 0; i < kNumShards; i++) {
+      db_->ManualL1Compaction(i);
     }
   }
 

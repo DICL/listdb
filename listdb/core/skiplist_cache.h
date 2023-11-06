@@ -96,6 +96,7 @@ SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
     size_(0),
     victim_key_(0) {
   MaxFieldNum = (uint64_t)(capacity/sizeof(Field));
+  printf("MaxFieldNum is %lu\n",MaxFieldNum); // test juwon
     fields = new Field[MaxFieldNum];
   std::atomic_thread_fence(std::memory_order_release);
 }
@@ -114,7 +115,7 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
     }
   }
 #endif
-  Key& key = p->key[0];
+  Key& key = p->min_key;
   if(size_.load()==0) victim_key_ = key;
 
   //find insert pos

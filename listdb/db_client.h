@@ -17,6 +17,7 @@ class DBClient {
   using MemNode = ListDB::MemNode;
   using PmemNode = ListDB::PmemNode;
   using PmemNode2 = ListDB::PmemNode2;
+  using KVpairs = ListDB::KVpairs;
 
   DBClient(ListDB* db, int id, int region);
 
@@ -313,11 +314,11 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
-      ListDB::PmemNode2* found = (ListDB::PmemNode2*) found_paddr.get();
+      ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
       if(found){
         for(uint64_t k=0;k<found->cnt;k++){
               //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : -1, visited : %ld, cnt is %ld\n",(long)key,(long)found->key[k],found->cnt);
-              if ( found->key[k] == key ) {
+              if ( found->key[k].Compare(key) == 0 ) {
                   *value_out = found->value[k];
                   return true;
               }
@@ -516,15 +517,51 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
-      ListDB::PmemNode2* found = (ListDB::PmemNode2*) found_paddr.get();
+      ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
       if(found){
+        
+        /*
+        //p,l,h for position, low, high for binary search
+        int h = found->cnt;
+        int l = 0;
+        int p = h/2;
+        
+
+        while(true){
+          //do binary search in kvpair
+          if(h<l) break;
+          //get compare result
+          int result = found->key[p].Compare(key);
+
+          if ( result == 0 ) {
+              *value_out = (uint64_t) PmemPtr::Decode<char>(found->value[p]);
+              return true;
+          }
+
+          if( result < 0 ){
+            l = p+1;
+            p = (l+h)/2;
+            continue;
+          }
+
+          if(result > 0){
+            h = p-1;
+            p = (l+h)/2;
+            continue;
+          }
+
+        }
+        */
+        
+        
         for(uint64_t k=0;k<found->cnt;k++){
               if ( found->key[k] == key ) {
                   *value_out = (uint64_t) PmemPtr::Decode<char>(found->value[k]);
                   return true;
               }
         }
-
+        
+        
       }
       table = table->Next();
     }
@@ -758,9 +795,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
   using Node2 = PmemNode2;
   Node* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
-  uint64_t pred_paddr_dump;
   curr_paddr_dump = tmp->next[0];
-  pred_paddr_dump = curr_paddr_dump;
   Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   Node2* curr;
   int height = pred->height();
@@ -803,10 +838,9 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->key[0]);
-        if (curr->key[0].Compare(key) <= 0) {
+        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->min_key);
+        if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
-          pred_paddr_dump = curr_paddr_dump;
           continue;
         }
       }
@@ -824,19 +858,18 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->key[0]);
+      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->min_key);
 
       
-      if (curr->key[0].Compare(key) <= 0) {
+      if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
-        pred_paddr_dump = curr_paddr_dump;
         continue;
       }
     }
     //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
     break;
   }
-  return pred_paddr_dump;
+  return pred->kvpairs_ptr;
 }
 
 PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
@@ -936,9 +969,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
   using Node2 = PmemNode2;
   Node* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
-  uint64_t pred_paddr_dump;
   curr_paddr_dump = tmp->next[0];
-  pred_paddr_dump = curr_paddr_dump;
   Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   Node2* curr;
   int height = pred->height();
@@ -978,10 +1009,9 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->key[0]);
-        if (curr->key[0].Compare(key) <= 0) {
+        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->min_key);
+        if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
-          pred_paddr_dump = curr_paddr_dump;
           continue;
         }
       }
@@ -999,12 +1029,11 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->key[0]);
+      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->min_key);
 
       
-      if (curr->key[0].Compare(key) <= 0) {
+      if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
-        pred_paddr_dump = curr_paddr_dump;
         continue;
       }
     }
@@ -1012,34 +1041,40 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
     break;
   }
 
-  uint64_t paddr_dump_output = pred_paddr_dump;
   uint64_t scan_cnt = scan_num;
   bool found_flag = false;
   //check node has the finding key and if found, start push back values in values_out
-  for(uint64_t k=0;k<pred->cnt;k++){
-    if ( pred->key[k] == key ) {
+
+  auto pred_kvpairs_paddr = pred->kvpairs_ptr;
+  auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+
+  for(uint64_t k=0;k<pred_kvpairs->cnt;k++){
+    if ( pred_kvpairs->key[k] == key ) {
         found_flag = true;
-        values_out->push_back(pred->value[k]);
+        values_out->push_back(pred_kvpairs->value[k]);
         scan_cnt--;
         if(scan_cnt<=0) break;
     }
     else if(found_flag == true){
-      values_out->push_back(pred->value[k]);
+      values_out->push_back(pred_kvpairs->value[k]);
       scan_cnt--;
       if(scan_cnt<=0) break;
     }
   }
-  if(found_flag == false) return paddr_dump_output;
+  if(found_flag == false) return pred->kvpairs_ptr;
 
   while (scan_cnt>0) {
     
     curr_paddr_dump = pred->next[0];
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    auto curr_kvpairs_paddr = curr->kvpairs_ptr;
+    auto curr_kvpairs = (KVpairs*) ((PmemPtr*) &curr_kvpairs_paddr)->get();
+
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      for(uint64_t k=0;k<curr->cnt;k++){
-        values_out->push_back(curr->value[k]);
+      for(uint64_t k=0;k<curr_kvpairs->cnt;k++){
+        values_out->push_back(curr_kvpairs->value[k]);
         scan_cnt--;
         if(scan_cnt<=0) break;
       }      
@@ -1053,7 +1088,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
 
 
 
-  return paddr_dump_output;
+  return pred->kvpairs_ptr;
 }
 
 #endif  // LISTDB_DB_CLIENT_H_

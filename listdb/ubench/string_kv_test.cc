@@ -30,8 +30,8 @@
 
 //#define COUNT_FOUND
 
-#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_zipf/ycsbkey_load_workloadc_zipf"
-#define WORK_FILE "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_zipf/ycsbkey_run_workloadc_zipf"
+#define LOAD_FILE "/juwon/index-microbench/workloads_10M_1M_zipf/ycsbkey_load_workloadc_zipf"
+#define WORK_FILE "/juwon/index-microbench/workloads_10M_1M_zipf/ycsbkey_run_workloadc_zipf"
 
 constexpr int NUM_THREADS = 40;
 constexpr size_t NUM_LOADS = 10 * 1000 * 1000;

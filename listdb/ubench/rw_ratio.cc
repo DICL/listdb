@@ -139,7 +139,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -147,7 +147,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
@@ -635,7 +635,7 @@ int main(int argc, char* argv[]) {
   work_keys.reserve(NUM_WORKS);
   work_scan_nums.reserve(NUM_WORKS);
   FillLoadKeysReadRatio(NUM_LOADS, NUM_WORKS, &load_keys, read_ratio);
-  //FillLoadKeys(NUM_LOADS, &load_keys, "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
+  //FillLoadKeys(NUM_LOADS, &load_keys, "/juwon/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
   FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
 
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);

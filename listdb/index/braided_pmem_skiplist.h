@@ -25,15 +25,21 @@ class BraidedPmemSkipList {
   };
 
   struct Node2 {
-    Key key[NPAIRS];
-    uint64_t cnt;
+    Key min_key;
     uint64_t tag;  // seqorder (56-bit), op (4-bit), height (4-bit)
-    uint64_t value[NPAIRS];
+    uint64_t kvpairs_ptr; // pointer of KVpairs structure below
     uint64_t next[1];
 
     int height() const { return tag & 0xf; }
 
     uint32_t l0_id() const { return (tag >> 32); }
+  };
+
+  //new structure for node 2
+  struct KVpairs{
+    uint64_t cnt;
+    Key key[NPAIRS];
+    uint64_t value[NPAIRS];
   };
 
   BraidedPmemSkipList(int primary_region_pool_id);

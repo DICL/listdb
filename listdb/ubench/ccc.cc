@@ -60,8 +60,8 @@ void drop_cache() {
 }
 
 void FillLoadKeys(const size_t num_loads, std::vector<uint64_t>* load_keys) {
-  std::string filename = "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_unif/loada_unif_int.dat";
-  //std::string filename = "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif/loada_unif_int.dat";
+  std::string filename = "/juwon/index-microbench/workloads_10M_1M_unif/loada_unif_int.dat";
+  //std::string filename = "/juwon/index-microbench/workloads_100M_10M_unif/loada_unif_int.dat";
   std::ifstream istrm(filename);
   size_t count = 0;
   size_t epoch = 10;
@@ -95,8 +95,8 @@ void FillLoadKeys(const size_t num_loads, std::vector<uint64_t>* load_keys) {
 void FillWorkKeys(const char workload_type, const size_t num_works, std::vector<OpType>* work_ops,
                   std::vector<uint64_t>* work_keys) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_unif/txns" << workload_type << "_unif_int.dat";
-  //ss << "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif/txns" << workload_type << "_unif_int.dat";
+  ss << "/juwon/index-microbench/workloads_10M_1M_unif/txns" << workload_type << "_unif_int.dat";
+  //ss << "/juwon/index-microbench/workloads_100M_10M_unif/txns" << workload_type << "_unif_int.dat";
   std::string filename = ss.str();
   std::ifstream istrm(filename);
   size_t count = 0;

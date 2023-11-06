@@ -28,8 +28,8 @@
 
 //#define COUNT_FOUND
 
-//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_1M_zipf/loada_zipf_int.dat"
-#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf/loada_zipf_int.dat"
+//#define LOAD_FILE "/juwon/index-microbench/workloads_100M_1M_zipf/loada_zipf_int.dat"
+#define LOAD_FILE "/juwon/index-microbench/workloads_100M_10M_zipf/loada_zipf_int.dat"
 
 constexpr int NUM_THREADS = 80;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;

@@ -43,7 +43,7 @@ class TableList {
 };
 
 TableList::TableList(const size_t table_capacity) : table_capacity_(table_capacity), front_(nullptr) {
-  l1_table_cnt_ = 0;
+  l1_table_cnt_ = 1;
 }
 
 void* TableList::Put(const Key& key, const Value& value) {

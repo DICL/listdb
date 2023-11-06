@@ -128,7 +128,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -136,7 +136,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, ss.str());
 }

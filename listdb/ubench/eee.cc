@@ -29,17 +29,17 @@
 #define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_unif/loada_unif_int.dat"
-//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_zipf/loada_zipf_int.dat"
-#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif/loada_unif_int.dat"
-//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf/loada_zipf_int.dat"
-//#define LOAD_FILE "/home/wkim/RECIPE/index-microbench/workloads_100M_100M_zipf/loada_zipf_int.dat"
+//#define LOAD_FILE "/juwon/index-microbench/workloads_10M_1M_unif/loada_unif_int.dat"
+//#define LOAD_FILE "/juwon/index-microbench/workloads_10M_1M_zipf/loada_zipf_int.dat"
+#define LOAD_FILE "/juwon/index-microbench/workloads_100M_10M_unif/loada_unif_int.dat"
+//#define LOAD_FILE "/juwon/index-microbench/workloads_100M_10M_zipf/loada_zipf_int.dat"
+//#define LOAD_FILE "/juwon/index-microbench/workloads_100M_100M_zipf/loada_zipf_int.dat"
 
-//#define WORK_FILE_PREFIX "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_unif/txns"
-//#define WORK_FILE_PREFIX "/home/wkim/RECIPE/index-microbench/workloads_10M_1M_zipf/txns"
-#define WORK_FILE_PREFIX "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_unif/txns"
-//#define WORK_FILE_PREFIX "/home/wkim/RECIPE/index-microbench/workloads_100M_10M_zipf/txns"
-//#define WORK_FILE_PREFIX "/home/wkim/RECIPE/index-microbench/workloads_100M_100M_zipf/txns"
+//#define WORK_FILE_PREFIX "/juwon/index-microbench/workloads_10M_1M_unif/txns"
+//#define WORK_FILE_PREFIX "/juwon/index-microbench/workloads_10M_1M_zipf/txns"
+#define WORK_FILE_PREFIX "/juwon/index-microbench/workloads_100M_10M_unif/txns"
+//#define WORK_FILE_PREFIX "/juwon/index-microbench/workloads_100M_10M_zipf/txns"
+//#define WORK_FILE_PREFIX "/juwon/index-microbench/workloads_100M_100M_zipf/txns"
 
 constexpr int NUM_THREADS = 40;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
