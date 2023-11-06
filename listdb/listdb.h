@@ -1293,7 +1293,7 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   fprintf(stdout, "FlushMemTableToL1 is not implemented for IUL.\n");
   abort();
 #endif
-  //if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm); juwon
+  if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm); //show progress juwon
   // Check Reference Counter
   while (task->imm->w_RefCount() > 0) {
     continue;
@@ -1814,7 +1814,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   l0_manifest->status = Level0Status::kMergeInitiated;
   // call clwb
 #if 0
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); juwon
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
 
@@ -1969,7 +1969,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #else
 #if 1
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); juwon
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); //show progress juwon
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
   auto l1_tl = ll_[task->shard]->GetTableList(1);
@@ -2295,6 +2295,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 }
 
 void ListDB::ManualL1Compaction(int shard) {
+  
   using Node = PmemNode;
   auto l1_tl = ll_[shard]->GetTableList(1);
   // Init the new manifest for a new table

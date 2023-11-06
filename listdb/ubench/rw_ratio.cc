@@ -35,10 +35,11 @@ constexpr int NUM_THREADS = 50;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
-constexpr int NUM_SHARDS = kNumShards;
-
-constexpr int SLEEP_TIME = 30;
+constexpr int SLEEP_TIME = 300;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 30;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
+
+constexpr int NUM_SHARDS = kNumShards;
 
 namespace fs = std::experimental::filesystem::v1;
 
@@ -365,8 +366,18 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  fprintf(stdout, "sleep %d seconds...\n",SLEEP_TIME);
+
+  //ManualL1Compaction for ListDB L2
+  fprintf(stdout, "sleep %d seconds for l0 compaction end...\n",SLEEP_TIME);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
+  for (int i = 0; i < num_shards; i++) {
+    db->ManualL1Compaction(i);
+  }
+
+
+
+  fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
+  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
   db->PrintDebugLsmState(0);
 
   // Work

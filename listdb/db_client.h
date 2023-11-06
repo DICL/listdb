@@ -297,13 +297,13 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
       ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
       if (found && found->key == key) {
-        //fprintf(stdout, "found on pmem\n");
         *value_out = found->value;
         return true;
       }
       table = table->Next();
     }
   }
+  
   
   {
     // Level 2 Lookup
@@ -316,13 +316,45 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
       ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
       if(found){
+        
+        /*
+        //p,l,h for position, low, high for binary search
+        int h = (int)(found->cnt)-1;
+        int l = 0;
+        int p = h/2;
+
+        while(h>=l){
+          //do binary search in kvpair
+
+          if(found->key[p] > key){
+            h = p-1;
+            p = (l+h)/2;
+            continue;
+          }
+
+          if( found->key[p] < key ){
+            l = p+1;
+            p = (l+h)/2;
+            continue;
+          }
+
+          if ( found->key[p] == key ) {
+            *value_out = found->value[p];
+            return true;
+          }
+
+        }
+        */
+        
+
+        
         for(uint64_t k=0;k<found->cnt;k++){
-              //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : -1, visited : %ld, cnt is %ld\n",(long)key,(long)found->key[k],found->cnt);
-              if ( found->key[k].Compare(key) == 0 ) {
+              if ( found->key[k] == key ) {
                   *value_out = found->value[k];
                   return true;
               }
         }
+        
 
       }
       table = table->Next();
@@ -522,7 +554,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
         
         /*
         //p,l,h for position, low, high for binary search
-        int h = found->cnt;
+        int h = found->cnt-1;
         int l = 0;
         int p = h/2;
         
@@ -838,7 +870,6 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,i,(long)curr->min_key);
         if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
           continue;
@@ -858,15 +889,12 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipLis
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      //if((long)key == 4554802551942244130 || (long)key == 5656271024335666729 || (long)key == 7563035873489617648 || (long)key == 5568939474466122273) printf("finding : %ld, height : %d, visited : %ld\n",(long)key,0,(long)curr->min_key);
-
       
       if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
         continue;
       }
     }
-    //fprintf(stdout, "lookupkey=%zu, curr->key=%zu\n", key, curr->key);
     break;
   }
   return pred->kvpairs_ptr;
