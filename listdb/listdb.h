@@ -1995,6 +1995,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
 #else
     // Init the new manifest for a new table
+    printf("initialize manifest\n"); //test juwon
     pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
     auto db_pool = Pmem::pool<pmem_db>(0);
     pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
@@ -2169,37 +2170,18 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     
   ((PmemTable*) l1_tl->GetFront())->increase_l0_compaction_cnt();
   if (!head_only_flag && ((PmemTable*) l1_tl->GetFront())->l0_compaction_cnt() >= kL1LevelMultiplier) {
-    // Init the new manifest for a new table
-    pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
-    auto db_pool = Pmem::pool<pmem_db>(0);
-    pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
-    auto db_root = db_pool.root();
-    auto shard_manifest = db_root->shard[task->shard];
-
+  
     //l1_manifest->id = ??;
     BraidedPmemSkipList* new_l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
     for (int i = 0; i < kNumRegions; i++) {
       new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
     }
     new_l1_skiplist->Init();
-    for (int i = 0; i < kNumRegions; i++) {
-      auto p_head = new_l1_skiplist->p_head(l1_pool_id_[i]);
-      l1_manifest->head[i] = p_head;
-    }
-    shard_manifest->l1_info = l1_manifest;
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), new_l1_skiplist);
 
     l1_tl->PushFront(l1_table);//원래 SetFront 였음
     l1_tl->increase_l1_table_cnt(1);
     //if(task->shard == 0) printf("create new L1 table\n");
-    
-
-    PmemPtr tmp_node_paddr = new_l1_skiplist->head_paddr();
-    auto tmp_l1_node = tmp_node_paddr.get<Node>();
-    tmp_node_paddr = tmp_l1_node->next[0];
-    tmp_l1_node = tmp_node_paddr.get<Node>();
-    // Update manifest
-    // call clwb
   }
 
   // Update manifest
@@ -2296,40 +2278,19 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
 void ListDB::ManualL1Compaction(int shard) {
   
-  using Node = PmemNode;
   auto l1_tl = ll_[shard]->GetTableList(1);
   // Init the new manifest for a new table
-    pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
-    auto db_pool = Pmem::pool<pmem_db>(0);
-    pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
-    auto db_root = db_pool.root();
-    auto shard_manifest = db_root->shard[shard];
-
     //l1_manifest->id = ??;
     BraidedPmemSkipList* new_l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
     for (int i = 0; i < kNumRegions; i++) {
       new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][shard]);
     }
     new_l1_skiplist->Init();
-    for (int i = 0; i < kNumRegions; i++) {
-      auto p_head = new_l1_skiplist->p_head(l1_pool_id_[i]);
-      l1_manifest->head[i] = p_head;
-    }
-    shard_manifest->l1_info = l1_manifest;
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), new_l1_skiplist);
 
     l1_tl->PushFront(l1_table);
     //manually invoke l1 compaction by increase l1 table cnt by levelmultiplier
     l1_tl->increase_l1_table_cnt(1);
-    //if(task->shard == 0) printf("create new L1 table\n");
-    
-
-    PmemPtr tmp_node_paddr = new_l1_skiplist->head_paddr();
-    auto tmp_l1_node = tmp_node_paddr.get<Node>();
-    tmp_node_paddr = tmp_l1_node->next[0];
-    tmp_l1_node = tmp_node_paddr.get<Node>();
-    // Update manifest
-    // call clwb
 
 }
 
