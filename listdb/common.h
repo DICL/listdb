@@ -102,7 +102,8 @@ enum ValueType {
 
 enum class TableType {
   kMemTable,
-  kPmemTable
+  kPmemTable,
+  kPmemTable2
 };
 
 enum class TaskType {

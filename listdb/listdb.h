@@ -34,12 +34,15 @@
 #include "listdb/core/linear_probing_hashtable_cache.h"
 #include "listdb/core/pmem_db.h"
 #include "listdb/index/braided_pmem_skiplist.h"
+#include "listdb/index/packed_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/index/simple_hash_table.h"
 #include "listdb/lsm/level_list.h"
 #include "listdb/lsm/memtable_list.h"
 #include "listdb/lsm/pmemtable.h"
 #include "listdb/lsm/pmemtable_list.h"
+#include "listdb/lsm/pmemtable2.h"
+#include "listdb/lsm/pmemtable2_list.h"
 #include "listdb/util/clock.h"
 #include "listdb/util/random.h"
 #include "listdb/util/reporter.h"
@@ -71,8 +74,8 @@ class ListDB {
  public:
   using MemNode = lockfree_skiplist::Node;
   using PmemNode = BraidedPmemSkipList::Node;
-  using PmemNode2 = BraidedPmemSkipList::Node2;
-  using KVpairs = BraidedPmemSkipList::KVpairs;
+  using PmemNode2 = PackedPmemSkipList::Node;
+  using KVpairs = PackedPmemSkipList::KVpairs;
 
   struct Task {
     TaskType type;
@@ -416,7 +419,7 @@ void ListDB::Init() {
 
     // L2 List
     {
-      auto tl = new PmemTableList(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
+      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l2_arena_[j][i]->pool_id(), l2_arena_[j][i]);
       }
@@ -436,7 +439,7 @@ void ListDB::Init() {
     
     auto l2_tl = ll_[i]->GetTableList(2);
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
-    [[maybe_unused]] auto l2_table = (PmemTable*) l2_tl->GetFront();
+    [[maybe_unused]] auto l2_table = (PmemTable2*) l2_tl->GetFront();
     
   }
 #endif
@@ -590,7 +593,7 @@ void ListDB::Open() {
 
     // L2 List
     {
-      auto tl = new PmemTableList(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
+      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l2_arena_[j][i]->pool_id(), l2_arena_[j][i]);
       }
@@ -2274,6 +2277,8 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #endif
 #endif
+
+if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
 }
 
 void ListDB::ManualL1Compaction(int shard) {
@@ -2325,7 +2330,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     auto l1_node = node_paddr.get<Node>();
     //get l2 skiplist
     auto l2_tl = ll_[task->shard]->GetTableList(2);
-    auto l2_skiplist = ((PmemTable*) l2_tl->GetFront())->skiplist();
+    auto l2_table = (PmemTable2*) l2_tl->GetFront();
+    auto l2_skiplist = l2_table->skiplist();
+    auto l2_manifest = l2_table->manifest<pmem_l2_info>();
     
   #if defined(LISTDB_SKIPLIST_CACHE)
       static const unsigned int tmp_kBranching = 2;
@@ -2333,7 +2340,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       static const unsigned int tmp_kBranching = 4;
   #endif
     //set preds and succs
-    Node* heads[kNumRegions];
+    Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
     uint64_t succs[kNumRegions][kMaxHeight];
     uint64_t cnts[kNumRegions];
@@ -2357,6 +2364,13 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     }
     //if no head, make head
     if(head_only_flag == true){
+      //Allocate new manifest
+      pmem::obj::persistent_ptr<pmem_l2_info> tmp_manifest;
+      auto db_pool = Pmem::pool<pmem_db>(0);
+      pmem::obj::make_persistent_atomic<pmem_l2_info>(db_pool, tmp_manifest);
+      l2_table->SetManifest(tmp_manifest);
+      l2_manifest = tmp_manifest;
+
       //first nodes of each numa
       Node2* first_node[kNumRegions];
       PmemPtr first_node_paddr[kNumRegions];
@@ -2373,6 +2387,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         first_node[i] = l2_node;
         first_node_paddr[i] = l2_node_paddr;
 
+        heads[i]->min_key=i;
         l2_node->min_key = i;
         l2_node->tag = height;
 
@@ -2392,6 +2407,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         clwb(&kvpairs->value[0], sizeof(uint64_t));
         clwb(&kvpairs->cnt, sizeof(uint64_t));
         clwb(l2_node, node_size);
+        clwb(heads[i], node_size);
         _mm_sfence();
 
         for(int j=0; j<kMaxHeight; j++){
@@ -2399,9 +2415,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           succs[i][j] = 0;
         }
 
-        for (int t = 0 ;t < height; t++) {
-          heads[i]->next[t] = l2_node_paddr.dump();
-        } 
+        heads[i]->next[0] = l2_node_paddr.dump();
 
         //apply cache
   #ifdef LISTDB_SKIPLIST_CACHE
@@ -2417,25 +2431,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         first_node[i]->next[0] = first_node_paddr[i+1].dump();
       }
 
-      /*
-
-      //set values of head for random height and balancing
-      //높이를 골고루 설정할 수 있게 하기 위한 0~(kbranching)^(kmaxheight) 사이의 수인 random_factor을 설정해준다.
-      auto kRnd = Random::GetTLSInstance();
-      uint64_t heigt_set_num = 1;
-      for(int i = 2; i<kMaxHeight; i++){
-          heigt_set_num *= tmp_kBranching;
-      }
-      uint64_t random_factor = kRnd->Next()% heigt_set_num;
-
-      for(int i=0; i<kNumRegions; i++){
-        heads[i]->value = random_factor;
-      }
-      */
-
       //heads의 value를 각 numa당 skiplist node 개수로 설정해준다.
       for(int i=0; i<kNumRegions; i++){
-        heads[i]->value = 1;
+        l2_manifest->cnt[i] = 1;
       }
 
       head_only_flag = false;
@@ -2443,7 +2441,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     //make head is done.
     //set cnts
     for(int i=0; i<kNumRegions; i++){
-        cnts[i] = heads[i]->value;
+        cnts[i] = l2_manifest->cnt[i];
     }
 
 
@@ -2601,8 +2599,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
             break;
           }
 
-          //clwb(kvpairs, sizeof(KVpairs));
-          //_mm_sfence();
+          clwb(insert_kvpairs, sizeof(KVpairs));
+          _mm_sfence();
         
 
 
@@ -2614,7 +2612,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
-        heads[i]->value = cnts[i];
+        l2_manifest->cnt[i] = cnts[i];
     }
     
     //remove l1 table at l1 table list(because l1 compaction is done.). r means remove.

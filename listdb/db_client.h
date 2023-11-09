@@ -53,9 +53,9 @@ class DBClient {
 #endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
-  PmemPtr LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
+  PmemPtr LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard);
   PmemPtr LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
-  PmemPtr LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
+  PmemPtr LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
 
   ListDB* db_;
   int id_;
@@ -307,10 +307,10 @@ bool DBClient::Get(const Key& key, Value* value_out) {
   
   {
     // Level 2 Lookup
-    auto tl = (PmemTableList*) db_->GetTableList(2, s);
+    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
     auto table = tl->GetFront();
     while (table) {
-      auto pmem = (PmemTable*) table;
+      auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
@@ -385,10 +385,10 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
   */
   {
     // Level 2 LookupRange
-    auto tl = (PmemTableList*) db_->GetTableList(2, s);
+    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
     auto table = tl->GetFront();
     while (table) {
-      auto pmem = (PmemTable*) table;
+      auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       LookupRangeL2(key, l2_pool_id_, skiplist, s, scan_num, values_out);
@@ -545,10 +545,10 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
   {
     // Level 2 Lookup
     
-    auto tl = (PmemTableList*) db_->GetTableList(2, s);
+    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
     auto table = tl->GetFront();
     while (table) {
-      auto pmem = (PmemTable*) table;
+      auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
@@ -825,10 +825,9 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   return curr_paddr_dump;
 }
 
-PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard) {
-  using Node = PmemNode;
+PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard) {
   using Node2 = PmemNode2;
-  Node* tmp = skiplist->head(pool_id);
+  Node2* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
   curr_paddr_dump = tmp->next[0];
   Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -995,10 +994,9 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   return paddr_dump_output;
 }
 
-PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
-  using Node = PmemNode;
+PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   using Node2 = PmemNode2;
-  Node* tmp = skiplist->head(pool_id);
+  Node2* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
   curr_paddr_dump = tmp->next[0];
   Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -1040,7 +1038,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
-        if (curr->min_key <= key) {
+        if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
           continue;
         }
@@ -1060,7 +1058,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, BraidedPmemSk
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
       
-      if (curr->min_key <= key) {
+      if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
         continue;
       }

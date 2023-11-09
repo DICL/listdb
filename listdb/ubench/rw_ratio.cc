@@ -35,8 +35,8 @@ constexpr int NUM_THREADS = 50;
 constexpr size_t NUM_LOADS = 10 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
-constexpr int SLEEP_TIME = 30;//time to waiting l0 compactions end
-constexpr int SLEEP_TIME2 = 15;//time to waiting l1 compactions end
+constexpr int SLEEP_TIME = 17;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 12;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
