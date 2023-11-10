@@ -2387,7 +2387,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         first_node[i] = l2_node;
         first_node_paddr[i] = l2_node_paddr;
 
-        heads[i]->min_key=i;
         l2_node->min_key = i;
         l2_node->tag = height;
 
