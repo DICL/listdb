@@ -448,7 +448,7 @@ void ListDB::Init() {
 #ifdef LISTDB_SKIPLIST_CACHE
   for (int i = 0; i < kNumShards; i++) {
     for (int j = 0; j < kNumRegions; j++) {
-      cache_[i][j] = new SkipListCacheRep(l2_arena_[j][i]->pool_id(), kSkipListCacheCapacity / kNumShards / kNumRegions);
+      cache_[i][j] = new SkipListCacheRep(l2_arena_[j][i]->pool_id(), j, kSkipListCacheCapacity / kNumShards / kNumRegions);
     }
   }
 #endif
@@ -2335,7 +2335,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     auto l2_manifest = l2_table->manifest<pmem_l2_info>();
     
   #if defined(LISTDB_SKIPLIST_CACHE)
-      static const unsigned int tmp_kBranching = 2;
+      static const unsigned int tmp_kBranching = 4;
   #else
       static const unsigned int tmp_kBranching = 4;
   #endif
@@ -2343,7 +2343,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
     uint64_t succs[kNumRegions][kMaxHeight];
-    uint64_t cnts[kNumRegions];
+    uint64_t cnts[kNumRegions][kMaxHeight];
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
     for (int i = 0; i < kNumRegions; i++) {
@@ -2416,13 +2416,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
         heads[i]->next[0] = l2_node_paddr.dump();
 
-        //apply cache
-  #ifdef LISTDB_SKIPLIST_CACHE
-        if (height >= kSkipListCacheMinPmemHeight) {
-          cache_[task->shard][region]->Insert(l2_node);
-        }
-  #endif
-
       }
 
       //connect all first skiplist nodes of each numa
@@ -2432,7 +2425,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
       //heads의 value를 각 numa당 skiplist node 개수로 설정해준다.
       for(int i=0; i<kNumRegions; i++){
-        l2_manifest->cnt[i] = 1;
+        for(int j=0; j<kMaxHeight; j++){
+          l2_manifest->cnt[i][j] = 1;
+        }
       }
 
       head_only_flag = false;
@@ -2440,7 +2435,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     //make head is done.
     //set cnts
     for(int i=0; i<kNumRegions; i++){
-        cnts[i] = l2_manifest->cnt[i];
+      for(int j=0; j<kMaxHeight; j++){
+        cnts[i][j] = l2_manifest->cnt[i][j];
+      }
     }
 
 
@@ -2485,23 +2482,26 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         }
         else{//if node is full, do split
 
-          //set numa region which has less skiplist nodes
+          //found numa region which has less skiplist nodes
           int region = 0;
-          uint64_t min_cnt = cnts[0]; 
-          for(int k=0; k<kNumRegions; k++){
-            if(cnts[k]<min_cnt){
-              min_cnt = cnts[k];
+          uint64_t min_cnt = cnts[0][0]; 
+          for(int k=1; k<kNumRegions; k++){
+            if(cnts[k][0]<min_cnt){
+              min_cnt = cnts[k][0];
               region = k;
             }
           }
-          cnts[region]++;
           //set deterministic height
           int height = 2;
           uint64_t branching_factor = tmp_kBranching;
           while (height < kMaxHeight) {
-            if(cnts[region]%branching_factor!=0) break;
+            if(cnts[region][0]%branching_factor!=0) break;
             height++;
             branching_factor = branching_factor*tmp_kBranching;
+          }
+          //update cnt
+          for(int k=height-1; k>=0; k--){
+            cnts[region][k]++;
           }
           
           
@@ -2557,12 +2557,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           for (int i = 1 ;i < height; i++) {
             preds[region][i]->next[i] = l2_node_paddr.dump();
           }
-  //apply cache
-  #ifdef LISTDB_SKIPLIST_CACHE
-          if (height >= kSkipListCacheMinPmemHeight) {
-            cache_[task->shard][region]->Insert(l2_node);
-          }
-  #endif
 
           if(l2_node->min_key < l1_node->key){
             insert_kvpairs = kvpairs;
@@ -2611,7 +2605,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
-        l2_manifest->cnt[i] = cnts[i];
+      for(int j=0; j<kMaxHeight; j++){
+        l2_manifest->cnt[i][j] = cnts[i][j];
+      }
     }
     
     //remove l1 table at l1 table list(because l1 compaction is done.). r means remove.
@@ -2644,6 +2640,14 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   }
 
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %d\n", node_cnt);
+
+   #ifdef LISTDB_SKIPLIST_CACHE
+   if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon
+   auto l2_tl = (PmemTable2List*)ll_[task->shard]->GetTableList(2);
+   for(int i=0; i<kNumRegions; i++){
+    cache_[task->shard][i]->UpdateCache(l2_tl);
+   }
+  #endif
   
 }
 

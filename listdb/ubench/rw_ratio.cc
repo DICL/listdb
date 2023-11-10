@@ -35,8 +35,8 @@ constexpr int NUM_THREADS = 50;
 constexpr size_t NUM_LOADS = 10 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
-constexpr int SLEEP_TIME = 17;//time to waiting l0 compactions end
-constexpr int SLEEP_TIME2 = 12;//time to waiting l1 compactions end
+constexpr int SLEEP_TIME = 20;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 20;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -626,7 +626,6 @@ int main(int argc, char* argv[]) {
     fprintf(stdout, "L2_cache_size: %zu bytes\n", kSkipListCacheCapacity);
 
     std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
-    std::cout << "kSkipListCacheMinPmemHeight: " << kSkipListCacheMinPmemHeight << std::endl;
 #else
     fprintf(stdout, "L2_cache_size: disabled.\n");
 #endif

@@ -3,6 +3,7 @@
 
 #include "listdb/index/packed_pmem_skiplist.h"
 #include "listdb/lsm/table.h"
+#include "listdb/core/pmem_db.h"
 
 #include <libpmemobj++/p.hpp>
 #include <libpmemobj++/pool.hpp>

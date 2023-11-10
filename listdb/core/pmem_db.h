@@ -56,7 +56,7 @@ struct pmem_l1_info {
 
 struct pmem_l2_info {
   uint64_t id;
-  uint64_t cnt[kNumRegions];
+  uint64_t cnt[kNumRegions][kMaxHeight];
   Level1Status status;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };

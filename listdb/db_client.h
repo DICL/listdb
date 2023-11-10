@@ -828,8 +828,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard) {
   using Node2 = PmemNode2;
   Node2* tmp = skiplist->head(pool_id);
-  uint64_t curr_paddr_dump;
-  curr_paddr_dump = tmp->next[0];
+  uint64_t curr_paddr_dump = tmp->next[0];
   //pass through dummy node (head node)
   Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   Node2* curr;
@@ -838,28 +837,15 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
   
 #ifdef LISTDB_SKIPLIST_CACHE
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
-  #if 0
-  /*
-  PmemNode2* rv = c->LookupLessThan(key);
-  if (rv) {
-    pred = rv;
-    height = pred->height();
+  uint64_t tmp_paddr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
+  height = c->GetCacheHeight();
+
+  if(rv>=0){
+    curr_paddr_dump = tmp_paddr;
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
-  */
-  #else
-  PmemNode2* lte_pnode = nullptr;
-  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
-  if (lte_pnode) {
-    if (rv == 0) {
-      return PmemPtr(pool_id, (char*) lte_pnode);
-    } else {
-      pred = lte_pnode;
-      pred_paddr_dump = PmemPtr(pool_id, (char*) lte_pnode).dump();
-      //height = pred->height();
-      height = kSkipListCacheMinPmemHeight;
-    }
-  }
-  #endif
+  if(rv==0) return pred->kvpairs_ptr;
 #endif
 
   search_visit_cnt_++;
@@ -910,27 +896,6 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   Node* curr;
   int height = pred->height();
 
-#ifdef LISTDB_SKIPLIST_CACHE
-/*
-  auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
-  #if 0
-  PmemNode* rv = c->LookupLessThan(key);
-  if (rv) {
-    pred = rv;
-    height = pred->height();
-  }
-  #else
-  PmemNode* lte_pnode = nullptr;
-  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
-  if (lte_pnode) {
-    pred = lte_pnode;
-    //height = pred->height();
-    height = kSkipListCacheMinPmemHeight;
-  }
-
-  #endif
-  */
-#endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
 
@@ -1007,26 +972,15 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
 
   
 #ifdef LISTDB_SKIPLIST_CACHE
-  /*
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
-  #if 0
-  //PmemNode2* rv = c->LookupLessThan(key);
-  //if (rv) {
-  //  pred = rv;
-  //  height = pred->height();
-  //}
-  
-  #else
-  PmemNode2* lte_pnode = nullptr;
-  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
-  if (lte_pnode) {
-    pred = lte_pnode;
-    pred_paddr_dump = PmemPtr(pool_id, (char*) lte_pnode).dump();
-    //height = pred->height();
-    height = kSkipListCacheMinPmemHeight;
+  uint64_t tmp_paddr;
+  int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
+  height = c->GetCacheHeight();
+
+  if(rv>=0){
+    curr_paddr_dump = tmp_paddr;
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
-  #endif
-  */
 #endif
 
   search_visit_cnt_++;
