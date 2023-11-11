@@ -845,14 +845,14 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
     if(rv==0) return pred->kvpairs_ptr;
   }
   else{
-    Node2* tmp = skiplist->head(pool_id);
-    curr_paddr_dump = tmp->next[0];
+    pred = skiplist->head(pool_id);
+    curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
 #else
-    Node2* tmp = skiplist->head(pool_id);
-    curr_paddr_dump = tmp->next[0];
+    pred = skiplist->head(pool_id);
+    curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
     height = pred->height();
@@ -990,14 +990,14 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
   else{
-    Node2* tmp = skiplist->head(pool_id);
-    curr_paddr_dump = tmp->next[0];
+    pred = skiplist->head(pool_id);
+    curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
 #else
-    Node2* tmp = skiplist->head(pool_id);
-    curr_paddr_dump = tmp->next[0];
+    pred = skiplist->head(pool_id);
+    curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
     height = pred->height();

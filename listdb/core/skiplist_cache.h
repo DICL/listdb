@@ -34,13 +34,11 @@ class SkipListCache {
   const int region_;
   const size_t capacity_;
   
-  //maximum numbers of kv entries
-  uint64_t CurrFieldNum;
-  int target_height;
+  uint64_t CurrFieldNum;//maximum numbers of kv entries
+  int target_height;//height which can skip by lookup cache
 
   Key* keys_;
-  //values of cache is pmemptr of each keys
-  uint64_t* values_;
+  uint64_t* values_; //values of cache is pmemptr of each keys
 
 };
 
@@ -93,44 +91,56 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
   //traverse all skiplist and update array cache
   uint64_t checking_int = 0;
   uint64_t iter_cnt = 0;
+  bool first_table_flag = true;
+  //user prev key to guarantee sorted order
+  Key prev_key(0);
 
   l2_table = (PmemTable2*) l2_tl->GetFront();
+  
   //traverse table list
   while (true) {
     if (l2_table){
       auto l2_skiplist = l2_table->skiplist();
-
       PmemNode* pred = l2_skiplist->head(pool_id_);
       uint64_t curr_paddr_dump = pred->next[0];
       //pass through dummy node (head node)
       PmemNode* curr = (PmemNode*) ((PmemPtr*) &curr_paddr_dump)->get();
       //now curr is first node of skiplist
-      pred = curr;
+      if (curr){
+        if(first_table_flag) first_table_flag=false;
+        //case : table is not in sorted order
+        else if(curr->min_key.Compare(prev_key)<0) break;
+      }
 
       while (true) {
+        if (curr) {
+          pred = curr;
+        }
+        else break;
+
         iter_cnt++;
         //check if this node go into cache
         if((uint64_t)((MaxFieldNum * iter_cnt)/cnt[target_height-1]) > checking_int){
           //insert into cache
           keys_[checking_int] = pred->min_key;
           values_[checking_int] = curr_paddr_dump;
+
+          prev_key = pred->min_key;
           checking_int++;
         }
 
         //move to next node with target_height
         curr_paddr_dump = pred->next[target_height-1];
         curr = (PmemNode*) ((PmemPtr*) &curr_paddr_dump)->get();
-        if (curr) {
-          pred = curr;
-          continue;
-        }
-        break;
+        
       }
 
     }
     else break;
     
     l2_table = (PmemTable2*)l2_table->Next();
+
+
   }
   CurrFieldNum = checking_int;
   if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
@@ -144,34 +154,39 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
     uint64_t l = 0;
     uint64_t p = h/2;
 
-    while(h>l){
+    //do binary search
+    while(h>=l){
       p = (l+h)/2;
       //do binary search in kvpair
 
-      if(keys_[p].Compare(key) > 0){
+      int rv = keys_[p].Compare(key);
+
+      //case 1
+      if(rv > 0){
+        //evict corner case (because of unsigned integer)
+        if(p==0) return -1;
         h = p-1;
         continue;
       }
-
-      if(keys_[p].Compare(key) < 0){
+      //case 2
+      else if(rv < 0){
         l = p+1;
         continue;
       }
-
-      if (keys_[p].Compare(key) == 0) {
+      //case 3 : matched
+      else if(rv == 0) {
         *out = values_[p];
         return 0;
       }
     }
-
     if(keys_[p].Compare(key) < 0){
       *out = values_[p];
       return 1;
     }
-    //goto left node sequentially while it meets smaller node
+    //goto left node sequentially while it found smaller node
     else{
-      p--;
       while(p>0){
+        p--;
         if(keys_[p].Compare(key) < 0){
           *out = values_[p];
           return 1;
@@ -180,18 +195,7 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
           *out = values_[p];
           return 0;
         }
-        p--;
       }
-    }
-
-    //case of p is 0
-    if(keys_[0].Compare(key) < 0){
-      *out = values_[0];
-      return 1;
-    }
-    else if(keys_[0].Compare(key) == 0){
-      *out = values_[0];
-      return 0;
     }
 
 
