@@ -143,11 +143,13 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
 
   }
   CurrFieldNum = checking_int;
+  
   if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
 }
 
 template <std::size_t N>
 int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
+#if 1 // using binary search method (juwon)
   
     //p,l,h for position, low, high for binary search
     uint64_t h = CurrFieldNum-1;
@@ -197,6 +199,60 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
         }
       }
     }
+
+#else //using interpolation search method (juwon)
+    if(keys_[1].Compare(key)>0) return -1;
+
+    //cutoff values for calculate predictions
+    int cutoff_factor = 32;
+
+    //avoid floating point exception
+    if((keys_[CurrFieldNum-1].key_num()>>cutoff_factor) == (keys_[1].key_num()>>cutoff_factor)) cutoff_factor=0;
+
+    //predict position
+    uint64_t p = (uint64_t)((((key.key_num()>>cutoff_factor)-(keys_[1].key_num()>>cutoff_factor))*(CurrFieldNum-2))/((keys_[CurrFieldNum-1].key_num()>>cutoff_factor)-(keys_[1].key_num()>>cutoff_factor)))+1;
+    
+
+    // if(p>=CurrFieldNum) p=CurrFieldNum-1; // for corner case
+  
+    int rv=keys_[p].Compare(key);
+    //keys_[p] 가 더 크면 왼쪽으로 가다가 처음발견한 값을 반환
+    while(rv > 0){
+      if(p==0) return -1;
+      p--;
+
+      rv=keys_[p].Compare(key);
+
+      if(rv < 0){
+        *out = values_[p];
+        return 1;
+      }
+    }
+    //keys_[p] 가 더 작으면 오른쪽으로 가다가 처음으로 커지면 이전 값을 반환
+
+    while(rv < 0){
+      if(p>=CurrFieldNum-1){
+        *out = values_[CurrFieldNum-1];
+        return 1;
+      }
+      p++;
+
+      rv=keys_[p].Compare(key);
+
+      if(rv > 0){
+        *out = values_[p-1];
+        return 1;
+      }
+    }
+
+
+    if(rv==0){
+      *out = values_[p];
+      return 0;
+    }
+
+
+#endif
 
 
     return -1;
