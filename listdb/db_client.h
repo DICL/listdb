@@ -827,25 +827,36 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
 PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard) {
   using Node2 = PmemNode2;
-  Node2* tmp = skiplist->head(pool_id);
-  uint64_t curr_paddr_dump = tmp->next[0];
-  //pass through dummy node (head node)
-  Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+  uint64_t curr_paddr_dump;
+  Node2* pred;
   Node2* curr;
-  int height = pred->height();
+  int height;
 
   
 #ifdef LISTDB_SKIPLIST_CACHE
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  height = c->GetCacheHeight();
   uint64_t tmp_paddr;
   int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
-  height = c->GetCacheHeight();
 
   if(rv>=0){
     curr_paddr_dump = tmp_paddr;
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    if(rv==0) return pred->kvpairs_ptr;
   }
-  if(rv==0) return pred->kvpairs_ptr;
+  else{
+    Node2* tmp = skiplist->head(pool_id);
+    curr_paddr_dump = tmp->next[0];
+    //pass through dummy node (head node)
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+  }
+#else
+    Node2* tmp = skiplist->head(pool_id);
+    curr_paddr_dump = tmp->next[0];
+    //pass through dummy node (head node)
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    height = pred->height();
+
 #endif
 
   search_visit_cnt_++;
@@ -962,25 +973,35 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
 
 PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   using Node2 = PmemNode2;
-  Node2* tmp = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
-  curr_paddr_dump = tmp->next[0];
-  //pass through dummy node (head node)
-  Node2* pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+  Node2* pred;
   Node2* curr;
-  int height = pred->height();
+  int height;
 
   
 #ifdef LISTDB_SKIPLIST_CACHE
   auto c = db_->skiplist_cache(shard, db_->pool_id_to_region(pool_id));
+  height = c->GetCacheHeight();
   uint64_t tmp_paddr;
   int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
-  height = c->GetCacheHeight();
 
   if(rv>=0){
     curr_paddr_dump = tmp_paddr;
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
   }
+  else{
+    Node2* tmp = skiplist->head(pool_id);
+    curr_paddr_dump = tmp->next[0];
+    //pass through dummy node (head node)
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+  }
+#else
+    Node2* tmp = skiplist->head(pool_id);
+    curr_paddr_dump = tmp->next[0];
+    //pass through dummy node (head node)
+    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    height = pred->height();
+
 #endif
 
   search_visit_cnt_++;

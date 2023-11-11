@@ -2800,17 +2800,7 @@ int ListDB::GetStatString(const std::string& name, std::string* buf) {
   std::stringstream ss;
   if (name == "l2_cache_size") {
   #ifdef LISTDB_SKIPLIST_CACHE
-    size_t sum = 0;
-    size_t max = 0;
-    for (int i = 0; i < kNumShards; i++) {
-      size_t shard_size = 0;
-      for (int j = 0; j < kNumRegions; j++) {
-        shard_size += cache_[i][j]->AcquireLoadSize();
-      }
-      max = std::max<size_t>(max, shard_size);
-      sum += shard_size;
-    }
-    ss << name << ": " << sum << " (per shard max: " << max << ")";
+    
   #else
     rv = 1;
   #endif

@@ -37,7 +37,7 @@ constexpr size_t kStringKeyLength = 16;
 
 #define MO_RELAXED std::memory_order_relaxed
 
-constexpr int kNumRegions = 4;
+constexpr int kNumRegions = 2;
 constexpr int kNumShards = 1;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
@@ -68,14 +68,14 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr size_t kSkipListCacheCapacity = (3ull << 20);
+constexpr size_t kSkipListCacheCapacity = (64ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 2;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 100;
+constexpr int kNumWorkers = 80;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;

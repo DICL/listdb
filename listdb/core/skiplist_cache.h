@@ -26,8 +26,6 @@ class SkipListCache {
   // Returns 0 if equal, -1 lessthan, 1 not found
   int LookupLessThanOrEqualsTo(const Key& key, uint64_t* out);
 
-  size_t AcquireLoadSize() { return size_.load(std::memory_order_acquire); }
-
   int GetCacheHeight() { return target_height; }
 
  private:
@@ -35,10 +33,8 @@ class SkipListCache {
   const int pool_id_;
   const int region_;
   const size_t capacity_;
-   std::atomic<size_t> size_;
   
   //maximum numbers of kv entries
-  uint64_t MaxFieldNum;
   uint64_t CurrFieldNum;
   int target_height;
 
@@ -55,11 +51,10 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
   : pool_id_(pool_id),
     region_(region),
     capacity_(capacity),
-    size_(capacity),
     CurrFieldNum(0),
     target_height(kMaxHeight){
   //calculate MaxFieldNum
-  MaxFieldNum = (uint64_t)(capacity/(sizeof(Key)+sizeof(uint64_t)));
+  uint64_t MaxFieldNum = (uint64_t)(capacity/(sizeof(Key)+sizeof(uint64_t)));
   keys_ = (Key*)malloc(sizeof(Key)*MaxFieldNum);
   values_ = (uint64_t*)malloc(sizeof(uint64_t)*MaxFieldNum);
   std::atomic_thread_fence(std::memory_order_release);
@@ -68,6 +63,7 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
 template <std::size_t N>
 void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
   uint64_t cnt[kMaxHeight] = {0,};
+  uint64_t MaxFieldNum = (uint64_t)(capacity_/(sizeof(Key)+sizeof(uint64_t)));
 
   //sum-up all cnt of l2 manifests
   auto l2_table = (PmemTable2*) l2_tl->GetFront();
