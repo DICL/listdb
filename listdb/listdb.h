@@ -1044,25 +1044,22 @@ void ListDB::BackgroundThreadLoop() {
     if (schedule_l1_compaction) {
       for (int i = 0; i < kNumShards; i++) {
         if (l1_compaction_state[i] == 0) {
-          auto tl = ll_[i]->GetTableList(1);//이거 뭘 넘겨줘야 할까
-          /*
-          auto table = tl->GetFront();
-          int l1tablecnt = 0;
-          while (true) {
-            auto next_table = table->Next();
-            if (next_table) {
-              table = next_table;
-              l1tablecnt++;//l1 tablelist에 table이 두개이상 존재할때만 l1compaction이 이루어지도록 한다.
-            } else {
-              break;
-            }
-          }
-          */
+          
+          auto tl = ll_[i]->GetTableList(1);
           if (tl->l1_table_cnt() > 1) {
+            auto table = tl->GetFront();
+            while (true) {
+              auto next_table = table->Next();
+              if (next_table) {
+                table = next_table;
+              } else {
+                break;
+              }
+            }
             auto task = new L1CompactionTask();
             task->type = TaskType::kL1Compaction;
             task->shard = i;
-            //task->l1 = (PmemTable*) table;
+            task->l1 = (PmemTable*) table;
             task->l1table_list = (TableList*) tl;
             task->patience_stack = 0;
             l1_compaction_state[i] = 1;
@@ -2307,22 +2304,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   using Node = PmemNode;
   using Node2 = PmemNode2;
     //initialize node_cnt for checking number of compation nodes
-  int node_cnt = 0;
-  uint64_t l1_compaction_cnt = 0;
-
-  //끝에있는 table 부터 차례대로 task->l1 으로 만들어준다.,...
-  while (true) {
-    auto table = task->l1table_list->GetFront();
-    auto next_table = table->Next();
-    if (next_table) {
-      while (true){ //go to last table in table list
-        auto next_next_tabel = next_table->Next();
-        if(next_next_tabel) next_table = next_next_tabel;
-        else break;
-      }
-
-      task->l1 = (PmemTable*)next_table;
-
+  uint64_t node_cnt = 0;
   
     //get l1 skiplist
     auto l1_skiplist = task->l1->skiplist();
@@ -2388,7 +2370,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         first_node_paddr[i] = l2_node_paddr;
 
         l2_node->min_key = i;
-        l2_node->tag = height;
 
         //allocate kvpairs to l2 node
         auto kvpairs_paddr = l2_arena_[region][task->shard]->Allocate(sizeof(KVpairs));
@@ -2528,7 +2509,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
         
 
-          l2_node->tag = height;
           l2_node->next[0] = succs[0][0];
           for (int i = 1; i < height; i++) {
             l2_node->next[i] =  succs[region][i];
@@ -2624,22 +2604,13 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       }
       break;
     }
-    l1_compaction_cnt++;// increase number of compacted l1 table
+    
     task->l1table_list->decrease_l1_table_cnt(1); //decrease number of l1 table
 
-    /*
-    if(l1_compaction_cnt >= kL1LevelMultiplier) break; //If done enough l1 compaction
-    else continue;// if it remains more l1 tables to compact
-    */
-    break;
+    
 
-    }
-    else { //if there is no more table in table list
-      break;
-    }
-  }
 
-  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %d\n", node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
 
    #ifdef LISTDB_SKIPLIST_CACHE
    if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon

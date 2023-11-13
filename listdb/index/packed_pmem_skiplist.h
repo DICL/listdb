@@ -14,14 +14,9 @@
 class PackedPmemSkipList {
  public:
   struct Node {
-    uint64_t tag;  // seqorder (56-bit), op (4-bit), height (4-bit)
-    uint64_t kvpairs_ptr; // pointer of KVpairs structure below
     Key min_key;
+    uint64_t kvpairs_ptr; // pointer of KVpairs structure below
     uint64_t next[1];
-
-    int height() const { return tag & 0xf; }
-
-    uint32_t l0_id() const { return (tag >> 32); }
   };
 
   //new structure for node 2
@@ -79,7 +74,6 @@ void PackedPmemSkipList::Init() {
     Node* head = (Node*) head_paddr.get();
 
     head->min_key = 0; 
-    head->tag = kMaxHeight;
     memset(&head->next[0], 0, kMaxHeight * sizeof(uint64_t));
     head_.emplace(pool_id, head);
     head_paddr_dump_.emplace(pool_id, head_paddr.dump());

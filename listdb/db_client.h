@@ -855,7 +855,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
     curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
-    height = pred->height();
+    height = kMaxHeight;
 
 #endif
 
@@ -1000,7 +1000,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
     curr_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
     pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
-    height = pred->height();
+    height = kMaxHeight;
 
 #endif
 
