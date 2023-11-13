@@ -62,6 +62,7 @@
 #define REPORT_FLUSH_OPS(x)
 #define REPORT_COMPACTION_OPS(x)
 #define REPORT_DONE
+#define CALC_L1_COMPACTION_TIME
 #endif
 
 
@@ -2298,6 +2299,11 @@ void ListDB::ManualL1Compaction(int shard) {
 
 
 void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task){
+
+#ifdef CALC_L1_COMPACTION_TIME
+  auto begin_tp = std::chrono::steady_clock::now();
+#endif
+
   if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
   
 
@@ -2612,13 +2618,22 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
 
-   #ifdef LISTDB_SKIPLIST_CACHE
+  #ifdef LISTDB_SKIPLIST_CACHE
    if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon
    auto l2_tl = (PmemTable2List*)ll_[task->shard]->GetTableList(2);
    for(int i=0; i<kNumRegions; i++){
     cache_[task->shard][i]->UpdateCache(l2_tl);
    }
   #endif
+
+#ifdef CALC_L1_COMPACTION_TIME
+  auto end_tp = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_tp - begin_tp);
+  if(task->shard==0) std::cout << "L1 Compaction time: " << duration.count() << " ms" << std::endl;
+#endif
+
+
+
   
 }
 
