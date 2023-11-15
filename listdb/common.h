@@ -9,7 +9,7 @@
 #include <cassert>
 #include <cstdio>
 
-#define NPAIRS 128
+#define NPAIRS 64
 
 //#define GROUP_LOGGING
 //#define L1_COW

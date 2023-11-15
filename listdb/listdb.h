@@ -2436,8 +2436,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
     //variables for compaction
     //buffers for newly inserting key/value
-    Key* key_buffer = (Key*)malloc(sizeof(Key)*2*NPAIRS);
-    Value* value_buffer = (Value*)malloc(sizeof(Value)*2*NPAIRS);
+    Key* key_buffer = (Key*)malloc(sizeof(Key)*NPAIRS);
+    Value* value_buffer = (Value*)malloc(sizeof(Value)*NPAIRS);
     uint64_t buffer_cnt = 0;
 
     //variables use for decide when to do insert or split
@@ -2491,7 +2491,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       //   2. Check if total counter reach to 2*NPAIRS
       //   
       //   and if so, do insert
-      if(l1_node==nullptr || (curr && (curr->min_key.Compare(l1_node->key) <= 0)) || key_total_cnt == NPAIRS*2){
+      if(l1_node==nullptr || (curr && (curr->min_key.Compare(l1_node->key) <= 0)) || key_total_cnt > NPAIRS){
 
 
         //
