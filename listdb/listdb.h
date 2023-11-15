@@ -2311,6 +2311,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   using Node2 = PmemNode2;
     //initialize node_cnt for checking number of compation nodes
   uint64_t node_cnt = 0;
+  uint64_t new_node_cnt = 0;
   
     //get l1 skiplist
     auto l1_skiplist = task->l1->skiplist();
@@ -2371,6 +2372,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
         auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
         auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+        new_node_cnt++;
 
         first_node[i] = l2_node;
         first_node_paddr[i] = l2_node_paddr;
@@ -2385,16 +2387,18 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         kvpairs->key[0] = i;
         kvpairs->value[0] = i;
         kvpairs->cnt = 1;
-
-        //set kvpairs address of l2 node
-        l2_node->kvpairs_ptr = kvpairs_paddr.dump();
-
         clwb(&kvpairs->key[0], sizeof(Key));
         clwb(&kvpairs->value[0], sizeof(uint64_t));
         clwb(&kvpairs->cnt, sizeof(uint64_t));
-        clwb(l2_node, node_size);
-        clwb(heads[i], node_size);
         _mm_sfence();
+
+        //set kvpairs address of l2 node
+        l2_node->kvpairs_ptr = kvpairs_paddr.dump();
+        clwb(l2_node, node_size);
+        _mm_sfence();
+
+
+        
 
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l2_node;
@@ -2402,6 +2406,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         }
 
         heads[i]->next[0] = l2_node_paddr.dump();
+        clwb(&(heads[i]->next[0]), 8);
+        _mm_sfence();
 
       }
 
@@ -2426,22 +2432,35 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         cnts[i][j] = l2_manifest->cnt[i][j];
       }
     }
+ 
+
+    //variables for compaction
+    //buffers for newly inserting key/value
+    Key* key_buffer = (Key*)malloc(sizeof(Key)*2*NPAIRS);
+    Value* value_buffer = (Value*)malloc(sizeof(Value)*2*NPAIRS);
+    uint64_t buffer_cnt = 0;
+
+    //variables use for decide when to do insert or split
+    Node2* curr = nullptr;
+    uint64_t key_total_cnt = 1; // total Number of keys to insert a node(up to 2*NPAIRS) -> buffer_cnt + prev_cnt
+
+    //variables for keep kvpairs for insert
+    uint64_t pred_kvpairs_paddr;
+    KVpairs* pred_kvpairs = nullptr;
 
 
-
-    //start loop
+    //update first node info
     while(l1_node != nullptr){
-      //
-      //1. Scan l1 nodes
-      //
       if(l1_node->key.key_num() == 0){
         node_paddr = l1_node->next[0];
         l1_node = node_paddr.get<Node>();
         continue;
-      }//remove head nodes of l1     
-      //search preds and succes for braided level
+      }//remove head nodes of l1
+      //search preds and succes at braided level
+
+      //search preds and succes at braided level
         PmemPtr curr_paddr = preds[0][0]->next[0];
-        auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+        curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
         while (curr) {
           if (curr->min_key.Compare(l1_node->key) <= 0) {
             preds[0][0] = curr;
@@ -2453,23 +2472,35 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         }
         succs[0][0] = curr_paddr.dump();
 
+        pred_kvpairs_paddr = preds[0][0]->kvpairs_ptr;
+        pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+        key_total_cnt = pred_kvpairs->cnt;
+        break;
+    }
+   //initializing of next_min_key, space_cnt is done.
+
+
+    //start loop, break if no l1_node left
+    while(true){
+      //
+      //1. check if it needs insertion keys into l2 node
+      //
+      //   Three conditions for insertion:
+      //   1. Check if l1_node is null pointer (need to lastly write all keys in buffer)
+      //   2. Check if l1_node->key is smaller than curr->min_key (skip check if curr is not exist)
+      //   2. Check if total counter reach to 2*NPAIRS
+      //   
+      //   and if so, do insert
+      if(l1_node==nullptr || (curr && (curr->min_key.Compare(l1_node->key) <= 0)) || key_total_cnt == NPAIRS*2){
+
 
         //
-        //2. Decide insert position (or split)
+        // 1-1. if total counter exceed NPAIRS, do split exactly half number of total counter
+        //      and do insert in newly allocated node 
         //
+        if(key_total_cnt > NPAIRS){
 
-        //check count and insert or split
-        KVpairs* insert_kvpairs;
-        auto preds_kvpairs_paddr = preds[0][0]->kvpairs_ptr;
-        auto preds_kvpairs = (KVpairs*) ((PmemPtr*) &preds_kvpairs_paddr)->get();
-
-        if(preds_kvpairs->cnt < NPAIRS){//if its not full, do insert
-          //set insert_kvpairs
-          insert_kvpairs = preds_kvpairs;
-        }
-        else{//if node is full, do split
-
-          //found numa region which has less skiplist nodes
+          // 1) decide numa region which has less skiplist nodes
           int region = 0;
           uint64_t min_cnt = cnts[0][0]; 
           for(int k=1; k<kNumRegions; k++){
@@ -2478,7 +2509,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
               region = k;
             }
           }
-          //set deterministic height
+          // 2) decide height deterministically
           int height = 2;
           uint64_t branching_factor = tmp_kBranching;
           while (height < kMaxHeight) {
@@ -2486,19 +2517,60 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
             height++;
             branching_factor = branching_factor*tmp_kBranching;
           }
-          //update cnt
+
+          // 3) update counter of skiplist2 node
           for(int k=height-1; k>=0; k--){
             cnts[region][k]++;
           }
-          
-          
-          int mid = NPAIRS/2;
-          //find remain preds and succs
+
+          // 4) calculate node size and allocate node and kvpair
+          size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
+          auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
+          auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+          auto kvpairs_paddr = l2_arena_[region][task->shard]->Allocate(sizeof(KVpairs));
+          auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr)->get();
+          new_node_cnt++;
+
+          //do insert in kvpair and decide min key of l2 node
+          //일단 개수는 새로 생긴 l2 node의 kvpairs->cnt는 key_total_cnt/2 개이다 (3개면 1개)
+          //넣어주기 위해서 넣어주는 곳을 pos = key_total_cnt/2 (혹은 kvpairs->cnt) 로 설정해준다. (pos는 넣어줘야 하는 곳을 의미한다.)
+          kvpairs->cnt = key_total_cnt/2;
+          uint64_t insert_pos = key_total_cnt/2;
+          key_total_cnt -= key_total_cnt/2;
+
+          //buffer_cnt와 pred_kvpairs->cnt 하나씩 줄이면서 끝에서 큰거를 하나씩 넣어준다. (buffer_cnt가 0에 도달하거나 pos가 0에 도달하면 break)
+          while(buffer_cnt>0 && insert_pos>0){
+            insert_pos--;
+            //if biggest key of key_buffer is bigger
+            if(key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[pred_kvpairs->cnt-1]) >= 0){
+              kvpairs->key[insert_pos] = key_buffer[buffer_cnt-1];
+              kvpairs->value[insert_pos] = value_buffer[buffer_cnt-1];
+              buffer_cnt--;              
+            }
+            //if biggest key of pred is bigger
+            else{
+              kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
+              kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
+              pred_kvpairs->cnt--;                 
+            }
+          }
+          //pos가 0에 도달안했으면 남아있는 pred_kvpairs->cnt 넣어준다. pos 0에 도달시 break;
+          while(insert_pos>0){
+            insert_pos--;
+            kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
+            kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
+            pred_kvpairs->cnt--;   
+          }
+
+          //kvpairs->key[0] 가 l2_node의 min_key가 된다.
+          l2_node->min_key = kvpairs->key[0];
+
+          // 5) find remain preds and succs
           for (int t = kMaxHeight-1; t > 0; t--) {
             PmemPtr curr_paddr = preds[region][t]->next[t];
-            auto curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+            curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
             while (curr) {
-              if (curr->min_key.Compare(preds_kvpairs->key[mid]) <= 0) {
+              if (curr->min_key.Compare(l2_node->min_key) <= 0) {
                 preds[region][t] = curr;
                 curr_paddr = curr->next[t];
                 curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
@@ -2506,88 +2578,116 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
               }
               break;
             }
-            if(t>1) preds[region][t-1] = preds[region][t];
+            //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
+            if(t>1 && (preds[region][t]->min_key.Compare(preds[region][t-1]->min_key) >= 0)) preds[region][t-1] = preds[region][t];
             succs[region][t] = curr_paddr.dump();
           }
-
-          size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
-          auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
-          auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
         
-
+          // 6) update next pointers and kvpair_ptr of new l2_node
           l2_node->next[0] = succs[0][0];
           for (int i = 1; i < height; i++) {
             l2_node->next[i] =  succs[region][i];
           }
-
-          //allocate kvpairs to l2 node
-          auto kvpairs_paddr = l2_arena_[region][task->shard]->Allocate(sizeof(KVpairs));
-          auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr)->get();
-
-          //set key/value/cnt of kvpairs
-          for (uint64_t i=mid; i<preds_kvpairs->cnt; i++){
-            kvpairs->key[i-mid] = preds_kvpairs->key[i];
-            kvpairs->value[i-mid] = preds_kvpairs->value[i];
-          }
-          kvpairs->cnt=preds_kvpairs->cnt-mid;
-          preds_kvpairs->cnt=mid;
-
-          //set min_key and kvpairs address of l2 node
-          l2_node->min_key = preds_kvpairs->key[mid];
           l2_node->kvpairs_ptr = kvpairs_paddr.dump();
 
-          clwb(kvpairs, sizeof(KVpairs));
-          clwb(l2_node, node_size);
-          _mm_sfence();
+          // 7) update next pointers of predecessor nodes
           preds[0][0]->next[0] = l2_node_paddr.dump();
+          clwb(&(preds[0][0]->next[0]), 8);
+          _mm_sfence();
           for (int i = 1 ;i < height; i++) {
             preds[region][i]->next[i] = l2_node_paddr.dump();
+            clwb(&(preds[region][i]->next[i]), 8);
+            _mm_sfence();
+            //clwb changed next pointer of preds node
           }
 
-          if(l2_node->min_key < l1_node->key){
-            insert_kvpairs = kvpairs;
+          // 8) clwb kvpairs and l2 node
+          clwb(kvpairs, sizeof(KVpairs));
+          _mm_sfence();
+          clwb(l2_node, node_size);
+          _mm_sfence();
+        } //split of pred node is done.
+        if(key_total_cnt>NPAIRS) printf("error here!\n");// test juwon
+        //
+        // 1-2. do insert in preds node
+        //
+
+        //insert position 은 key_total_cnt로 한다.
+        uint64_t insert_pos = key_total_cnt;
+
+        //insert position 상관없이 buffer_cnt가 소진될때까지 삽입한다.
+        while(buffer_cnt>0){
+          insert_pos--;
+          //if biggest key of key_buffer is bigger
+          if(key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[pred_kvpairs->cnt-1]) >= 0){
+            pred_kvpairs->key[insert_pos] = key_buffer[buffer_cnt-1];
+            pred_kvpairs->value[insert_pos] = value_buffer[buffer_cnt-1];
+            buffer_cnt--;              
           }
+          //if biggest key of pred is bigger
+          //이때 insert_pos는 절대 pred_kvpairs->cnt-1을 따라잡을수 없다.
           else{
-            insert_kvpairs = preds_kvpairs;
+            pred_kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
+            pred_kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
+            pred_kvpairs->cnt--;                 
           }
         }
+        //pred_kvpairs->cnt를 key_total_cnt로 설정해준다.
+        pred_kvpairs->cnt = key_total_cnt;
 
-        //
-        //3. Do insert in kvpairs
-        //
+        //삽입 후 pred_kvpairs를 clwb 해준다.
+        clwb(pred_kvpairs, sizeof(KVpairs));
+        _mm_sfence();
 
-        for(uint64_t i = 0; i<=insert_kvpairs->cnt; i++){
-            if(i==insert_kvpairs->cnt){
-              insert_kvpairs->key[i] = l1_node->key;
-              insert_kvpairs->value[i] = l1_node->value;
-              insert_kvpairs->cnt++;
-              break;
-              }
-            if(insert_kvpairs->key[i]<l1_node->key) continue;
-            //if new key is biggest key in node
-            //shift to right
-            for(uint64_t j=insert_kvpairs->cnt-1;j>=i;j--){
-              insert_kvpairs->key[j+1] = insert_kvpairs->key[j];
-              insert_kvpairs->value[j+1] = insert_kvpairs->value[j];
-              if(j==0) break;
-            }
-            //insert to the right position
-            insert_kvpairs->key[i] = l1_node->key;
-            insert_kvpairs->value[i] = l1_node->value;
-            insert_kvpairs->cnt++;
-            break;
+        //insert into preds node is done.
+
+
+        //1-3. if there is no l1_node left, break while loop
+        //     only if it does insert in #1.
+        if(l1_node == nullptr) break;
+
+        //1-4. set pred, curr, and buffer counter(total counter) using l1 node
+        //     only if it does insert in #1.
+        PmemPtr curr_paddr = preds[0][0]->next[0];
+        curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+        while (curr) {
+          if (curr->min_key.Compare(l1_node->key) <= 0) {
+            preds[0][0] = curr;
+            curr_paddr = curr->next[0];
+            curr = (Node2*) ((PmemPtr*) &curr_paddr)->get();
+            continue;
           }
+          break;
+        }
+        succs[0][0] = curr_paddr.dump();
 
-          clwb(insert_kvpairs, sizeof(KVpairs));
-          _mm_sfence();
-        
+        pred_kvpairs_paddr = preds[0][0]->kvpairs_ptr;
+        pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+        key_total_cnt = pred_kvpairs->cnt;
+      }
 
 
-      //Move on to next node of l1
+      //
+      //2. add l1_node key/value to buffer and increase buffer counter and total counter
+      //   
+      key_buffer[buffer_cnt] = l1_node->key;
+      value_buffer[buffer_cnt] = l1_node->value;
+      buffer_cnt++;
+      key_total_cnt++;
+
+
+      //
+      //3. Move on to next node of l1
+      //
       node_cnt++; 
       node_paddr = l1_node->next[0];
       l1_node = node_paddr.get<Node>();
-    }
+    }//end of loop
+
+    //free buffer space
+    free(key_buffer);
+    free(value_buffer);
+
 
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
@@ -2610,19 +2710,16 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       }
       break;
     }
-    
-    task->l1table_list->decrease_l1_table_cnt(1); //decrease number of l1 table
 
     
-
-
+  task->l1table_list->decrease_l1_table_cnt(1); //decrease number of l1 table
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of generated l2 nodes : %lu\n", new_node_cnt);
 
   #ifdef LISTDB_SKIPLIST_CACHE
    if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon
-   auto l2_tl = (PmemTable2List*)ll_[task->shard]->GetTableList(2);
    for(int i=0; i<kNumRegions; i++){
-    cache_[task->shard][i]->UpdateCache(l2_tl);
+    cache_[task->shard][i]->UpdateCache((PmemTable2List*)l2_tl);
    }
   #endif
 
@@ -2635,7 +2732,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
 
   
-}
+}//end of L1 Compaction
 
 
 
