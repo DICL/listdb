@@ -52,7 +52,7 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
     CurrFieldNum(0),
     target_height(kMaxHeight){
   //calculate MaxFieldNum
-  uint64_t MaxFieldNum = (uint64_t)(capacity/(sizeof(Key)+sizeof(uint64_t)));
+  uint64_t MaxFieldNum = (uint64_t)((capacity-sizeof(SkipListCache))/(sizeof(Key)+sizeof(uint64_t)));
   keys_ = (Key*)malloc(sizeof(Key)*MaxFieldNum);
   values_ = (uint64_t*)malloc(sizeof(uint64_t)*MaxFieldNum);
   std::atomic_thread_fence(std::memory_order_release);

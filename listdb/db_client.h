@@ -392,7 +392,7 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       LookupRangeL2(key, l2_pool_id_, skiplist, s, scan_num, values_out);
-      if (values_out->front()) return true;
+      if (!values_out->empty()) return true;
       table = table->Next();
     }
   }
@@ -950,9 +950,10 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   }
   uint64_t paddr_dump_output = curr_paddr_dump;
   uint64_t scan_cnt = scan_num;
-  if(!curr || curr->key.Compare(key)!=0) return paddr_dump_output;
+  if(scan_cnt==0 || !curr) return paddr_dump_output;
   values_out->push_back(curr->value);
   scan_cnt--;
+  pred = curr;
   while (scan_cnt>0) {
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -966,7 +967,6 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     }
     break;
   }
-
 
   return paddr_dump_output;
 }
@@ -1049,12 +1049,14 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   auto pred_kvpairs_paddr = pred->kvpairs_ptr;
   auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
 
+  if(scan_cnt==0) return result_paddr;
+
   //start scan from given range
   for(uint64_t k=0;k<pred_kvpairs->cnt;k++){
     if(pred_kvpairs->key[k] < key) continue;
     values_out->push_back(pred_kvpairs->value[k]);
     scan_cnt--;
-    if(scan_cnt<=0) return result_paddr;
+    if(scan_cnt==0) return result_paddr;
   }
 
   //if scan counter remains, scan next nodes 
@@ -1071,7 +1073,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
       for(uint64_t k=0;k<curr_kvpairs->cnt;k++){
         values_out->push_back(curr_kvpairs->value[k]);
         scan_cnt--;
-        if(scan_cnt<=0) return result_paddr;
+        if(scan_cnt==0) return result_paddr;
       }      
       
       pred = curr;
