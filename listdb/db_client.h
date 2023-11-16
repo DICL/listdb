@@ -309,7 +309,7 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       LookupRangeL1(key, l1_pool_id_, skiplist, s, scan_num, values_out);
-      if (values_out->front()) return true;
+      if (!values_out->empty()) return true;
       table = table->Next();
     }
   }
@@ -706,7 +706,6 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 }
 
 PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
-
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
   uint64_t curr_paddr_dump;
@@ -723,7 +722,7 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   }
   #else
   PmemNode* lte_pnode = nullptr;
-  int rv = c->LookupLessThanOrEqualsTo(key, &lte_pnode);
+  c->LookupLessThanOrEqualsTo(key, &lte_pnode);
   if (lte_pnode) {
     pred = lte_pnode;
     //height = pred->height();
@@ -773,12 +772,12 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     }
     break;
   }
-
   uint64_t paddr_dump_output = curr_paddr_dump;
   uint64_t scan_cnt = scan_num;
-  if(!curr || curr->key.Compare(key)!=0) return paddr_dump_output;
+  if(scan_cnt==0 || !curr) return paddr_dump_output;
   values_out->push_back(curr->value);
   scan_cnt--;
+  pred = curr;
   while (scan_cnt>0) {
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -792,7 +791,6 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     }
     break;
   }
-
 
   return paddr_dump_output;
 }

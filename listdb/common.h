@@ -15,7 +15,8 @@
 #define L0_CACHE_T_STATIC 2
 #define L0_CACHE_T_DOUBLE_HASHING 3
 #define L0_CACHE_T_LINEAR_PROBING 4
-//#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
+//define this for using hashtable
+#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
 
 #ifdef LISTDB_L0_CACHE
 #ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
@@ -36,7 +37,7 @@ constexpr size_t kStringKeyLength = 16;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 128;
+constexpr int kNumShards = 1;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
 #endif
@@ -46,8 +47,6 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr int kMaxNumMemTables = 4;
 constexpr int kMaxNumMemTables = 16;
 
-//for LISTDB L2 
-constexpr int kL1LevelMultiplier = 9999;
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
@@ -65,15 +64,15 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr int kSkipListCacheMinPmemHeight = 10;
-constexpr size_t kSkipListCacheCapacity = (1ull << 20);
+constexpr int kSkipListCacheMinPmemHeight = 8;
+constexpr size_t kSkipListCacheCapacity = (45ull << 20);
 #endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 100;
+constexpr int kNumWorkers = 30;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;

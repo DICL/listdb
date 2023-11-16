@@ -31,14 +31,14 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 50;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr int NUM_THREADS = 60;
+constexpr size_t NUM_LOADS = 10 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
 constexpr int NUM_SHARDS = kNumShards;
 
-constexpr int SLEEP_TIME = 15;
-constexpr int READ_RATIO = 60;
+constexpr int SLEEP_TIME = 20;
+constexpr int READ_RATIO = 100;
 
 namespace fs = std::experimental::filesystem::v1;
 
@@ -139,16 +139,16 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
-  ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
+  ss << "/juwon/index-microbench/ycsb_workloade/";
+  ss << "load_r" << read_ratio << "_zipf_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
 
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/workloads_rw_ratio_unif/";
-  ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
+  ss << "/juwon/index-microbench/ycsb_workloade/";
+  ss << "run_r" << read_ratio << "_zipf_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
 
@@ -372,8 +372,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   // Work
   {
 
-    int r_put_cnt[4] = {0,0,0,0}; //test juwon
-
 
     printf("WORK %zu queries\n", NUM_WORKS);
     //std::vector<std::chrono::duration<double>> latency;
@@ -407,7 +405,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //auto query_begin = std::chrono::steady_clock::now();
           if (work_ops[i] == OP_INSERT || work_ops[i] == OP_UPDATE) {
             client->Put(work_keys[i], work_keys[i]);
-            r_put_cnt[r]++;//test juwon
           } else if (work_ops[i] == OP_READ) {
             uint64_t val_read;
 #ifndef COUNT_FOUND
@@ -433,15 +430,12 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         }
       });
     }
-    
     for (auto& t :  workers) {
       t.join();
     }
     auto end_tp = std::chrono::steady_clock::now();
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
-
-    for(int i=0; i<4; i++) printf("r%d_put_cnt is %d\n",i,r_put_cnt[i]); // test juwon
 
     fprintf(stdout, "Work IOPS: %.3lf M\n", NUM_WORKS/dur_sec/1000000);
     //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());

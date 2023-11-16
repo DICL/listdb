@@ -43,6 +43,7 @@ DEFINE_string(
     benchmarks,
     "fillseq,"
     "fillrandom,"
+    "waitfor10sec,"
     "readseq,"
     "readrandom,"
     "mixgraph",
@@ -55,7 +56,7 @@ DEFINE_string(
 
 DEFINE_int32(write_threads, 0, "write_threads");
 
-DEFINE_int64(num, 1000000, "Number of key/values to place in database");
+DEFINE_int64(num, 10000000, "Number of key/values to place in database");
 
 DEFINE_int64(reads, -1, "Number of read operations to do.  "
              "If negative, do FLAGS_num reads.");
@@ -71,8 +72,8 @@ DEFINE_int32(duration, 0, "Time in seconds for the random-ops tests to run."
 DEFINE_string(value_size_distribution_type, "fixed",
               "Value size distribution type: fixed, uniform, normal");
 
-DEFINE_int32(value_size, 100, "Size of each value in fixed distribution");
-static unsigned int value_size = 100;
+DEFINE_int32(value_size, 256, "Size of each value in fixed distribution");
+static unsigned int value_size = 256;
 
 DEFINE_int32(value_size_min, 100, "Min size of random value");
 

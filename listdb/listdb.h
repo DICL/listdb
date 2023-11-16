@@ -1854,40 +1854,16 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   auto l0_skiplist = task->l0->skiplist();
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
-
-  bool head_only_flag = false;
-  if(!l1_tl->IsEmpty()){
-    auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
-    PmemPtr node_paddr = l1_skiplist->head_paddr();
-    auto l1_node = node_paddr.get<Node>();
-    node_paddr = l1_node->next[0];
-    l1_node = node_paddr.get<Node>();
-
-    if(l1_node == nullptr) head_only_flag = true;
-  }
-
-  auto db_pool = Pmem::pool<pmem_db>(0);
-  auto db_root = db_pool.root();
-  auto shard_manifest = db_root->shard[task->shard];
-
-  //node cnt test line
-  PmemPtr test_node_paddr = l0_skiplist->head_paddr();
-  auto test_node = test_node_paddr.get<Node>();
-  int node_cnt=0;
-  while (test_node != nullptr) {
-    node_cnt++;
-    test_node_paddr = test_node->next[0];
-    test_node = test_node_paddr.get<Node>();
-  }
-  //test line end
-
   if (l1_tl->IsEmpty()) {
 #if 0
     auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
 #else
     // Init the new manifest for a new table
     pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
+    auto db_pool = Pmem::pool<pmem_db>(0);
     pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
+    auto db_root = db_pool.root();
+    auto shard_manifest = db_root->shard[task->shard];
     //l1_manifest->id = ??;
     BraidedPmemSkipList* l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
     for (int i = 0; i < kNumRegions; i++) {
@@ -2054,41 +2030,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #endif
 
-((PmemTable*) l1_tl->GetFront())->increase_l0_compaction_cnt();
-
-  if (!head_only_flag && ((PmemTable*) l1_tl->GetFront())->l0_compaction_cnt() >= kL1LevelMultiplier ) {
-    // Init the new manifest for a new table
-    pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
-    auto db_pool = Pmem::pool<pmem_db>(0);
-    pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
-    auto db_root = db_pool.root();
-    auto shard_manifest = db_root->shard[task->shard];
-
-    //l1_manifest->id = ??;
-    BraidedPmemSkipList* new_l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
-    for (int i = 0; i < kNumRegions; i++) {
-      new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
-    }
-    new_l1_skiplist->Init();
-    for (int i = 0; i < kNumRegions; i++) {
-      auto p_head = new_l1_skiplist->p_head(l1_pool_id_[i]);
-      l1_manifest->head[i] = p_head;
-    }
-    shard_manifest->l1_info = l1_manifest;
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), new_l1_skiplist);
-
-    l1_tl->PushFront(l1_table);//원래 SetFront 였음
-    if(task->shard==0) printf("create new L1 table\n");
-    
-
-    PmemPtr tmp_node_paddr = new_l1_skiplist->head_paddr();
-    auto tmp_l1_node = tmp_node_paddr.get<Node>();
-    tmp_node_paddr = tmp_l1_node->next[0];
-    tmp_l1_node = tmp_node_paddr.get<Node>();
-    // Update manifest
-    // call clwb
-  }
-
   // Update manifest
   l0_manifest->status = Level0Status::kMergeDone;
   // call clwb
@@ -2107,9 +2048,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     } else {
       break;
     }
-
   }
-  //if(task->shard == 0) printf("node cnt : %d\n",node_cnt);
 #else
   // Insert N times
   // For Test
@@ -2165,10 +2104,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
   // Remove empty L0 from MemTableList
   //auto tl = ll_[task->shard]->GetTableList(0);
-
-
-
-
   auto table = task->memtable_list->GetFront();
   while (true) {
     auto next_table = table->Next();
@@ -2184,7 +2119,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #endif
 #endif
-
 }
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {

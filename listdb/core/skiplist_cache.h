@@ -10,7 +10,7 @@
 #include "listdb/util/random.h"
 
 // TODO(wkim): Undefine this after doing the relevant works. Refer `SkipListCache::size_`
-#define CACHE_SIZE_IS_FIELD_COUNT
+//#define CACHE_SIZE_IS_FIELD_COUNT //juwon:undefine this
 
 template <std::size_t N>
 class SkipListCache {
@@ -186,8 +186,8 @@ SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
 
 template <std::size_t N>
 int SkipListCache<N>::Insert(PmemNode* const p) {
-#ifdef CACHE_SIZE_IS_FIELD_COUNT
   size_t curr_size = size_.load(std::memory_order_acquire);
+#ifdef CACHE_SIZE_IS_FIELD_COUNT
   if (curr_size + sizeof(Field) > capacity_) {
     int num_evicted = EvictSome(p->height());
     //fprintf(stdout, "Full. evict_cnt=%d\n", num_evicted);
