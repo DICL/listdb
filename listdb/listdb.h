@@ -2370,7 +2370,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         int region = i;
 
         size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
-        auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
+        //strictly adjacent allocation of node and kvpairs
+        auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
         auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
         new_node_cnt++;
 
@@ -2380,8 +2381,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         l2_node->min_key = i;
 
         //allocate kvpairs to l2 node
-        auto kvpairs_paddr = l2_arena_[region][task->shard]->Allocate(sizeof(KVpairs));
-        auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr)->get();
+        uint64_t kvpairs_paddr_dump = l2_node_paddr.dump()+node_size;
+        auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr_dump)->get();
 
         //initialize key/value/cnt of kvpairs
         kvpairs->key[0] = i;
@@ -2393,7 +2394,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         _mm_sfence();
 
         //set kvpairs address of l2 node
-        l2_node->kvpairs_ptr = kvpairs_paddr.dump();
+        l2_node->kvpairs_ptr = kvpairs_paddr_dump;
         clwb(l2_node, node_size);
         _mm_sfence();
 
@@ -2525,10 +2526,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
           // 4) calculate node size and allocate node and kvpair
           size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
-          auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size);
+          auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
           auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
-          auto kvpairs_paddr = l2_arena_[region][task->shard]->Allocate(sizeof(KVpairs));
-          auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr)->get();
+          uint64_t kvpairs_paddr_dump = l2_node_paddr.dump()+node_size;
+          auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr_dump)->get();
           new_node_cnt++;
 
           //do insert in kvpair and decide min key of l2 node
@@ -2588,7 +2589,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           for (int i = 1; i < height; i++) {
             l2_node->next[i] =  succs[region][i];
           }
-          l2_node->kvpairs_ptr = kvpairs_paddr.dump();
+          l2_node->kvpairs_ptr = kvpairs_paddr_dump;
 
           // 7) update next pointers of predecessor nodes
           preds[0][0]->next[0] = l2_node_paddr.dump();
