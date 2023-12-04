@@ -3,15 +3,25 @@
 
 #include <algorithm>
 #include <sstream>
+#include <functional>
+#include <cmath>
 
 #include "listdb/common.h"
 #include "listdb/index/packed_pmem_skiplist.h"
 #include "listdb/lsm/pmemtable2_list.h"
 #include "listdb/util.h"
 #include "listdb/util/random.h"
+#include "listdb/index/greedyplr_entities.h"
+#include "listdb/index/greedyplr.h"
+
+//to use GreedyPLR
+using namespace PLR;
+//undefine this to not use learned index (greedy plr)
+#define LISTDB_GREEDY_PLR
+#define ERROR_BOUND 16
 
 // TODO(wkim): Undefine this after doing the relevant works. Refer `SkipListCache::size_`
-#define CACHE_SIZE_IS_FIELD_COUNT
+//#define CACHE_SIZE_IS_FIELD_COUNT
 
 template <std::size_t N>
 class SkipListCache {
@@ -37,6 +47,10 @@ class SkipListCache {
   uint64_t CurrFieldNum;//maximum numbers of kv entries
   int target_height;//height which can skip by lookup cache
 
+#ifdef LISTDB_GREEDY_PLR
+  GreedyPLR* greedy_;
+#endif
+
   Key* keys_;
   uint64_t* values_; //values of cache is pmemptr of each keys
 
@@ -50,7 +64,8 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
     region_(region),
     capacity_(capacity),
     CurrFieldNum(0),
-    target_height(kMaxHeight){
+    target_height(kMaxHeight)
+    {
   //calculate MaxFieldNum
   uint64_t MaxFieldNum = (uint64_t)((capacity-sizeof(SkipListCache))/(sizeof(Key)+sizeof(uint64_t)));
   keys_ = (Key*)malloc(sizeof(Key)*MaxFieldNum);
@@ -143,20 +158,66 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
 
   }
   CurrFieldNum = checking_int;
-  
   if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
+
+#ifdef LISTDB_GREEDY_PLR
+  if(greedy_ != nullptr) delete greedy_;
+  greedy_ = new GreedyPLR(ERROR_BOUND);
+  greedy_->train(keys_, CurrFieldNum);
+  if(region_==0) greedy_->report();//test juwon
+#endif
 }
 
 template <std::size_t N>
 int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
-#if 1 // using binary search method (juwon)
+#ifdef LISTDB_GREEDY_PLR //using leaned index method (juwon)
+  uint64_t p = greedy_->predict(key);
+  if(p>CurrFieldNum-1) p = CurrFieldNum-1;
+
+  //case of use linear search from p
+  int rv = keys_[p].Compare(key);
+  if(rv == 0){
+    *out = values_[p];
+    return 0;
+  }
+  else if(rv < 0){
+    while(p<CurrFieldNum-1){
+        if(int rv = keys_[p+1].Compare(key); rv >= 0){
+          if(rv==0){
+            *out = values_[p+1];
+            return 0;
+          }
+          *out = values_[p];
+          return 1;
+        }
+        p++;
+    }
+  }
+  else{
+    while(p>0){
+        p--;
+        if(int rv = keys_[p].Compare(key); rv <= 0){
+          *out = values_[p];
+          if(rv==0) return 0;
+          return 1;
+        }
+    }
+  }
+
+  if(p==0 && keys_[p].Compare(key)>0)return -1;
+  else if(p==CurrFieldNum-1 || p==0){
+    *out = values_[p];
+    return 1;
+  }
+
+#else // using binary search method (juwon)
   
     //p,l,h for position, low, high for binary search
     uint64_t h = CurrFieldNum-1;
     uint64_t l = 0;
     uint64_t p = h/2;
 
-    //do binary search
+    //do binary search from p
     while(h>=l){
       p = (l+h)/2;
       //do binary search in kvpair
@@ -199,60 +260,10 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
         }
       }
     }
-
-#else //using interpolation search method (juwon)
-    if(keys_[1].Compare(key)>0) return -1;
-
-    //cutoff values for calculate predictions
-    int cutoff_factor = 32;
-
-    //avoid floating point exception
-    if((keys_[CurrFieldNum-1].key_num()>>cutoff_factor) == (keys_[1].key_num()>>cutoff_factor)) cutoff_factor=0;
-
-    //predict position
-    uint64_t p = (uint64_t)((((key.key_num()>>cutoff_factor)-(keys_[1].key_num()>>cutoff_factor))*(CurrFieldNum-2))/((keys_[CurrFieldNum-1].key_num()>>cutoff_factor)-(keys_[1].key_num()>>cutoff_factor)))+1;
-    
-
-    // if(p>=CurrFieldNum) p=CurrFieldNum-1; // for corner case
-  
-    int rv=keys_[p].Compare(key);
-    //keys_[p] 가 더 크면 왼쪽으로 가다가 처음발견한 값을 반환
-    while(rv > 0){
-      if(p==0) return -1;
-      p--;
-
-      rv=keys_[p].Compare(key);
-
-      if(rv < 0){
-        *out = values_[p];
-        return 1;
-      }
-    }
-    //keys_[p] 가 더 작으면 오른쪽으로 가다가 처음으로 커지면 이전 값을 반환
-
-    while(rv < 0){
-      if(p>=CurrFieldNum-1){
-        *out = values_[CurrFieldNum-1];
-        return 1;
-      }
-      p++;
-
-      rv=keys_[p].Compare(key);
-
-      if(rv > 0){
-        *out = values_[p-1];
-        return 1;
-      }
-    }
-
-
-    if(rv==0){
-      *out = values_[p];
-      return 0;
-    }
-
-
 #endif
+
+  
+  
 
 
     return -1;

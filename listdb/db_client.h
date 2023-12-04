@@ -360,6 +360,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
   }
+  //printf("fail to search! Key : %lu\n",key.key_num());//juwon test
   return false;
 }
 
