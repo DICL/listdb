@@ -2545,30 +2545,67 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           //넣어주기 위해서 넣어주는 곳을 pos = key_total_cnt/2 (혹은 kvpairs->cnt) 로 설정해준다. (pos는 넣어줘야 하는 곳을 의미한다.)
           kvpairs->cnt = key_total_cnt/2;
           uint64_t insert_pos = key_total_cnt/2;
-          key_total_cnt -= key_total_cnt/2;
+          //zero for no duplicate key, non-zero for duplicate key deteced.
+          uint64_t leftmost_duplicate_pos = 0;
+          //counter temorarily representing prededecessor node's kvpairs counter
+          uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
 
-          //buffer_cnt와 pred_kvpairs->cnt 하나씩 줄이면서 끝에서 큰거를 하나씩 넣어준다. (buffer_cnt가 0에 도달하거나 pos가 0에 도달하면 break)
+          //buffer_cnt와 tmp_pred_kvpairs_cnt 하나씩 줄이면서 끝에서 큰거를 하나씩 넣어준다. (buffer_cnt가 0에 도달하거나 pos가 0에 도달하면 break)
           while(buffer_cnt>0 && insert_pos>0){
             insert_pos--;
             //if biggest key of key_buffer is bigger
-            if(key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[pred_kvpairs->cnt-1]) >= 0){
+            int rv = key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[tmp_pred_kvpairs_cnt-1]);
+            if(rv > 0){
               kvpairs->key[insert_pos] = key_buffer[buffer_cnt-1];
               kvpairs->value[insert_pos] = value_buffer[buffer_cnt-1];
               buffer_cnt--;              
             }
             //if biggest key of pred is bigger
+            else if(rv < 0){
+              kvpairs->key[insert_pos] = pred_kvpairs->key[tmp_pred_kvpairs_cnt-1];
+              kvpairs->value[insert_pos] = pred_kvpairs->value[tmp_pred_kvpairs_cnt-1];
+              tmp_pred_kvpairs_cnt--;                 
+            }
+            //if duplicate key detected
             else{
-              kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
-              kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
-              pred_kvpairs->cnt--;                 
+              //if first key of new node is duplicated, simply insert new version of key
+              if(insert_pos==0){
+                kvpairs->key[insert_pos] = key_buffer[buffer_cnt-1];
+                kvpairs->value[insert_pos] = value_buffer[buffer_cnt-1];
+                buffer_cnt--;
+                //evict duplicated key
+                tmp_pred_kvpairs_cnt--;      
+              }
+              else{
+                kvpairs->key[insert_pos] = pred_kvpairs->key[tmp_pred_kvpairs_cnt-1];
+                kvpairs->value[insert_pos] = pred_kvpairs->value[tmp_pred_kvpairs_cnt-1];
+                tmp_pred_kvpairs_cnt--;
+                leftmost_duplicate_pos = insert_pos;
+              }
             }
           }
-          //pos가 0에 도달안했으면 남아있는 pred_kvpairs->cnt 넣어준다. pos 0에 도달시 break;
+          //pos가 0에 도달안했으면 남아있는 tmp_pred_kvpairs_cnt 넣어준다. pos 0에 도달시 break;
           while(insert_pos>0){
             insert_pos--;
-            kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
-            kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
-            pred_kvpairs->cnt--;   
+            kvpairs->key[insert_pos] = pred_kvpairs->key[tmp_pred_kvpairs_cnt-1];
+            kvpairs->value[insert_pos] = pred_kvpairs->value[tmp_pred_kvpairs_cnt-1];
+            tmp_pred_kvpairs_cnt--;   
+          }
+
+          //evict duplicate keys if exist
+          if(leftmost_duplicate_pos!=0){
+            uint64_t src = leftmost_duplicate_pos + 1;
+            uint64_t dest = leftmost_duplicate_pos;
+            while(src<kvpairs->cnt){
+              //if key of src is duplicate key, skip copy it
+              if(kvpairs->key[src].Compare(kvpairs->key[src-1])!=0){
+                kvpairs->key[dest] = kvpairs->key[src];
+                kvpairs->value[dest] = kvpairs->value[src];
+                dest++;
+              }
+              src++;
+            }
+            kvpairs->cnt = dest;
           }
 
           //kvpairs->key[0] 가 l2_node의 min_key가 된다.
@@ -2615,34 +2652,66 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           _mm_sfence();
           clwb(l2_node, node_size);
           _mm_sfence();
+
+          //new node가 연결되지 않았는데 l2 node의 cnt 부터 줄어들면 key를 볼 수 없다.
+          pred_kvpairs->cnt = tmp_pred_kvpairs_cnt;
+          key_total_cnt = pred_kvpairs->cnt + buffer_cnt;
         } //split of pred node is done.
-        if(key_total_cnt>NPAIRS) printf("error here!\n");// test juwon
+        if(key_total_cnt>NPAIRS) printf("ERROR! inserting keys are more than NPAIRS\n");// test juwon
         //
         // 1-2. do insert in preds node
         //
 
         //insert position 은 key_total_cnt로 한다.
         uint64_t insert_pos = key_total_cnt;
+        //zero for no duplicate key, non-zero for duplicate key deteced.
+        uint64_t leftmost_duplicate_pos = 0;
+        //counter temorarily representing prededecessor node's kvpairs counter
+        uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
+        //pred_kvpairs->cnt를 미리 key_total_cnt로 설정해준다. (삽입과정 중 검색하는 client가 가능한 모든 key를 볼수있게끔 하기 위해)
+        pred_kvpairs->cnt = key_total_cnt;
 
         //insert position 상관없이 buffer_cnt가 소진될때까지 삽입한다.
         while(buffer_cnt>0){
           insert_pos--;
           //if biggest key of key_buffer is bigger
-          if(key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[pred_kvpairs->cnt-1]) >= 0){
+          int rv = key_buffer[buffer_cnt-1].Compare(pred_kvpairs->key[tmp_pred_kvpairs_cnt-1]);
+          if(rv > 0){
             pred_kvpairs->key[insert_pos] = key_buffer[buffer_cnt-1];
             pred_kvpairs->value[insert_pos] = value_buffer[buffer_cnt-1];
             buffer_cnt--;              
           }
           //if biggest key of pred is bigger
           //이때 insert_pos는 절대 pred_kvpairs->cnt-1을 따라잡을수 없다.
+          else if(rv<0){
+            pred_kvpairs->key[insert_pos] = pred_kvpairs->key[tmp_pred_kvpairs_cnt-1];
+            pred_kvpairs->value[insert_pos] = pred_kvpairs->value[tmp_pred_kvpairs_cnt-1];
+            tmp_pred_kvpairs_cnt--;                 
+          }
+          //if duplicate key detected
           else{
-            pred_kvpairs->key[insert_pos] = pred_kvpairs->key[pred_kvpairs->cnt-1];
-            pred_kvpairs->value[insert_pos] = pred_kvpairs->value[pred_kvpairs->cnt-1];
-            pred_kvpairs->cnt--;                 
+            pred_kvpairs->key[insert_pos] = pred_kvpairs->key[tmp_pred_kvpairs_cnt-1];
+            pred_kvpairs->value[insert_pos] = pred_kvpairs->value[tmp_pred_kvpairs_cnt-1];
+            tmp_pred_kvpairs_cnt--;
+            leftmost_duplicate_pos = insert_pos;  
           }
         }
-        //pred_kvpairs->cnt를 key_total_cnt로 설정해준다.
-        pred_kvpairs->cnt = key_total_cnt;
+
+        //evict duplicate keys if exist
+        if(leftmost_duplicate_pos!=0){
+          uint64_t src = leftmost_duplicate_pos + 1;
+          uint64_t dest = leftmost_duplicate_pos;
+          while(src<pred_kvpairs->cnt){
+            //if key of src is duplicate key, skip copy it
+            if(pred_kvpairs->key[src].Compare(pred_kvpairs->key[src-1])!=0){
+              pred_kvpairs->key[dest] = pred_kvpairs->key[src];
+              pred_kvpairs->value[dest] = pred_kvpairs->value[src];
+              dest++;
+            }
+            src++;
+          }
+          pred_kvpairs->cnt = dest;
+        }
 
         //삽입 후 pred_kvpairs를 clwb 해준다.
         clwb(pred_kvpairs, sizeof(KVpairs));
