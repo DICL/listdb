@@ -588,7 +588,7 @@ void ListDB::ZipperCompactionL0(L0CompactionTask* task) {
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {
@@ -743,7 +743,7 @@ void ListDB::ZipperCompactionL0(L0CompactionTask* task) {
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {
@@ -885,7 +885,7 @@ void ListDB::ZipperCompactionL0(L0CompactionTask* task) {
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {

@@ -57,6 +57,9 @@ constexpr int kL1LevelMultiplier = 10;
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
+//for LISTDB L2 
+constexpr int kL1PmemTableCapacity = kMemTableCapacity*kL1LevelMultiplier;
+
 constexpr int kMaxHeight = 15;
 
 #ifdef LISTDB_L1_LRU

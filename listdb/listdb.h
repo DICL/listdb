@@ -411,7 +411,7 @@ void ListDB::Init() {
 
     // L1 List
     {
-      auto tl = new PmemTableList(std::numeric_limits<size_t>::max(), l1_arena_[0][0]->pool_id());
+      auto tl = new PmemTableList(kL1PmemTableCapacity, l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
@@ -585,7 +585,7 @@ void ListDB::Open() {
 
     // L1 List
     {
-      auto tl = new PmemTableList(std::numeric_limits<size_t>::max(), l1_arena_[0][0]->pool_id());
+      auto tl = new PmemTableList(kL1PmemTableCapacity, l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
@@ -647,7 +647,7 @@ void ListDB::Open() {
             l1_skiplist->BindArena(pool_id, l1_arena_[j][i]);
             l1_skiplist->BindHead(pool_id, (void*) l1_info->head[j].get());
           }
-          auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l1_skiplist);
+          auto l1_table = new PmemTable(kL1PmemTableCapacity, l1_skiplist);
           //l1_table->SetSize(kMemTableCapacity);
           auto l1_tl = ll_[i]->GetTableList(1);
           l1_tl->SetFront(l1_table);
@@ -1374,6 +1374,7 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
 
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
   l0_table->SetManifest(task->imm->l0_manifest());
+  l0_table->SetBloomFilter(task->imm->bloom_filter());
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   //task->imm->FinalizeFlush();
@@ -1821,7 +1822,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {
@@ -1993,10 +1994,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   if (l1_tl->IsEmpty()) {
 #if 0
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
 #else
     // Init the new manifest for a new table
-    printf("initialize manifest\n"); //test juwon
     pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
     auto db_pool = Pmem::pool<pmem_db>(0);
     pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
@@ -2020,7 +2020,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       l1_manifest->head[i] = p_head;
     }
     shard_manifest->l1_info = l1_manifest;
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l1_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l1_skiplist);
 #endif
     l1_tl->PushFront(l1_table);//원래 SetFront 였음
 
@@ -2043,8 +2043,8 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     // call clwb
     return;
   }
-
-  auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
+  auto l1_table = (PmemTable*) l1_tl->GetFront();
+  auto l1_skiplist = l1_table->skiplist();
 
   struct ZipperItem {
     PmemPtr node_paddr;
@@ -2124,6 +2124,10 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
     auto& z = zstack.top();
     auto l0_node = z->node_paddr.get<Node>();
+
+    //add l0_node to bloom_filter of l1_table
+    l1_table->bloom_filter()->AddKey(l0_node->key);
+
     {
       l0_node->next[0] = z->preds[0]->next[0];
       clwb(&l0_node->next[0], 8);
@@ -2178,9 +2182,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
     }
     new_l1_skiplist->Init();
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), new_l1_skiplist);
+    auto new_l1_table = new PmemTable(kL1PmemTableCapacity, new_l1_skiplist);
 
-    l1_tl->PushFront(l1_table);//원래 SetFront 였음
+    l1_tl->PushFront(new_l1_table);//원래 SetFront 였음
     l1_tl->increase_l1_table_cnt(1);
     //if(task->shard == 0) printf("create new L1 table\n");
   }
@@ -2215,7 +2219,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   auto l1_tl = ll_[task->shard]->GetTableList(1);
   if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), l0_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
     l1_tl->SetFront(l1_table);
     auto table = task->memtable_list->GetFront();
     while (true) {
@@ -2289,7 +2293,7 @@ void ListDB::ManualL1Compaction(int shard) {
       new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][shard]);
     }
     new_l1_skiplist->Init();
-    auto l1_table = new PmemTable(std::numeric_limits<size_t>::max(), new_l1_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity, new_l1_skiplist);
 
     l1_tl->PushFront(l1_table);
     //manually invoke l1 compaction by increase l1 table cnt by levelmultiplier
@@ -2319,6 +2323,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     auto l1_node = node_paddr.get<Node>();
     //get l2 skiplist
     auto l2_tl = ll_[task->shard]->GetTableList(2);
+
+
+
+
     auto l2_table = (PmemTable2*) l2_tl->GetFront();
     auto l2_skiplist = l2_table->skiplist();
     auto l2_manifest = l2_table->manifest<pmem_l2_info>();

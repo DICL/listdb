@@ -6,6 +6,7 @@
 #include "listdb/index/lockfree_skiplist.h"
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/lsm/table.h"
+#include "listdb/index/bloom_filter.h"
 
 class MemTable : public Table {
  public:
@@ -28,6 +29,8 @@ class MemTable : public Table {
 
   BraidedPmemSkipList* l0_skiplist() { return l0_skiplist_; }
 
+  BloomFilter* bloom_filter() { return bloom_filter_; }
+
   void SetL0SkipList(BraidedPmemSkipList* l0_skiplist) { l0_skiplist_ = l0_skiplist; }
 
   void SetL0Manifest(pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest) { l0_manifest_ = l0_manifest; }
@@ -39,6 +42,7 @@ class MemTable : public Table {
  private:
   lockfree_skiplist* skiplist_;
   BraidedPmemSkipList* l0_skiplist_ = nullptr;
+  BloomFilter* bloom_filter_;
   // TODO(wkim): use PmemTable*
   Table* l0_ = nullptr;
   pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest_ = nullptr;
@@ -46,10 +50,12 @@ class MemTable : public Table {
 
 MemTable::MemTable(const size_t table_capacity) : Table(table_capacity, TableType::kMemTable) {
   skiplist_ = new lockfree_skiplist();
+  bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Key));
 }
 
 MemTable::~MemTable() {
   delete skiplist_;
+  delete bloom_filter_;
 }
 
 void* MemTable::Put(const Key& key, const Value& value) {
