@@ -1,5 +1,5 @@
-#ifndef __PLR__OPERATIONS__OPERATIONS__
-#define __PLR__OPERATIONS__OPERATIONS__
+#ifndef LISTDB_GREEDYPLR_OPERATIONS_H_
+#define LISTDB_GREEDYPLR_OPERATIONS_H_
 #include "listdb/index/greedyplr_entities.h"
 
 namespace PLR::Operations {
@@ -39,4 +39,4 @@ namespace PLR::Operations {
         return (l1.slope + l2.slope) / 2.0;
     }
 }
-#endif
+#endif //LISTDB_GREEDYPLR_OPERATIONS_H_

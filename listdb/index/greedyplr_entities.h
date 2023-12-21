@@ -1,5 +1,5 @@
-#ifndef __PLR__ENTITIES__ENTITIES__
-#define __PLR__ENTITIES__ENTITIES__
+#ifndef LISTDB_GREEDYPLR_ENTITIES_H_
+#define LISTDB_GREEDYPLR_ENTITIES_H_
 
 #include <memory>
 #include <iostream>
@@ -124,4 +124,4 @@ namespace PLR::Entities {
         }
     };
 }
-#endif
+#endif //LISTDB_GREEDYPLR_ENTITIES_H_

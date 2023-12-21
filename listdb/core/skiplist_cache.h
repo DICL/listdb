@@ -16,8 +16,6 @@
 
 //to use GreedyPLR
 using namespace PLR;
-//undefine this to not use learned index (greedy plr)
-#define LISTDB_GREEDY_PLR
 #define ERROR_BOUND 16
 
 // TODO(wkim): Undefine this after doing the relevant works. Refer `SkipListCache::size_`
@@ -49,6 +47,8 @@ class SkipListCache {
 
 #ifdef LISTDB_GREEDY_PLR
   GreedyPLR* greedy_;
+  //Whether traing of learned index is fit in memory or not
+  bool train_fit_;
 #endif
 
   Key* keys_;
@@ -67,7 +67,11 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
     target_height(kMaxHeight)
     {
   //calculate MaxFieldNum
-  uint64_t MaxFieldNum = (uint64_t)((capacity-sizeof(SkipListCache))/(sizeof(Key)+sizeof(uint64_t)));
+  size_t capacity_for_kv_array = capacity;
+#ifdef LISTDB_GREEDY_PLR
+  capacity_for_kv_array *= (1-kLearnedIndexCapacityRatio);
+#endif
+  uint64_t MaxFieldNum = (uint64_t)((capacity_for_kv_array-sizeof(SkipListCache))/(sizeof(Key)+sizeof(uint64_t)));
   keys_ = (Key*)malloc(sizeof(Key)*MaxFieldNum);
   values_ = (uint64_t*)malloc(sizeof(uint64_t)*MaxFieldNum);
   std::atomic_thread_fence(std::memory_order_release);
@@ -162,27 +166,39 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
 
 #ifdef LISTDB_GREEDY_PLR
   if(greedy_ != nullptr) delete greedy_;
-  greedy_ = new GreedyPLR(ERROR_BOUND);
-  greedy_->train(keys_, CurrFieldNum);
+  greedy_ = new GreedyPLR(ERROR_BOUND, capacity_*kLearnedIndexCapacityRatio);
+  train_fit_ = greedy_->train(keys_, CurrFieldNum);
   if(region_==0) greedy_->report();//test juwon
 #endif
 }
 
 template <std::size_t N>
 int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
+  uint64_t h = CurrFieldNum-1;
+  uint64_t l = 0;
+  uint64_t p = h/2;
+  int rv;
+  
 #ifdef LISTDB_GREEDY_PLR //using leaned index method (juwon)
-  uint64_t p = greedy_->predict(key);
-  if(p>CurrFieldNum-1) p = CurrFieldNum-1;
-
+  //if learned index successfully trained
+  if(train_fit_){
+    p = greedy_->predict(key);
+    if(p>CurrFieldNum-1) p = CurrFieldNum-1;
+    h = p+ERROR_BOUND;
+    if(h>CurrFieldNum-1) h = CurrFieldNum-1;
+    l = p-ERROR_BOUND;
+    if(p<ERROR_BOUND) l = 0;
+  }
+  /*
   //case of use linear search from p
-  int rv = keys_[p].Compare(key);
+  rv = keys_[p].Compare(key);
   if(rv == 0){
     *out = values_[p];
     return 0;
   }
   else if(rv < 0){
     while(p<CurrFieldNum-1){
-        if(int rv = keys_[p+1].Compare(key); rv >= 0){
+        if(rv = keys_[p+1].Compare(key); rv >= 0){
           if(rv==0){
             *out = values_[p+1];
             return 0;
@@ -196,7 +212,7 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
   else{
     while(p>0){
         p--;
-        if(int rv = keys_[p].Compare(key); rv <= 0){
+        if(rv = keys_[p].Compare(key); rv <= 0){
           *out = values_[p];
           if(rv==0) return 0;
           return 1;
@@ -210,19 +226,16 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
     return 1;
   }
 
-#else // using binary search method (juwon)
-  
-    //p,l,h for position, low, high for binary search
-    uint64_t h = CurrFieldNum-1;
-    uint64_t l = 0;
-    uint64_t p = h/2;
+  return -1;
+  */
 
+#endif
     //do binary search from p
     while(h>=l){
       p = (l+h)/2;
       //do binary search in kvpair
 
-      int rv = keys_[p].Compare(key);
+      rv = keys_[p].Compare(key);
 
       //case 1
       if(rv > 0){
@@ -260,11 +273,6 @@ int SkipListCache<N>::LookupLessThanOrEqualsTo(const Key& key, uint64_t* out) {
         }
       }
     }
-#endif
-
-  
-  
-
 
     return -1;
 }

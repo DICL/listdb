@@ -75,6 +75,12 @@ constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
 constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+//undefine this to use only binary search
+#define LISTDB_GREEDY_PLR
+#ifdef LISTDB_GREEDY_PLR
+constexpr double kLearnedIndexCapacityRatio = 0.001;
+#endif
+
 #endif
 
 constexpr int kNumDramLevels = 1;

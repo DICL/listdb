@@ -1,5 +1,5 @@
-#ifndef __PLR__GREEDY_PLR__GREEDY_PLR__
-#define __PLR__GREEDY_PLR__GREEDY_PLR__
+#ifndef LISTDB_GREEDYPLR_H_
+#define LISTDB_GREEDYPLR_H_
 #include <cstddef>
 #include <iostream>
 #include <vector>
@@ -15,6 +15,10 @@ namespace PLR {
     public:
         GreedyPLR() = delete;
         GreedyPLR(const double &err) : error(err) {};
+        GreedyPLR(const double &err, const size_t &capacity) : error(err) {
+            if(capacity<sizeof(GreedyPLR)) MaxSegNum = 0;
+            else MaxSegNum = (uint64_t)((capacity-sizeof(GreedyPLR))/(sizeof(Segment)));
+        };
         GreedyPLR(const GreedyPLR &) = delete;
         GreedyPLR(GreedyPLR &&) = default;
         auto operator=(const GreedyPLR &) -> GreedyPLR & = delete;
@@ -100,14 +104,12 @@ namespace PLR {
         // true: trainning is sucessful
         // false: something goes wrong
         auto train(const Key* key_array, uint64_t num_points) -> bool {
-            auto ret = true;
             for(uint64_t i=0; i<num_points; i++){
                 Point p((double)key_array[i].key_num(),i);
-                ret &= iterate_on(p);
+                if(!iterate_on(p)) return false;
             }
-
-            finish();
-            return ret;
+        
+            return finish();
         }
 
         // if the data pointer are delivered via an iterator
@@ -136,12 +138,16 @@ namespace PLR {
                 return true;
             }
             case 0: {
-                if (try_consume(p)) {
+                int rv = try_consume(p);
+                if (rv==1) {
                     return true;
-                } else {
+                } else if(rv==0) {
                     need = 1;
                     s1 = p;
                     return true;
+                } else {
+                    //case of stop training;
+                    return false;
                 }
             }
             default: {
@@ -164,6 +170,7 @@ namespace PLR {
         }
 
         auto report() const noexcept {
+            printf("MaxSegNum is %lu\n",MaxSegNum);//test juwon
             std::cout << segments.size() << " segments are trained\n";
             if (dangle) {
                 std::cout << "Tail is usable: ";
@@ -172,13 +179,13 @@ namespace PLR {
         }
         
     private:
-        auto try_consume(const Point &p) -> bool {
+        auto try_consume(const Point &p) -> int {
             auto should_yield = above_line(p, plr_upper) || below_line(p, plr_lower);
             if (should_yield) {
                 // this point is out of the bound
                 // start a new segment and return
-                yield_current_segment();
-                return false;
+                if(yield_current_segment()==-1) return -1;
+                return 0;
             }
 
             auto p_upper = error_upper(p, error);
@@ -192,38 +199,41 @@ namespace PLR {
                 plr_lower.update_to(s0, p_lower);
             }
 
-            return true;
+            return 1;
         }
 
-        auto yield_current_segment() -> bool {
+        auto yield_current_segment() -> int {
             switch (need) {
             case 2: {
                 // no segment now, just leave
-                return false;
+                return 0;
             }
             case 1: {
                 // a dangling point
                 tail = s1;
-                dangle = true;
-                return true;
+                dangle = 1;
+                return 1;
             }
             case 0: {
                 current_segment.line.initialize_from(get_average_slope(plr_lower, plr_upper), s0);
                 current_segment.start = s1.x;
+                //if capacity is full, stop training
+                if(segments.size()+1 > MaxSegNum) return -1;
                 segments.push_back(current_segment);
-                return true;
+                return 1;
             }
             default: {
                 std::cerr << "Unexpected value of need: " << need << "\n";
-                return false;
+                return 0;
             }
             }
         }
 
         // stop right now, yielding the traning segment unconditionally
-        auto finish() -> void {
-            yield_current_segment();
+        auto finish() -> bool {
+            if(yield_current_segment()==-1) return false;
             need = -1;
+            return true;
         }
 
     private:
@@ -237,6 +247,9 @@ namespace PLR {
         Point tail;
         bool dangle = false;
         int need = 2;
+
+        //maximum number of segment for given capacity
+        uint64_t MaxSegNum;
     };
 }
-#endif
+#endif //LISTDB_GREEDYPLR_H_
