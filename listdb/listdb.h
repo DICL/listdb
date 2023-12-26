@@ -1021,6 +1021,7 @@ void ListDB::BackgroundThreadLoop() {
         if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
           auto tl = ll_[i]->GetTableList(0);
           auto table = tl->GetFront();
+          if(!table) continue;
           while (true) {
             auto next_table = table->Next();
             if (next_table) {
@@ -1049,6 +1050,7 @@ void ListDB::BackgroundThreadLoop() {
           auto tl = ll_[i]->GetTableList(1);
           if (tl->l1_table_cnt() > 1) {
             auto table = tl->GetFront();
+            if(!table) continue;
             while (true) {
               auto next_table = table->Next();
               if (next_table) {
@@ -1372,9 +1374,13 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_cnt += flush_cnt;
   td->flush_time_usec += (end_micros - begin_micros);
 
+#ifdef LISTDB_BLOOM_FILTER
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist, task->imm->bloom_filter());
+#else
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+#endif
   l0_table->SetManifest(task->imm->l0_manifest());
-  l0_table->SetBloomFilter(task->imm->bloom_filter());
+
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
   //task->imm->FinalizeFlush();
@@ -2124,10 +2130,10 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #endif
     auto& z = zstack.top();
     auto l0_node = z->node_paddr.get<Node>();
-
+#ifdef LISTDB_BLOOM_FILTER
     //add l0_node to bloom_filter of l1_table
     l1_table->bloom_filter()->AddKey(l0_node->key);
-
+#endif
     {
       l0_node->next[0] = z->preds[0]->next[0];
       clwb(&l0_node->next[0], 8);
@@ -2208,6 +2214,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       break;
     }
   }
+  delete task->l0;
 
 #else
   // Insert N times
@@ -2789,6 +2796,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       break;
     }
 
+    delete task->l1;
+
     
   task->l1table_list->decrease_l1_table_cnt(1); //decrease number of l1 table
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
@@ -2935,6 +2944,8 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
       break;
     }
   }
+
+
 
 
 }

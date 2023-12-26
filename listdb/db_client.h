@@ -139,9 +139,11 @@ void DBClient::Put(const Key& key, const Value& value) {
   clwb(iul_entry, 8);
   //clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 #endif
+
+#ifdef LISTDB_BLOOM_FILTER
   //add key to bloom filter
   mem->bloom_filter()->AddKey(key);
-
+#endif
   // Create skiplist node
   uint64_t dram_height = DramRandomHeight();
   MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t));
@@ -230,13 +232,17 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
-        if(mem->bloom_filter()->KeyMayMatch(key)){
-          auto skiplist = mem->skiplist();
-          auto found = skiplist->Lookup(key);
-          if (found && found->key == key) {
-            *value_out = found->value;
-            return true;
-          }
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
+        auto skiplist = mem->skiplist();
+        auto found = skiplist->Lookup(key);
+        if (found && found->key == key) {
+          *value_out = found->value;
+          return true;
         }
       } else if (table->type() == TableType::kPmemTable) {
         break;
@@ -277,41 +283,51 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     
     while (table) {
       auto pmem = (PmemTable*) table;
-      if(pmem->bloom_filter()->KeyMayMatch(key)){
-        auto skiplist = pmem->skiplist();
-        //auto found_paddr = skiplist->Lookup(key, region_);
-        auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
-        ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
-        if (found && found->key == key) {
-          //fprintf(stdout, "found on pmem\n");
-          *value_out = found->value;
-          return true;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
         }
+#endif
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        //fprintf(stdout, "found on pmem\n");
+        *value_out = found->value;
+        return true;
       }
+    
       table = table->Next();
     }
   }
-  
+
   {
     // Level 1 Lookup
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable*) table;
-      if(pmem->bloom_filter()->KeyMayMatch(key)){
-        auto skiplist = pmem->skiplist();
-        //auto found_paddr = skiplist->Lookup(key, region_);
-        auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
-        ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
-        if (found && found->key == key) {
-          *value_out = found->value;
-          return true;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
         }
+#endif
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        *value_out = found->value;
+        return true;
       }
+    
       table = table->Next();
     }
   }
-  
+
   
   {
     // Level 2 Lookup
@@ -468,14 +484,18 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
-        if(mem->bloom_filter()->KeyMayMatch(key)){
-          auto skiplist = mem->skiplist();
-          auto found = skiplist->Lookup(key);
-          if (found && found->key == key) {
-            PmemNode* p_node = PmemPtr::Decode<PmemNode>(found->value);
-            *value_out = (uint64_t) PmemPtr::Decode<char>(p_node->value);
-            return true;
-          }
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
+        auto skiplist = mem->skiplist();
+        auto found = skiplist->Lookup(key);
+        if (found && found->key == key) {
+          PmemNode* p_node = PmemPtr::Decode<PmemNode>(found->value);
+          *value_out = (uint64_t) PmemPtr::Decode<char>(p_node->value);
+          return true;
         }
       } else if (table->type() == TableType::kPmemTable) {
         break;
@@ -513,7 +533,12 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
-      if(pmem->bloom_filter()->KeyMayMatch(key)){
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
         auto skiplist = pmem->skiplist();
         //auto found_paddr = skiplist->Lookup(key, region_);
         auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
@@ -528,7 +553,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
           *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
           return true;
         }
-      }
+      
       table = table->Next();
     }
   }
@@ -538,22 +563,27 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable*) table;
-      if(pmem->bloom_filter()->KeyMayMatch(key)){
-        auto skiplist = pmem->skiplist();
-        //auto found_paddr = skiplist->Lookup(key, region_);
-        auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
-        ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
-        if (found && found->key == key) {
-          //fprintf(stdout, "found on pmem\n");
-          //PmemPtr value_paddr(found->value);
-          //char* value_buf = (char*) value_paddr.get();
-          //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
-          //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
-          //*value_out = found->value;
-          *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
-          return true;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
         }
+#endif
+      auto skiplist = pmem->skiplist();
+      //auto found_paddr = skiplist->Lookup(key, region_);
+      auto found_paddr = LookupL1(key, l1_pool_id_, skiplist, s);
+      ListDB::PmemNode* found = (ListDB::PmemNode*) found_paddr.get();
+      if (found && found->key == key) {
+        //fprintf(stdout, "found on pmem\n");
+        //PmemPtr value_paddr(found->value);
+        //char* value_buf = (char*) value_paddr.get();
+        //std::string_view value_sv(value_buf + 8, *((size_t*) value_buf));
+        //fprintf(stdout, "key: %s, value: %s\n", found->key.data(), value_sv.data());
+        //*value_out = found->value;
+        *value_out = (uint64_t) PmemPtr::Decode<char>(found->value);
+        return true;
       }
+
       table = table->Next();
     }
   }

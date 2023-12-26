@@ -4,7 +4,9 @@
 #include "listdb/index/packed_pmem_skiplist.h"
 #include "listdb/lsm/table.h"
 #include "listdb/core/pmem_db.h"
+#ifdef LISTDB_BLOOM_FILTER
 #include "listdb/index/bloom_filter.h"
+#endif
 
 #include <libpmemobj++/p.hpp>
 #include <libpmemobj++/pool.hpp>
@@ -14,16 +16,15 @@ class PmemTable2 : public Table {
   using Node = PackedPmemSkipList::Node;
 
   PmemTable2(const size_t table_capacity, PackedPmemSkipList* skiplist);
-  ~PmemTable2();
 
   virtual void* Put(const Key& key, const Value& value) override;
 
   virtual bool Get(const Key& key, void** value_out) override;
 
   PackedPmemSkipList* skiplist() { return skiplist_; }
-
+#ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter() { return bloom_filter_; }
-
+#endif
   void SetManifest(pmem::obj::persistent_ptr<pmem_l2_info> manifest) { manifest_ = manifest; }
 
   template <typename T>
@@ -31,7 +32,9 @@ class PmemTable2 : public Table {
 
  private:
   PackedPmemSkipList* skiplist_;
+#ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter_;
+#endif
   pmem::obj::persistent_ptr<pmem_l2_info> manifest_;
 };
 
@@ -41,10 +44,6 @@ PmemTable2::PmemTable2(const size_t table_capacity, PackedPmemSkipList* skiplist
     //bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Key));
 }
 
-
-PmemTable2::~PmemTable2() {
-  //delete bloom_filter_;
-}
 
 
 void* PmemTable2::Put(const Key& key, const Value& value) {
