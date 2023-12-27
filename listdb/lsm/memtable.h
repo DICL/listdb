@@ -35,9 +35,9 @@ class MemTable : public Table {
 #endif
   void SetL0SkipList(BraidedPmemSkipList* l0_skiplist) { l0_skiplist_ = l0_skiplist; }
 
-  void SetL0Manifest(pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest) { l0_manifest_ = l0_manifest; }
+  void SetL0Manifest(pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_manifest) { l0_manifest_ = l0_manifest; }
 
-  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest() { return l0_manifest_; }
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_manifest() { return l0_manifest_; }
 
   uint64_t l0_id() const { return l0_manifest_->id; }
 
@@ -49,7 +49,7 @@ class MemTable : public Table {
 #endif
   // TODO(wkim): use PmemTable*
   Table* l0_ = nullptr;
-  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest_ = nullptr;
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_manifest_ = nullptr;
 };
 
 MemTable::MemTable(const size_t table_capacity) : Table(table_capacity, TableType::kMemTable) {

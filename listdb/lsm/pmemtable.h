@@ -15,7 +15,9 @@ class PmemTable : public Table {
   using Node = BraidedPmemSkipList::Node;
 
   PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist);
+#ifdef LISTDB_BLOOM_FILTER
   PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist, BloomFilter* bloom_filter);
+#endif
   virtual ~PmemTable(){
 #ifdef LISTDB_BLOOM_FILTER
     delete bloom_filter_;
@@ -33,7 +35,7 @@ class PmemTable : public Table {
   uint64_t l0_compaction_cnt() {return l0_compaction_cnt_;}
   void increase_l0_compaction_cnt(){l0_compaction_cnt_++;}
 
-  void SetManifest(pmem::obj::persistent_ptr<pmem_l0_info> manifest) { manifest_ = manifest; }
+  void SetManifest(pmem::obj::persistent_ptr<pmem_l0_or_l1_info> manifest) { manifest_ = manifest; }
 
   template <typename T>
   pmem::obj::persistent_ptr<T> manifest() { return manifest_.raw(); }
@@ -44,7 +46,7 @@ class PmemTable : public Table {
 #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter_;
 #endif
-  pmem::obj::persistent_ptr<pmem_l0_info> manifest_;
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> manifest_;
 };
 
 PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)

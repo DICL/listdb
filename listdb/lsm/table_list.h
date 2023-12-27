@@ -24,11 +24,9 @@ class TableList {
 
   Table* GetFront();
 
-  Table* GetMutable(const size_t size);
+  Table* NewFront();
 
-  uint64_t l1_table_cnt() {return l1_table_cnt_;}
-  void increase_l1_table_cnt(uint64_t n){l1_table_cnt_+= n;}
-  void decrease_l1_table_cnt(uint64_t n){l1_table_cnt_ -= n;}
+  Table* GetMutable(const size_t size);
 
 
  protected:
@@ -36,14 +34,12 @@ class TableList {
 
   virtual void EnqueueCompaction(Table* table) { return; };
 
-  uint64_t l1_table_cnt_;
   const size_t table_capacity_;
   std::mutex init_mu_;
   std::atomic<Table*> front_;
 };
 
 TableList::TableList(const size_t table_capacity) : table_capacity_(table_capacity), front_(nullptr) {
-  l1_table_cnt_ = 1;
 }
 
 void* TableList::Put(const Key& key, const Value& value) {
@@ -84,14 +80,14 @@ inline bool TableList::IsEmpty() {
 
 Table* TableList::GetFront() {
   Table* ret = front_.load(MO_RELAXED);
-  if (ret == nullptr) {
-    std::lock_guard<std::mutex> lk(init_mu_);
-    ret = front_.load(MO_RELAXED);
-    if (ret == nullptr) {
-      ret = NewMutable(table_capacity_, nullptr);
-      front_.store(ret, MO_RELAXED);
-    }
-  }
+  //if (ret == nullptr) printf("GetFront nullptr error!!!!\n");
+  return ret;
+}
+
+Table* TableList::NewFront() {
+  Table* ret = NewMutable(table_capacity_, nullptr);
+  std::lock_guard<std::mutex> lk(init_mu_);
+  front_.store(ret, MO_RELAXED);
   return ret;
 }
 
@@ -180,16 +176,18 @@ void TableList<T>::PrintDebug() {
 template <class T>
 T* TableList<T>::GetFront() {
   T* ret = front_.load(MO_RELAXED);
-  if (ret == nullptr) {
-    std::lock_guard<std::mutex> lk(init_mu_);
-    ret = front_.load(MO_RELAXED);
-    if (ret == nullptr) {
-      ret = NewMutable<T>(nullptr, table_capacity_);
-      front_.store(ret, MO_RELAXED);
-    }
-  }
+  //if (ret == nullptr) printf("GetFront nullptr error!!!!\n");
   return ret;
 }
+
+template <class T>
+T* TableList<T>::NewFront() {
+  Table* ret = NewMutable(table_capacity_, nullptr);
+  std::lock_guard<std::mutex> lk(init_mu_);
+  front_.store(ret, MO_RELAXED);
+  return ret;
+}
+
 
 template <class T>
 T* TableList<T>::GetMutable(const size_t size) {

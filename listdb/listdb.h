@@ -287,8 +287,8 @@ void ListDB::Init() {
   for (int i = 0; i < kNumShards; i++) {
     pmem::obj::persistent_ptr<pmem_db_shard> p_shard_manifest;
     pmem::obj::make_persistent_atomic<pmem_db_shard>(db_pool, p_shard_manifest);
-    pmem::obj::persistent_ptr<pmem_l0_info> p_l0_manifest;
-    pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, p_l0_manifest);
+    pmem::obj::persistent_ptr<pmem_l0_or_l1_info> p_l0_manifest;
+    pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, p_l0_manifest);
     p_shard_manifest->l0_list_head = p_l0_manifest;
     db_root->shard[i] = p_shard_manifest;
   }
@@ -431,16 +431,24 @@ void ListDB::Init() {
 #if 1
 
   for (int i = 0; i < kNumShards; i++) {
+    auto tl = ll_[i]->GetTableList(0);
+    // TODO: impl InitFrontOnce() and use it instead of GetFront()
+    [[maybe_unused]] auto table = (MemTable*) tl->NewFront();
+  }
+
+  /*
+  for (int i = 0; i < kNumShards; i++) {
     auto l1_tl = ll_[i]->GetTableList(1);
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
-    [[maybe_unused]] auto l1_table = (PmemTable*) l1_tl->GetFront();
+    [[maybe_unused]] auto l1_table = (PmemTable*) l1_tl->NewFront();
   }
+  */
   
   for (int i = 0; i < kNumShards; i++) {
     
     auto l2_tl = ll_[i]->GetTableList(2);
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
-    [[maybe_unused]] auto l2_table = (PmemTable2*) l2_tl->GetFront();
+    [[maybe_unused]] auto l2_table = (PmemTable2*) l2_tl->NewFront();
     
   }
 #endif
@@ -658,10 +666,10 @@ void ListDB::Open() {
         // Initial -> Persist -> Persist -> ... -> Merging -> Merged -> Merged -> ...
         auto pred_l0_info = shard->l0_list_head;
         auto curr_l0_info = pred_l0_info->next;
-        std::deque<pmem::obj::persistent_ptr<pmem_l0_info>> l0_manifests;
+        std::deque<pmem::obj::persistent_ptr<pmem_l0_or_l1_info>> l0_manifests;
         uint64_t min_l0_id = std::numeric_limits<uint64_t>::max();
         while (curr_l0_info) {
-          if (curr_l0_info->status == Level0Status::kMergeDone) {
+          if (curr_l0_info->status == Level0or1Status::kMergeDone) {
             merge_done_cnt++;
             for (int j = 0; j < kNumRegions; j++) {
               size_t head_node_size = sizeof(PmemNode) + (kMaxHeight - 1) * sizeof(uint64_t);
@@ -670,7 +678,7 @@ void ListDB::Open() {
             auto succ_l0_info = curr_l0_info->next;
             // TODO(wkim): do the followings as a transaction
             pred_l0_info->next = succ_l0_info;
-            pmem::obj::delete_persistent_atomic<pmem_l0_info>(curr_l0_info);
+            pmem::obj::delete_persistent_atomic<pmem_l0_or_l1_info>(curr_l0_info);
             curr_l0_info = succ_l0_info;
             continue;
           }
@@ -724,17 +732,17 @@ void ListDB::Open() {
             l0_skiplist->BindHead(pool_id, (void*) l0->head[region].get());
           }
 
-          if (l0->status == Level0Status::kMergeInitiated) {
-            fprintf(stdout, "Level0Status::kMergeInitiated.\n");
+          if (l0->status == Level0or1Status::kMergeInitiated) {
+            fprintf(stdout, "Level0or1Status::kMergeInitiated.\n");
             exit(1);
             // TODO(wkim): Continue and finish L0 to L1 compaction
-          } else if (l0->status == Level0Status::kPersisted) {
+          } else if (l0->status == Level0or1Status::kPersisted) {
             l0_persisted_cnt++;
             auto l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
             l0_table->SetSize(kMemTableCapacity);
             //memtable_list->PushFront(l0_table);
             tables.push_back((Table*) l0_table);
-          } else if (l0->status == Level0Status::kFull) {
+          } else if (l0->status == Level0or1Status::kFull) {
             l0_recovery_cnt++;
             // Reset L0 skiplist
             for (int j = 0; j < kNumRegions; j++) {
@@ -789,7 +797,7 @@ void ListDB::Open() {
             l0_table->SetSize(kMemTableCapacity);
             //memtable_list->PushFront(l0_table);
             tables.push_back((Table*) l0_table);
-          } else if (l0->status == Level0Status::kInitialized) {
+          } else if (l0->status == Level0or1Status::kInitialized) {
             memtable_recovery_cnt++;
             // Reset L0 skiplist
             for (int j = 0; j < kNumRegions; j++) {
@@ -1044,18 +1052,18 @@ void ListDB::BackgroundThreadLoop() {
     if (schedule_l1_compaction) {
       for (int i = 0; i < kNumShards; i++) {
         if (l1_compaction_state[i] == 0) {
-          
           auto tl = ll_[i]->GetTableList(1);
-          if (tl->l1_table_cnt() > 1) {
-            auto table = tl->GetFront();
-            while (true) {
-              auto next_table = table->Next();
-              if (next_table) {
-                table = next_table;
-              } else {
-                break;
-              }
+          if(tl->IsEmpty()) continue;
+          auto table = tl->GetFront();
+          while (true) {
+            auto next_table = table->Next();
+            if (next_table) {
+              table = next_table;
+            } else {
+              break;
             }
+          }
+          if(((PmemTable*)table)->manifest<pmem_l0_or_l1_info>()->status == Level0or1Status::kFull){
             auto task = new L1CompactionTask();
             task->type = TaskType::kL1Compaction;
             task->shard = i;
@@ -1641,7 +1649,7 @@ void ListDB::ManualFlushMemTable(int shard) {
     return;
   }
 
-  tl->CreateNewFront();  // Level0Status is set to kFull.
+  tl->CreateNewFront();  // Level0or1Status is set to kFull.
   
   // Flush (IUL)
   auto l0_skiplist = reinterpret_cast<MemTable*>(table)->l0_skiplist();
@@ -1815,194 +1823,19 @@ void ListDB::ManualFlushMemTable(int shard) {
 
 
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
-  auto l0_manifest = task->l0->manifest<pmem_l0_info>();
-  l0_manifest->status = Level0Status::kMergeInitiated;
+  auto l0_manifest = task->l0->manifest<pmem_l0_or_l1_info>();
+  l0_manifest->status = Level0or1Status::kMergeInitiated;
   // call clwb
-#if 0
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); 
-  using Node = PmemNode;
-  auto l0_skiplist = task->l0->skiplist();
-
-  auto l1_tl = ll_[task->shard]->GetTableList(1);
-  if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
-    l1_tl->SetFront(l1_table);
-    auto table = task->memtable_list->GetFront();
-    while (true) {
-      auto next_table = table->Next();
-      if (next_table) {
-        if (next_table == (Table*) task->l0) {
-          table->SetNext(nullptr);
-          break;
-        }
-        table = next_table;
-      } else {
-        break;
-      }
-    }
-    return;
-  }
-  auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
-
-  struct ZipperItem {
-    PmemPtr node_paddr;
-    Node* preds[kMaxHeight];
-    uint64_t succs[kMaxHeight];
-  };
-
-  std::stack<ZipperItem*> zstack;
-  Node* preds[kNumRegions][kMaxHeight];
-  uint64_t succs[kNumRegions][kMaxHeight];
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l1_arena_[i][0]->pool_id();
-    for (int j = 0; j < kMaxHeight; j++) {
-      preds[i][j] = l1_skiplist->head(pool_id);
-      succs[i][j] = 0;
-    }
-  }
-
-  PmemPtr node_paddr = l0_skiplist->head_paddr();
-
-  // 1. Scan
-  while (true) {
-    std::this_thread::yield();
-    auto l0_node = node_paddr.get<Node>();
-    if (l0_node == nullptr) {
-      break;
-    }
-    int pool_id = node_paddr.pool_id();
-    int region = pool_id_to_region_[pool_id];
-    int height = l0_node->height();
-    PmemPtr curr_paddr = preds[region][height - 1]->next[height - 1];
-    for (int i = height - 1; i > 0; i--) {
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
-          preds[region][i] = curr;
-          curr_paddr = curr->next[i];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[region][i] = curr_paddr.dump();
-    }
-    {
-      PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[0][0] = curr_paddr.dump();
-    }
-    auto z = new ZipperItem();
-    z->node_paddr = node_paddr;
-    z->preds[0] = preds[0][0];
-    for (int i = 1; i < kMaxHeight; i++) {
-      z->preds[i] = preds[region][i];
-    }
-    z->succs[0] = succs[0][0];
-    for (int i = 1; i < kMaxHeight; i++) {
-      z->succs[i] = succs[region][i];
-    }
-    zstack.push(z);
-    node_paddr = l0_node->next[0];
-  }
-
-  // 2. Merge
-  //bool print_debug = false;
-  //if (preds[0][0]->next[0] != 0) {
-  //  print_debug = true;
-  //}
-  while (!zstack.empty()) {
-    std::this_thread::yield();
-    auto& z = zstack.top();
-    auto l0_node = z->node_paddr.get<Node>();
-    //if (print_debug) {
-    //  std::stringstream debug_ss;
-    //  debug_ss << "L0 key: " << l0_node->key << std::endl;
-    //  for (int i = kMaxHeight - 1; i >= 0; i--) {
-    //    Node* succ = ((PmemPtr*) &(z->succs[i]))->get<Node>();
-    //    debug_ss << "level: " << std::setw(2) << i << "\t" << z->preds[i]->key << "\t";
-    //    if (succ) {
-    //      debug_ss << succ->key << std::endl;
-    //    } else {
-    //      debug_ss << "NULL" << std::endl;
-    //    }
-    //  }
-    //  fprintf(stdout, "%s\n", debug_ss.str().c_str());
-    //}
-    {
-      auto l0_succ = ((PmemPtr*) &(l0_node->next[0]))->get<Node>();
-      auto l1_succ = ((PmemPtr*) &(z->succs[0]))->get<Node>();
-      if (l0_succ == nullptr || (l1_succ && l1_succ->key.Compare(l0_succ->key) < 0)) {
-        l0_node->next[0] = z->succs[0];
-      }
-      z->preds[0]->next[0] = z->node_paddr.dump();
-    }
-    for (int i = 1; i < l0_node->height(); i++) {
-      auto l0_succ = ((PmemPtr*) &(l0_node->next[i]))->get<Node>();
-      auto l1_succ = ((PmemPtr*) &(z->succs[i]))->get<Node>();
-      if (l0_succ == nullptr || (l1_succ && l1_succ->key.Compare(l0_succ->key) < 0)) {
-        l0_node->next[i] = z->succs[i];
-      }
-      z->preds[i]->next[i] = z->node_paddr.dump();
-    }
-    zstack.pop();
-    delete z;
-  }
-  // Remove empty L0 from MemTableList
-  //auto tl = ll_[task->shard]->GetTableList(0);
-  auto table = task->memtable_list->GetFront();
-  while (true) {
-    auto next_table = table->Next();
-    if (next_table) {
-      if (next_table == (Table*) task->l0) {
-        table->SetNext(nullptr);
-        break;
-      }
-      table = next_table;
-    } else {
-      break;
-    }
-  }
-#else
-#if 1
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); //show progress juwon
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
   auto l1_tl = ll_[task->shard]->GetTableList(1);
 
-  bool head_only_flag = false;
-  if(!l1_tl->IsEmpty()){
-    auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
-    PmemPtr node_paddr = l1_skiplist->head_paddr();
-    auto l1_node = node_paddr.get<Node>();
-    node_paddr = l1_node->next[0];
-    l1_node = node_paddr.get<Node>();
-
-    if(l1_node == nullptr)head_only_flag = true;
-  }
-
-
-
-
-
-
-  if (l1_tl->IsEmpty()) {
-#if 0
-    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
-#else
+  if (l1_tl->IsEmpty() || ((PmemTable*) l1_tl->GetFront())->manifest<pmem_l0_or_l1_info>()->status != Level0or1Status::kInitialized) {
     // Init the new manifest for a new table
-    pmem::obj::persistent_ptr<pmem_l1_info> l1_manifest;
+    pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l1_manifest;
     auto db_pool = Pmem::pool<pmem_db>(0);
-    pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, l1_manifest);
+    pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, l1_manifest);
     auto db_root = db_pool.root();
     auto shard_manifest = db_root->shard[task->shard];
 
@@ -2023,8 +1856,9 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       l1_manifest->head[i] = p_head;
     }
     shard_manifest->l1_info = l1_manifest;
+    l1_manifest->status = Level0or1Status::kInitialized;
     auto l1_table = new PmemTable(kL1PmemTableCapacity, l1_skiplist);
-#endif
+    l1_table->SetManifest(l1_manifest);
     l1_tl->PushFront(l1_table);//원래 SetFront 였음
 
     
@@ -2042,8 +1876,11 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       }
     }
     // Update manifest
-    l0_manifest->status = Level0Status::kMergeDone;
+    l0_manifest->status = Level0or1Status::kMergeDone;
     // call clwb
+    l1_table->increase_l0_compaction_cnt();
+    if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
+    if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
     return;
   }
   auto l1_table = (PmemTable*) l1_tl->GetFront();
@@ -2176,24 +2013,11 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   
     
-  ((PmemTable*) l1_tl->GetFront())->increase_l0_compaction_cnt();
-  if (!head_only_flag && ((PmemTable*) l1_tl->GetFront())->l0_compaction_cnt() >= kL1LevelMultiplier) {
-  
-    //l1_manifest->id = ??;
-    BraidedPmemSkipList* new_l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
-    for (int i = 0; i < kNumRegions; i++) {
-      new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
-    }
-    new_l1_skiplist->Init();
-    auto new_l1_table = new PmemTable(kL1PmemTableCapacity, new_l1_skiplist);
-
-    l1_tl->PushFront(new_l1_table);//원래 SetFront 였음
-    l1_tl->increase_l1_table_cnt(1);
-    //if(task->shard == 0) printf("create new L1 table\n");
-  }
+  l1_table->increase_l0_compaction_cnt();
+  if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
 
   // Update manifest
-  l0_manifest->status = Level0Status::kMergeDone;
+  l0_manifest->status = Level0or1Status::kMergeDone;
   // call clwb
 
   // Remove empty L0 from MemTableList
@@ -2213,96 +2037,13 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
   delete task->l0;
 
-#else
-  // Insert N times
-  // For Test
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
-
-  using Node = PmemNode;
-  auto l0_skiplist = task->l0->skiplist();
-
-  auto l1_tl = ll_[task->shard]->GetTableList(1);
-  if (l1_tl->IsEmpty()) {
-    auto l1_table = new PmemTable(kL1PmemTableCapacity, l0_skiplist);
-    l1_tl->SetFront(l1_table);
-    auto table = task->memtable_list->GetFront();
-    while (true) {
-      auto next_table = table->Next();
-      if (next_table) {
-        if (next_table == (Table*) task->l0) {
-          table->SetNext(nullptr);
-          break;
-        }
-        table = next_table;
-      } else {
-        break;
-      }
-    }
-    return;
-  }
-  auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();
-
-  PmemPtr node_paddr = l0_skiplist->head_paddr();
-
-  std::stack<PmemPtr> nstack;
-
-  // 1. Scan
-  while (true) {
-    auto l0_node = node_paddr.get<Node>();
-    if (l0_node == nullptr) {
-      break;
-    }
-
-    nstack.push(node_paddr);
-    node_paddr = l0_node->next[0];
-  }
-
-  // 2. Merge
-  while (!nstack.empty()) {
-    auto& l0_paddr = nstack.top();
-    //auto l0_node = l0_paddr.get<Node>();
-
-    l1_skiplist->Insert(l0_paddr);
-
-    nstack.pop();
-  }
-  // Remove empty L0 from MemTableList
-  //auto tl = ll_[task->shard]->GetTableList(0);
-  auto table = task->memtable_list->GetFront();
-  while (true) {
-    auto next_table = table->Next();
-    if (next_table) {
-      if (next_table == (Table*) task->l0) {
-        table->SetNext(nullptr);
-        break;
-      }
-      table = next_table;
-    } else {
-      break;
-    }
-  }
-#endif
-#endif
-
 if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
 }
 
 void ListDB::ManualL1Compaction(int shard) {
-  
   auto l1_tl = ll_[shard]->GetTableList(1);
-  // Init the new manifest for a new table
-    //l1_manifest->id = ??;
-    BraidedPmemSkipList* new_l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
-    for (int i = 0; i < kNumRegions; i++) {
-      new_l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][shard]);
-    }
-    new_l1_skiplist->Init();
-    auto l1_table = new PmemTable(kL1PmemTableCapacity, new_l1_skiplist);
-
-    l1_tl->PushFront(l1_table);
-    //manually invoke l1 compaction by increase l1 table cnt by levelmultiplier
-    l1_tl->increase_l1_table_cnt(1);
-
+  auto l1_table = (PmemTable*) l1_tl->GetFront();
+  l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
 }
 
 
@@ -2313,6 +2054,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 #endif
 
   if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
+
+  task->l1->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kMergeInitiated;
   
 
   using Node = PmemNode;
@@ -2780,6 +2523,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     
     //remove l1 table at l1 table list(because l1 compaction is done.). r means remove.
     auto rtable = task->l1table_list->GetFront();
+
     while (true) {
       auto rnext_table = rtable->Next();
       if (rnext_table) {
@@ -2790,13 +2534,17 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         rtable = rnext_table;
         continue;
       }
+      else if(rtable == (Table*) task->l1){
+        task->l1table_list->SetFront(nullptr);
+      }
       break;
     }
 
+    task->l1->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kMergeDone;
+
     delete task->l1;
 
-    
-  task->l1table_list->decrease_l1_table_cnt(1); //decrease number of l1 table
+  
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
   if (task->shard == 0 ) fprintf(stdout, "number of generated l2 nodes : %lu\n", new_node_cnt);
 

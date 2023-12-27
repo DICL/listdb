@@ -7,21 +7,13 @@
 #include "listdb/core/pmem_log.h"
 
 struct pmem_db_shard;
-struct pmem_l0_info;
-struct pmem_l1_info;
+struct pmem_l0_or_l1_info;
 struct pmem_l2_info;
 
-enum class Level0Status {
+enum class Level0or1Status {
   kInitialized,
   kFull,
   kPersisted,
-  kMergeInitiated,
-  kMergeDone,
-};
-
-enum class Level1Status {
-  kInitialized,
-  kFull,
   kMergeInitiated,
   kMergeDone,
 };
@@ -41,24 +33,17 @@ struct pmem_db_shard {
   uint64_t l0_cnt;
   //int l0_head;
   //int l0_tail;
-  //pmem_l0_info l0_info[100];  // TODO(wkim): Manage this as like a circular-array
-  pmem::obj::persistent_ptr<pmem_l0_info> l0_list_head;
-  pmem::obj::persistent_ptr<pmem_l1_info> l1_info;
+  //pmem_l0_or_l1_info l0_info[100];  // TODO(wkim): Manage this as like a circular-array
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_list_head;
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l1_info;
   pmem::obj::persistent_ptr<pmem_l2_info> l2_info;
 };
 
-struct pmem_l0_info {
+struct pmem_l0_or_l1_info {
   uint64_t id;
   //LogRange log_range[kNumRegions];
-  Level0Status status;
-  pmem::obj::persistent_ptr<pmem_l0_info> next;
-  pmem::obj::persistent_ptr<char[]> head[kNumRegions];
-};
-
-struct pmem_l1_info {
-  uint64_t id;
-  Level1Status status;
-  pmem::obj::persistent_ptr<pmem_l1_info> next;
+  Level0or1Status status;
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> next;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 

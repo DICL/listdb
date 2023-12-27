@@ -64,18 +64,18 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   if (next_table) {
     auto next_memtable = (MemTable*) next_table;
     auto next_l0_manifest = next_memtable->l0_manifest();
-    next_l0_manifest->status = Level0Status::kFull;
+    next_l0_manifest->status = Level0or1Status::kFull;
     // call clwb
   }
 
   // Init the new manifest for a new table
-  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest;
+  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_manifest;
   auto db_pool = Pmem::pool<pmem_db>(0);
-  pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, l0_manifest);
+  pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, l0_manifest);
   auto db_root = db_pool.root();
   auto shard_manifest = db_root->shard[shard_id_];
   l0_manifest->id = shard_manifest->l0_cnt++;
-  l0_manifest->status = Level0Status::kInitialized;
+  l0_manifest->status = Level0or1Status::kInitialized;
   BraidedPmemSkipList* l0_skiplist = new BraidedPmemSkipList(arena_[0]->pool_id());
   for (int i = 0; i < kNumRegions; i++) {
     l0_skiplist->BindArena(arena_[i]->pool_id(), arena_[i]);
