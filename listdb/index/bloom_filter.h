@@ -17,6 +17,7 @@ private:
     std::string* bitArray_;
     size_t bits_;
     size_t k_;
+    
 
     uint32_t BloomHash(const Key& key) {
       const char* data = key.data();

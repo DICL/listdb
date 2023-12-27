@@ -820,7 +820,6 @@ void ListDB::Open() {
                   if (!p_node->key.Valid()) {
                     break;
                   }
-        //fprintf(stdout, "key: %s,%zu\nheight=%d\nl0_id=%u/%lu\nvalue=%zu\n", std::string(p_node->key.data(), 8).c_str(), *((uint64_t*) &p_node->key), p_node->height(), p_node->l0_id(), l0->id, p_node->value);
                   if (p_node->l0_id() > l0->id) {
                     current_table_done = true;
                     break;
@@ -1021,7 +1020,6 @@ void ListDB::BackgroundThreadLoop() {
         if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
           auto tl = ll_[i]->GetTableList(0);
           auto table = tl->GetFront();
-          if(!table) continue;
           while (true) {
             auto next_table = table->Next();
             if (next_table) {
@@ -1050,7 +1048,6 @@ void ListDB::BackgroundThreadLoop() {
           auto tl = ll_[i]->GetTableList(1);
           if (tl->l1_table_cnt() > 1) {
             auto table = tl->GetFront();
-            if(!table) continue;
             while (true) {
               auto next_table = table->Next();
               if (next_table) {

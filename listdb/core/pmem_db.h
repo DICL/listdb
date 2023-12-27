@@ -20,6 +20,13 @@ enum class Level0Status {
 };
 
 enum class Level1Status {
+  kInitialized,
+  kFull,
+  kMergeInitiated,
+  kMergeDone,
+};
+
+enum class Level2Status {
   kMergeWaiting,
   kMergeDone,
 };
@@ -51,13 +58,14 @@ struct pmem_l0_info {
 struct pmem_l1_info {
   uint64_t id;
   Level1Status status;
+  pmem::obj::persistent_ptr<pmem_l1_info> next;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 
 struct pmem_l2_info {
   uint64_t id;
   uint64_t cnt[kNumRegions][kMaxHeight];
-  Level1Status status;
+  Level2Status status;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 
