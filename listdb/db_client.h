@@ -872,7 +872,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
 PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard) {
   using Node2 = PmemNode2;
-  uint64_t curr_paddr_dump;
+  uint64_t pred_paddr_dump;
   Node2* pred;
   Node2* curr;
   int height;
@@ -885,21 +885,20 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
   int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
 
   if(rv>=0){
-    curr_paddr_dump = tmp_paddr;
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
-    if(rv==0) return pred->kvpairs_ptr;
+    pred_paddr_dump = tmp_paddr;
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
   }
   else{
     pred = skiplist->head(pool_id);
-    curr_paddr_dump = pred->next[0];
+    pred_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
   }
 #else
     pred = skiplist->head(pool_id);
-    curr_paddr_dump = pred->next[0];
+    pred_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
     height = kMaxHeight;
 
 #endif
@@ -910,13 +909,14 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
-      curr_paddr_dump = pred->next[i];
+      uint64_t curr_paddr_dump = pred->next[i];
       curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
         if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
+          pred_paddr_dump = curr_paddr_dump;
           continue;
         }
       }
@@ -929,7 +929,7 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
 
   // Braided bottom layer
   while (true) {
-    curr_paddr_dump = pred->next[0];
+    uint64_t curr_paddr_dump = pred->next[0];
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
       search_visit_cnt_++;
@@ -937,12 +937,13 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
       
       if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
+        pred_paddr_dump = curr_paddr_dump;
         continue;
       }
     }
     break;
   }
-  return pred->kvpairs_ptr;
+  return pred_paddr_dump + sizeof(PmemNode2) + (pred->height - 1) * 8;
 }
 
 PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
@@ -1018,7 +1019,7 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
 
 PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   using Node2 = PmemNode2;
-  uint64_t curr_paddr_dump;
+  uint64_t pred_paddr_dump;
   Node2* pred;
   Node2* curr;
   int height;
@@ -1031,20 +1032,20 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   int rv = c->LookupLessThanOrEqualsTo(key, &tmp_paddr);
 
   if(rv>=0){
-    curr_paddr_dump = tmp_paddr;
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    pred_paddr_dump = tmp_paddr;
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
   }
   else{
     pred = skiplist->head(pool_id);
-    curr_paddr_dump = pred->next[0];
+    pred_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
   }
 #else
     pred = skiplist->head(pool_id);
-    curr_paddr_dump = pred->next[0];
+    pred_paddr_dump = pred->next[0];
     //pass through dummy node (head node)
-    pred = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+    pred = (Node2*) ((PmemPtr*) &pred_paddr_dump)->get();
     height = kMaxHeight;
 
 #endif
@@ -1055,13 +1056,14 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
-      curr_paddr_dump = pred->next[i];
+      uint64_t curr_paddr_dump = pred->next[i];
       curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
         if (curr->min_key.Compare(key) <= 0) {
           pred = curr;
+          pred_paddr_dump = curr_paddr_dump;
           continue;
         }
       }
@@ -1074,14 +1076,14 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
 
   // Braided bottom layer
   while (true) {
-    curr_paddr_dump = pred->next[0];
+    uint64_t curr_paddr_dump = pred->next[0];
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      
       if (curr->min_key.Compare(key) <= 0) {
         pred = curr;
+        pred_paddr_dump = curr_paddr_dump;
         continue;
       }
     }
@@ -1089,9 +1091,9 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   }
 
   uint64_t scan_cnt = scan_num;
-  uint64_t result_paddr = pred->kvpairs_ptr;
+  uint64_t result_paddr = pred_paddr_dump + sizeof(PmemNode2) + pred->height*8;
 
-  auto pred_kvpairs_paddr = pred->kvpairs_ptr;
+  auto pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + pred->height*8;
   auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
 
   if(scan_cnt==0) return result_paddr;
@@ -1107,11 +1109,11 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   //if scan counter remains, scan next nodes 
   while (scan_cnt>0) {
     //move on to next node
-    curr_paddr_dump = pred->next[0];
+    uint64_t curr_paddr_dump = pred->next[0];
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
 
     if (curr) {
-      auto curr_kvpairs_paddr = curr->kvpairs_ptr;
+      auto curr_kvpairs_paddr = curr_paddr_dump + sizeof(PmemNode2) + curr->height*8;
       auto curr_kvpairs = (KVpairs*) ((PmemPtr*) &curr_kvpairs_paddr)->get();
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
@@ -1122,6 +1124,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
       }      
       
       pred = curr;
+      pred_paddr_dump = curr_paddr_dump;
       continue;
     }
     break;

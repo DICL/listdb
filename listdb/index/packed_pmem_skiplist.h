@@ -14,7 +14,7 @@
 class PackedPmemSkipList {
  public:
   struct Node {
-    uint64_t kvpairs_ptr; // pointer of KVpairs structure below
+    uint8_t height; // pointer of KVpairs structure below
     Key min_key;
     uint64_t next[1];
   };
