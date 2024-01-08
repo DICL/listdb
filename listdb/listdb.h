@@ -2651,7 +2651,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
         break;
       }
       succs[0][0] = curr_paddr.dump();
-    }//braided layer에 대해서 scan (0을 타고 쭉쭉 스켄하는법. curr_paddr은 끝이 되게 된다.)//높이 0의 succ과 pred찾음
+    }
 
     size_t node_size = sizeof(PmemNode) + (height - 1) * 8;
     auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size);
@@ -2663,7 +2663,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
     for (int i = 1; i < height; i++) {
       l1_node->next[i] = succs[region][i];
     }
-    clwb(l1_node, node_size);//도장쾅쾅해주는것 아마 이게 copy on write 이지 싶다..
+    clwb(l1_node, node_size);
     _mm_sfence();
     preds[0][0]->next[0] = l1_node_paddr.dump();
     for (int i = 1 ;i < height; i++) {
@@ -2672,7 +2672,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않
 
     
     node_paddr = l0_node->next[0];
-  }//모든 노드에 대해서 반복~
+  }
 
 
 

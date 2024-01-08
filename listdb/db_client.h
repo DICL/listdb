@@ -140,10 +140,6 @@ void DBClient::Put(const Key& key, const Value& value) {
   //clwb(iul_entry, sizeof(PmemNode) - sizeof(uint64_t));
 #endif
 
-#ifdef LISTDB_BLOOM_FILTER
-  //add key to bloom filter
-  mem->bloom_filter()->AddKey(key);
-#endif
   // Create skiplist node
   uint64_t dram_height = DramRandomHeight();
   MemNode* node = (MemNode*) malloc(sizeof(MemNode) + (dram_height - 1) * sizeof(uint64_t));
@@ -154,6 +150,12 @@ void DBClient::Put(const Key& key, const Value& value) {
 
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
+
+#ifdef LISTDB_BLOOM_FILTER
+  //after insertion, add key to bloom filter
+  mem->bloom_filter()->AddKey(key);
+#endif
+
   mem->w_UnRef();
 #else
   int s = KeyShard(key);
@@ -340,46 +342,13 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
       ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
       if(found){
-        
-        /*
-        //p,l,h for position, low, high for binary search
-        int h = (int)(found->cnt)-1;
-        int l = 0;
-        int p = h/2;
-
-        while(h>=l){
-          //do binary search in kvpair
-
-          if(found->key[p] > key){
-            h = p-1;
-            p = (l+h)/2;
-            continue;
-          }
-
-          if( found->key[p] < key ){
-            l = p+1;
-            p = (l+h)/2;
-            continue;
-          }
-
-          if ( found->key[p] == key ) {
-            *value_out = found->value[p];
-            return true;
-          }
-
-        }
-        */
-        
-
-        
-        for(uint64_t k=0;k<found->cnt;k++){
+        uint64_t found_cnt = found->cnt;
+        for(uint64_t k=0;k<found_cnt;k++){
               if ( found->key[k] == key ) {
                   *value_out = found->value[k];
                   return true;
               }
         }
-        
-
       }
       table = table->Next();
     }
@@ -599,49 +568,13 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
       ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
       if(found){
-        
-        /*
-        //p,l,h for position, low, high for binary search
-        int h = found->cnt-1;
-        int l = 0;
-        int p = h/2;
-        
-
-        while(true){
-          //do binary search in kvpair
-          if(h<l) break;
-          //get compare result
-          int result = found->key[p].Compare(key);
-
-          if ( result == 0 ) {
-              *value_out = (uint64_t) PmemPtr::Decode<char>(found->value[p]);
-              return true;
-          }
-
-          if( result < 0 ){
-            l = p+1;
-            p = (l+h)/2;
-            continue;
-          }
-
-          if(result > 0){
-            h = p-1;
-            p = (l+h)/2;
-            continue;
-          }
-
-        }
-        */
-        
-        
-        for(uint64_t k=0;k<found->cnt;k++){
+        uint64_t found_cnt = found->cnt;
+        for(uint64_t k=0;k<found_cnt;k++){
               if ( found->key[k] == key ) {
                   *value_out = (uint64_t) PmemPtr::Decode<char>(found->value[k]);
                   return true;
               }
         }
-        
-        
       }
       table = table->Next();
     }
@@ -1091,16 +1024,16 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
   }
 
   uint64_t scan_cnt = scan_num;
-  uint64_t result_paddr = pred_paddr_dump + sizeof(PmemNode2) + pred->height*8;
 
-  auto pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + pred->height*8;
+  auto pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (pred->height-1)*8;
   auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
-
+  uint64_t result_paddr = pred_kvpairs_paddr;
   if(scan_cnt==0) return result_paddr;
 
   //start scan from given range
-  for(uint64_t k=0;k<pred_kvpairs->cnt;k++){
-    if(pred_kvpairs->key[k] < key) continue;
+  uint64_t pred_cnt = pred_kvpairs->cnt;
+  for(uint64_t k=0;k<pred_cnt;k++){
+    if(pred_kvpairs->key[k].Compare(key) < 0) continue;
     values_out->push_back(pred_kvpairs->value[k]);
     scan_cnt--;
     if(scan_cnt==0) return result_paddr;
@@ -1113,11 +1046,14 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
     curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
 
     if (curr) {
-      auto curr_kvpairs_paddr = curr_paddr_dump + sizeof(PmemNode2) + curr->height*8;
+      auto curr_kvpairs_paddr = curr_paddr_dump + sizeof(PmemNode2) + (curr->height-1)*8;
       auto curr_kvpairs = (KVpairs*) ((PmemPtr*) &curr_kvpairs_paddr)->get();
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
-      for(uint64_t k=0;k<curr_kvpairs->cnt;k++){
+
+      uint64_t curr_cnt = curr_kvpairs->cnt;
+      for(uint64_t k=0;k<curr_cnt;k++){
+        if(curr_kvpairs->key[k].Compare(key) < 0) continue;
         values_out->push_back(curr_kvpairs->value[k]);
         scan_cnt--;
         if(scan_cnt==0) return result_paddr;
@@ -1129,8 +1065,7 @@ PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSki
     }
     break;
   }
-
-
+  
   return result_paddr;
 }
 
