@@ -53,7 +53,7 @@ class DBClient {
 #endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
   PmemPtr LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard);
-  PmemPtr LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard);
+  bool LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out);
   PmemPtr LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
   PmemPtr LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
 
@@ -338,18 +338,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
-      //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
-      ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
-      if(found){
-        uint64_t found_cnt = found->cnt;
-        for(uint64_t k=0;k<found_cnt;k++){
-              if ( found->key[k] == key ) {
-                  *value_out = found->value[k];
-                  return true;
-              }
-        }
-      }
+      if(LookupL2(key, l2_pool_id_, skiplist, s, value_out)) return true;
       table = table->Next();
     }
   }
@@ -564,18 +553,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
-      //auto found_paddr = skiplist->Lookup(key, region_);
-      auto found_paddr = LookupL2(key, l2_pool_id_, skiplist, s);
-      ListDB::KVpairs* found = (ListDB::KVpairs*) found_paddr.get();
-      if(found){
-        uint64_t found_cnt = found->cnt;
-        for(uint64_t k=0;k<found_cnt;k++){
-              if ( found->key[k] == key ) {
-                  *value_out = (uint64_t) PmemPtr::Decode<char>(found->value[k]);
-                  return true;
-              }
-        }
-      }
+      if(LookupL2(key, l2_pool_id_, skiplist, s, value_out)) return true;
       table = table->Next();
     }
   }
@@ -803,7 +781,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   return curr_paddr_dump;
 }
 
-PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard) {
+bool DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out) {
   using Node2 = PmemNode2;
   uint64_t pred_paddr_dump;
   Node2* pred;
@@ -861,22 +839,84 @@ PmemPtr DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList
   //if(shard==0) printf("region is %llu\n",pool_id_tmp);
 
   // Braided bottom layer
-  while (true) {
-    uint64_t curr_paddr_dump = pred->next[0];
-    curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
-    if (curr) {
-      search_visit_cnt_++;
-      height_visit_cnt_[0]++;
-      
-      if (curr->min_key.Compare(key) <= 0) {
-        pred = curr;
-        pred_paddr_dump = curr_paddr_dump;
-        continue;
+
+    while (true) {
+      uint64_t curr_paddr_dump = pred->next[0];
+      curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+        search_visit_cnt_++;
+        height_visit_cnt_[0]++;
+        
+        if (curr->min_key.Compare(key) <= 0) {
+          pred = curr;
+          pred_paddr_dump = curr_paddr_dump;
+          continue;
+        }
+      }
+      break;
+    }
+
+    auto pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (pred->height-1)*8;
+    auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+
+    uint64_t pred_cnt = pred_kvpairs->cnt;
+    for(uint64_t k=0;k<pred_cnt;k++){
+      if(pred_kvpairs->key[k].Compare(key) == 0){
+        *value_out = pred_kvpairs->value[k];
+        //double check for conflict cases
+        if(pred_kvpairs->key[k].Compare(key) == 0) return true;
       }
     }
-    break;
-  }
-  return pred_paddr_dump + sizeof(PmemNode2) + (pred->height - 1) * 8;
+    
+    //check case of conflict scenario
+    while(true){
+      uint64_t curr_paddr_dump = pred->next[0];
+      curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+        search_visit_cnt_++;
+        height_visit_cnt_[0]++;
+        
+        if (curr->min_key.Compare(key) <= 0) {
+          pred = curr;
+          pred_paddr_dump = curr_paddr_dump;
+          continue;
+        }
+        else return false;
+      }
+      else return false;
+
+      while (true) {
+      uint64_t curr_paddr_dump = pred->next[0];
+      curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+          search_visit_cnt_++;
+          height_visit_cnt_[0]++;
+          
+          if (curr->min_key.Compare(key) <= 0) {
+            pred = curr;
+            pred_paddr_dump = curr_paddr_dump;
+            continue;
+          }
+        }
+        break;
+      }
+
+      auto pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (pred->height-1)*8;
+      auto pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+
+      uint64_t pred_cnt = pred_kvpairs->cnt;
+      for(uint64_t k=0;k<pred_cnt;k++){
+        if(pred_kvpairs->key[k].Compare(key) == 0){
+          *value_out = pred_kvpairs->value[k];
+          //double check for conflict cases
+          if(pred_kvpairs->key[k].Compare(key) == 0) return true;
+        }
+      }
+      
+    }
+    
+    return false;
+  
 }
 
 PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {

@@ -2407,7 +2407,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           pred_kvpairs->cnt = tmp_pred_kvpairs_cnt;
           key_total_cnt = pred_kvpairs->cnt + buffer_cnt;
         } //split of pred node is done.
-        if(key_total_cnt>NPAIRS) printf("ERROR! inserting keys are more than NPAIRS\n");// test juwon
+        
         //
         // 1-2. do insert in preds node
         //
