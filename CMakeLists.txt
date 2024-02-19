@@ -140,7 +140,7 @@ foreach (ubench_src ${ubench_srcs})
     #listdb/lsm/table.cc
     )
   #target_link_libraries(${ubench_name} listdb)
-  target_link_libraries(${ubench_name}
+  target_link_libraries(${ubench_name}  ${gflags_LIBRARIES}
     listdb
     pthread
     numa
@@ -167,7 +167,7 @@ foreach (db_bench_src ${db_bench_srcs})
   get_filename_component(db_bench_name ${db_bench_src} NAME_WE)
   add_executable(${db_bench_name} ${db_bench_src}
     )
-  target_link_libraries(${db_bench_name}
+  target_link_libraries(${db_bench_name}  ${gflags_LIBRARIES}
     listdb
     pthread
     numa
