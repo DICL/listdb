@@ -13,18 +13,24 @@
 
 class PackedPmemSkipList {
  public:
+  struct HintedPtr{
+      Key next_key;
+      uint64_t next_ptr;
+  };
+
   struct Node {
     uint8_t height; // pointer of KVpairs structure below
     Key min_key;
-    uint64_t next[1];
+    HintedPtr next[1];
   };
 
-  //new structure for node 2
+  //new structures for node 2
   struct KVpairs{
     uint64_t cnt;
     Key key[NPAIRS];
     uint64_t value[NPAIRS];
   };
+
 
   PackedPmemSkipList(int primary_region_pool_id);
 
@@ -74,7 +80,8 @@ void PackedPmemSkipList::Init() {
     Node* head = (Node*) head_paddr.get();
 
     head->min_key = 0; 
-    memset(&head->next[0], 0, kMaxHeight * sizeof(uint64_t));
+    head->next[0].next_key = 0;
+    memset(&head->next[0].next_ptr, 0, kMaxHeight * sizeof(uint64_t));
     head_.emplace(pool_id, head);
     head_paddr_dump_.emplace(pool_id, head_paddr.dump());
   }

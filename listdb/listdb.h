@@ -77,6 +77,7 @@ class ListDB {
   using PmemNode = BraidedPmemSkipList::Node;
   using PmemNode2 = PackedPmemSkipList::Node;
   using KVpairs = PackedPmemSkipList::KVpairs;
+  using HintedPtr = PackedPmemSkipList::HintedPtr;
 
   struct Task {
     TaskType type;
@@ -2088,6 +2089,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
     uint64_t succs[kNumRegions][kMaxHeight];
+    Key** succs_key = (Key**)malloc(kNumRegions * sizeof(Key*));
+    for(int i=0; i<kNumRegions; i++) succs_key[i] = (Key*)malloc(kMaxHeight * sizeof(Key));
     uint64_t cnts[kNumRegions][kMaxHeight];
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
@@ -2097,12 +2100,13 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       //check there is only head
     }
     for(int i=0; i<kNumRegions; i++){ 
-      uint64_t l2_node_paddr_dump = heads[i]->next[0];
+      uint64_t l2_node_paddr_dump = heads[i]->next[0].next_ptr;
       auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr_dump)->get();
       if(l2_node != nullptr){
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l2_node;
           succs[i][j] = 0;
+          succs_key[i][j] = 0;
         }
         head_only_flag = false;
         pred_paddr_dump = l2_node_paddr_dump;
@@ -2126,7 +2130,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         int height = kMaxHeight;
         int region = i;
 
-        size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
+        size_t node_size = sizeof(PmemNode2) + (height - 1) * sizeof(HintedPtr);
         //strictly adjacent allocation of node and kvpairs
         auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
         auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
@@ -2162,17 +2166,20 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l2_node;
           succs[i][j] = 0;
+          succs_key[i][j] = 0;
         }
         pred_paddr_dump = l2_node_paddr.dump();
-        heads[i]->next[0] = l2_node_paddr.dump();
-        clwb(&(heads[i]->next[0]), 8);
+        heads[i]->next[0].next_ptr = l2_node_paddr.dump();
+        heads[i]->next[0].next_key = l2_node->min_key;
+        clwb(&(heads[i]->next[0]), sizeof(HintedPtr));
         _mm_sfence();
 
       }
 
       //connect all first skiplist nodes of each numa
       for(int i=0; i<kNumRegions-1; i++){
-        first_node[i]->next[0] = first_node_paddr[i+1].dump();
+        first_node[i]->next[0].next_ptr = first_node_paddr[i+1].dump();
+        first_node[i]->next[0].next_key = first_node[i+1]->min_key;
       }
 
       //heads의 value를 각 numa당 skiplist node 개수로 설정해준다.
@@ -2217,21 +2224,22 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       //search preds and succes at braided level
 
       //search preds and succes at braided level
-        uint64_t curr_paddr_dump = preds[0][0]->next[0];
+        uint64_t curr_paddr_dump = preds[0][0]->next[0].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
         while (curr) {
           if (curr->min_key.Compare(l1_node->key) <= 0) {
             preds[0][0] = curr;
             pred_paddr_dump = curr_paddr_dump;
-            curr_paddr_dump = curr->next[0];
+            curr_paddr_dump = curr->next[0].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
             continue;
           }
+          succs_key[0][0] = curr->min_key;
           break;
         }
         succs[0][0] = curr_paddr_dump;
 
-        uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * 8;
+        uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
         key_total_cnt = pred_kvpairs->cnt;
         break;
@@ -2283,7 +2291,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           }
 
           // 4) calculate node size and allocate node and kvpair
-          size_t node_size = sizeof(PmemNode2) + (height - 1) * 8;
+          size_t node_size = sizeof(PmemNode2) + (height - 1) * sizeof(HintedPtr);
           auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
           auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
           uint64_t kvpairs_paddr_dump = l2_node_paddr.dump()+node_size;
@@ -2363,15 +2371,16 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
           // 5) find remain preds and succs
           for (int t = kMaxHeight-1; t > 0; t--) {
-            uint64_t curr_paddr_paddr = preds[region][t]->next[t];
+            uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             while (curr) {
               if (curr->min_key.Compare(l2_node->min_key) <= 0) {
                 preds[region][t] = curr;
-                curr_paddr_paddr = curr->next[t];
+                curr_paddr_paddr = curr->next[t].next_ptr;
                 curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
                 continue;
               }
+              succs_key[region][t] = curr->min_key;
               break;
             }
             //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
@@ -2380,19 +2389,23 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           }
         
           // 6) update next pointers and kvpair_ptr of new l2_node
-          l2_node->next[0] = succs[0][0];
+          l2_node->next[0].next_key = succs_key[0][0];
+          l2_node->next[0].next_ptr = succs[0][0];
           for (int i = 1; i < height; i++) {
-            l2_node->next[i] =  succs[region][i];
+            l2_node->next[i].next_key =  succs_key[region][i];
+            l2_node->next[i].next_ptr =  succs[region][i];
           }
           l2_node->height = height;
 
           // 7) update next pointers of predecessor nodes
-          preds[0][0]->next[0] = l2_node_paddr.dump();
-          clwb(&(preds[0][0]->next[0]), 8);
+          preds[0][0]->next[0].next_key = l2_node->min_key;
+          preds[0][0]->next[0].next_ptr = l2_node_paddr.dump();
+          clwb(&(preds[0][0]->next[0]), sizeof(HintedPtr));
           _mm_sfence();
           for (int i = 1 ;i < height; i++) {
-            preds[region][i]->next[i] = l2_node_paddr.dump();
-            clwb(&(preds[region][i]->next[i]), 8);
+            preds[region][i]->next[i].next_key = l2_node->min_key;
+            preds[region][i]->next[i].next_ptr = l2_node_paddr.dump();
+            clwb(&(preds[region][i]->next[i]), sizeof(HintedPtr));
             _mm_sfence();
             //clwb changed next pointer of preds node
           }
@@ -2476,21 +2489,22 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
         //1-4. set pred, curr, and buffer counter(total counter) using l1 node
         //     only if it does insert in #1.
-        uint64_t curr_paddr_paddr = preds[0][0]->next[0];
+        uint64_t curr_paddr_paddr = preds[0][0]->next[0].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
         while (curr) {
           if (curr->min_key.Compare(l1_node->key) <= 0) {
             preds[0][0] = curr;
             pred_paddr_dump = curr_paddr_paddr;
-            curr_paddr_paddr = curr->next[0];
+            curr_paddr_paddr = curr->next[0].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             continue;
           }
+          succs_key[0][0] = curr->min_key;
           break;
         }
         succs[0][0] = curr_paddr_paddr;
 
-        uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * 8;
+        uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
         key_total_cnt = pred_kvpairs->cnt;
       }

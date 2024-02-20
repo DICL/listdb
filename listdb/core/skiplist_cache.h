@@ -121,7 +121,7 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
     if (l2_table){
       auto l2_skiplist = l2_table->skiplist();
       PmemNode* pred = l2_skiplist->head(pool_id_);
-      uint64_t curr_paddr_dump = pred->next[0];
+      uint64_t curr_paddr_dump = pred->next[0].next_ptr;
       //pass through dummy node (head node)
       PmemNode* curr = (PmemNode*) ((PmemPtr*) &curr_paddr_dump)->get();
       //now curr is first node of skiplist
@@ -149,7 +149,7 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
         }
 
         //move to next node with target_height
-        curr_paddr_dump = pred->next[target_height-1];
+        curr_paddr_dump = pred->next[target_height-1].next_ptr;
         curr = (PmemNode*) ((PmemPtr*) &curr_paddr_dump)->get();
         
       }
