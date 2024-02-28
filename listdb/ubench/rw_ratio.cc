@@ -33,11 +33,11 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 60;
+constexpr int NUM_THREADS = 80;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
-constexpr int SLEEP_TIME = 300;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME = 270;//time to waiting l0 compactions end
 constexpr int SLEEP_TIME2 = 20;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
@@ -142,7 +142,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/juwon/index-microbench/ycsb_workloade/"; //test juwon
   ss << "load_r" << read_ratio << "_zipf_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -150,7 +150,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/juwon/index-microbench/ycsb_workloade/"; //test juwon
   ss << "run_r" << read_ratio << "_zipf_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
@@ -385,7 +385,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
 
     printf("WORK %zu queries\n", NUM_WORKS);
-    size_t* latency = (size_t*)malloc(sizeof(size_t)*NUM_WORKS); //test juwon 
+    //size_t* latency = (size_t*)malloc(sizeof(size_t)*NUM_WORKS); //test juwon 
     auto begin_tp = std::chrono::steady_clock::now();
     std::vector<std::thread> workers;
 #ifdef COUNT_FOUND
@@ -411,7 +411,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         DBClient* client = new DBClient(db, id, r);
 
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          auto query_begin = std::chrono::high_resolution_clock::now(); //test juwon
+          //auto query_begin = std::chrono::high_resolution_clock::now(); //test juwon
           if (work_ops[i] == OP_INSERT || work_ops[i] == OP_UPDATE) {
             client->Put(work_keys[i], work_keys[i]);
           } else if (work_ops[i] == OP_READ) {
@@ -429,8 +429,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
             
             client->Scan(work_keys[i], work_scan_nums[i], &val_scan);
           } 
-          auto query_end = std::chrono::high_resolution_clock::now(); //test juwon
-          latency[i] = std::chrono::duration_cast<std::chrono::nanoseconds>(query_end - query_begin).count(); //test juwon
+          //auto query_end = std::chrono::high_resolution_clock::now(); //test juwon
+          //latency[i] = std::chrono::duration_cast<std::chrono::nanoseconds>(query_end - query_begin).count(); //test juwon
         }
 
         pmem_get_cnt[id] = client->pmem_get_cnt();
@@ -462,7 +462,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     size_t pmem_get_cnt_total = 0;
     size_t search_visit_cnt_total = 0;
     size_t height_visit_cnt_total[kMaxHeight] = {};
-    size_t latency_total = 0; //test juwon
+    //size_t latency_total = 0; //test juwon
     for (int i = 0; i < num_threads; i++) {
       pmem_get_cnt_total += pmem_get_cnt[i];
       search_visit_cnt_total += search_visit_cnt[i];
@@ -471,14 +471,14 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
       }
     }
 
-    std::sort(latency, latency+NUM_WORKS);
-    for(size_t i=0; i<NUM_WORKS; i++){
-      latency_total += latency[i];//test juwon
-    }
-    fprintf(stdout, "total latency: %zu\n", latency_total);//test juwon
-    fprintf(stdout, "avg latency: %zu\n", latency_total/NUM_WORKS);//test juwon
-    fprintf(stdout, "P95 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.95-1)]);//test juwon
-    fprintf(stdout, "P99 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.99-1)]);//test juwon
+    //std::sort(latency, latency+NUM_WORKS);
+    //for(size_t i=0; i<NUM_WORKS; i++){
+    //  latency_total += latency[i];//test juwon
+    //}
+    //fprintf(stdout, "total latency: %zu\n", latency_total);//test juwon
+    //fprintf(stdout, "avg latency: %zu\n", latency_total/NUM_WORKS);//test juwon
+    //fprintf(stdout, "P95 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.95-1)]);//test juwon
+    //fprintf(stdout, "P99 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.99-1)]);//test juwon
     fprintf(stdout, "Number of queries fallen back to pmem search: %zu\n", pmem_get_cnt_total);
     fprintf(stdout, "Pmem node visit count for queries fallen back to pmem search: %zu\n", search_visit_cnt_total);
     fprintf(stdout, "Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", (double) search_visit_cnt_total / pmem_get_cnt_total);

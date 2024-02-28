@@ -6,6 +6,7 @@
 
 class IntegerKey {
  public:
+  IntegerKey();
   IntegerKey(const uint64_t key);
   operator uint64_t() const { return data_; }
   size_t size() const;
@@ -19,6 +20,7 @@ class IntegerKey {
  private: 
   uint64_t data_;
 };
+inline IntegerKey::IntegerKey() : data_(0) { }
 
 inline IntegerKey::IntegerKey(const uint64_t key) : data_(key) { }
 

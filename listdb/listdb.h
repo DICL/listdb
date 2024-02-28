@@ -2089,8 +2089,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
     uint64_t succs[kNumRegions][kMaxHeight];
-    Key** succs_key = (Key**)malloc(kNumRegions * sizeof(Key*));
-    for(int i=0; i<kNumRegions; i++) succs_key[i] = (Key*)malloc(kMaxHeight * sizeof(Key));
+    Key succs_key[kNumRegions][kMaxHeight];
     uint64_t cnts[kNumRegions][kMaxHeight];
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
@@ -2202,8 +2201,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
     //variables for compaction
     //buffers for newly inserting key/value
-    Key* key_buffer = (Key*)malloc(sizeof(Key)*NPAIRS);
-    Value* value_buffer = (Value*)malloc(sizeof(Value)*NPAIRS);
+    Key key_buffer[NPAIRS];
+    Value value_buffer[NPAIRS];
     uint64_t buffer_cnt = 0;
 
     //variables use for decide when to do insert or split
@@ -2526,11 +2525,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       node_paddr = l1_node->next[0];
       l1_node = node_paddr.get<Node>();
     }//end of loop
-
-    //free buffer space
-    free(key_buffer);
-    free(value_buffer);
-
 
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
