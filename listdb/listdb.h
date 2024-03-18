@@ -100,11 +100,18 @@ class ListDB {
     TableList* l1table_list;
   };
 
+  struct cmp_task_priority {
+    bool operator()(Task* a, Task* b) {
+      if(b->type == TaskType::kL0Compaction || b->type == TaskType::kL1Compaction) return false;
+      return true;
+    }
+  };
+
   struct alignas(64) CompactionWorkerData {
     int id;
     bool stop;
     Random rnd = Random(0);
-    std::queue<Task*> q;
+    std::priority_queue <Task*, std::vector<Task*>, cmp_task_priority> q;
     std::mutex mu;
     std::condition_variable cv;
     Task* current_task;
@@ -276,7 +283,7 @@ ListDB::~ListDB() {
 }
 
 void ListDB::Init() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   fs::remove_all(db_path);
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
@@ -412,7 +419,7 @@ void ListDB::Init() {
 
     // L1 List
     {
-      auto tl = new PmemTableList(kL1PmemTableCapacity, l1_arena_[0][0]->pool_id());
+      auto tl = new PmemTableList(kL1PmemTableCapacity / kNumShards, l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
@@ -500,7 +507,7 @@ void ListDB::Init() {
 }
 
 void ListDB::Open() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
     std::cerr << "root_pool_id must be zero (current: " << root_pool_id << ")\n";
@@ -594,7 +601,7 @@ void ListDB::Open() {
 
     // L1 List
     {
-      auto tl = new PmemTableList(kL1PmemTableCapacity, l1_arena_[0][0]->pool_id());
+      auto tl = new PmemTableList(kL1PmemTableCapacity / kNumShards, l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
@@ -656,7 +663,7 @@ void ListDB::Open() {
             l1_skiplist->BindArena(pool_id, l1_arena_[j][i]);
             l1_skiplist->BindHead(pool_id, (void*) l1_info->head[j].get());
           }
-          auto l1_table = new PmemTable(kL1PmemTableCapacity, l1_skiplist);
+          auto l1_table = new PmemTable(kL1PmemTableCapacity / kNumShards, l1_skiplist);
           //l1_table->SetSize(kMemTableCapacity);
           auto l1_tl = ll_[i]->GetTableList(1);
           l1_tl->SetFront(l1_table);
@@ -1024,32 +1031,6 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }//사실 new_work_request에는 flush해달라는 type만 있어야 한다. 그렇지 않으면 오류가 나게 된다.
-    if (schedule_l0_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
-      for (int i = 0; i < kNumShards; i++) {
-        if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
-          auto tl = ll_[i]->GetTableList(0);
-          auto table = tl->GetFront();
-          while (true) {
-            auto next_table = table->Next();
-            if (next_table) {
-              table = next_table;
-            } else {
-              break;
-            }
-          }//level list의 해당 샤드의 wal table list의 맨 마지막 table만 가져온다.
-          if (table->type() == TableType::kPmemTable) {
-            auto task = new L0CompactionTask();
-            task->type = TaskType::kL0Compaction;
-            task->shard = i;
-            task->l0 = (PmemTable*) table;//합쳐야 하는 마지막 테이블을 l0에 넣어준다. l1으로 컴팩션 해주어야 함.
-            task->memtable_list = (MemTableList*) tl;//모든 테이블 리스트를 넣어준다,
-            l0_compaction_state[i] = 1;  // configured// 컴팩션 진행중 건들지 마세요 컴팩션 안해도 됩니다~
-            l0_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
-            req_comp_cnt[task->type].req_cnt++;
-          }
-        }
-      }
-    }
     if (schedule_l1_compaction) {
       for (int i = 0; i < kNumShards; i++) {
         if (l1_compaction_state[i] == 0) {
@@ -1073,6 +1054,32 @@ void ListDB::BackgroundThreadLoop() {
             task->patience_stack = 0;
             l1_compaction_state[i] = 1;
             l1_compaction_requests.push_back(task);
+            req_comp_cnt[task->type].req_cnt++;
+          }
+        }
+      }
+    }
+    if (schedule_l0_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
+      for (int i = 0; i < kNumShards; i++) {
+        if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
+          auto tl = ll_[i]->GetTableList(0);
+          auto table = tl->GetFront();
+          while (true) {
+            auto next_table = table->Next();
+            if (next_table) {
+              table = next_table;
+            } else {
+              break;
+            }
+          }//level list의 해당 샤드의 wal table list의 맨 마지막 table만 가져온다.
+          if (table->type() == TableType::kPmemTable) {
+            auto task = new L0CompactionTask();
+            task->type = TaskType::kL0Compaction;
+            task->shard = i;
+            task->l0 = (PmemTable*) table;//합쳐야 하는 마지막 테이블을 l0에 넣어준다. l1으로 컴팩션 해주어야 함.
+            task->memtable_list = (MemTableList*) tl;//모든 테이블 리스트를 넣어준다,
+            l0_compaction_state[i] = 1;  // configured// 컴팩션 진행중 건들지 마세요 컴팩션 안해도 됩니다~
+            l0_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
             req_comp_cnt[task->type].req_cnt++;
           }
         }
@@ -1116,29 +1123,6 @@ void ListDB::BackgroundThreadLoop() {
     //    available_workers.push_back(&worker_data_[i]);
     //  }
     //}
-#ifndef LISTDB_NO_L0_COMPACTION
-    while (!available_workers.empty() && !l0_compaction_requests.empty()) {
-      std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
-        return num_assigned_tasks[a->id] > num_assigned_tasks[b->id];
-      });
-      auto& worker = available_workers.back();
-      auto& task = l0_compaction_requests.front();
-      l0_compaction_requests.pop_front();
-
-      std::unique_lock<std::mutex> wlk(worker->mu);
-      worker->q.push(task);
-      wlk.unlock();
-      worker->cv.notify_one();
-
-      task_to_worker[task] = worker->id;
-      num_assigned_tasks[worker->id]++;
-      l0_compaction_state[task->shard] = 2;  // assigned
-
-      if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
-        available_workers.pop_back();
-      }//똑같은 방식으로 남은 작업자에게 l0_compaction_request 뽑아서 전달.
-    }
-#endif
 
 #ifndef LISTDB_NO_L1_COMPACTION
     while (!available_workers.empty() && !l1_compaction_requests.empty()) {
@@ -1165,6 +1149,30 @@ void ListDB::BackgroundThreadLoop() {
     }
 #endif
 
+#ifndef LISTDB_NO_L0_COMPACTION
+    while (!available_workers.empty() && !l0_compaction_requests.empty()) {
+      std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
+        return num_assigned_tasks[a->id] > num_assigned_tasks[b->id];
+      });
+      auto& worker = available_workers.back();
+      auto& task = l0_compaction_requests.front();
+      l0_compaction_requests.pop_front();
+
+      std::unique_lock<std::mutex> wlk(worker->mu);
+      worker->q.push(task);
+      wlk.unlock();
+      worker->cv.notify_one();
+
+      task_to_worker[task] = worker->id;
+      num_assigned_tasks[worker->id]++;
+      l0_compaction_state[task->shard] = 2;  // assigned
+
+      if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
+        available_workers.pop_back();
+      }//똑같은 방식으로 남은 작업자에게 l0_compaction_request 뽑아서 전달.
+    }
+#endif
+
     if (stop_) {
       fprintf(stdout, "bg thread terminating\n");
       break;
@@ -1179,48 +1187,10 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
     td->cv.wait(lk, [&]{ return td->stop || !td->q.empty(); });
     if (td->stop) {
       break;
-    }//항상 언제 올지 모르는 stop을 잠깐 기다려서 신호 받고 지나간다.
-    
-    //우선순위 제일 높은것을 찾아내어 그것을 task로 정해주고 원상복귀한다.
-    std::queue<ListDB::Task *> temp_q;
-    int min_priority = 9;
-    int pri_idx = 0;
-    int curr_idx = 0;
-
-    ListDB::Task * task;
-
-    //더 우선순위 높은걸 발견하면 그순간 들고있던 task를 push부터해준다.
-    while (!td->q.empty())
-    {
-        auto temp_task = td->q.front();
-        td->q.pop();
-
-        int temp_priority  = 9;
-
-        if(temp_task->type == TaskType::kMemTableFlush) temp_priority = 0;
-        else if(temp_task->type == TaskType::kL0Compaction) temp_priority = 1;
-        else temp_priority = 1;
-
-        if(temp_priority < min_priority){
-          min_priority = temp_priority;
-          pri_idx = curr_idx;
-        }
-        temp_q.push(temp_task);
-        curr_idx++;
     }
-
-    //원상복귀
-    curr_idx = 0;
-    while (!temp_q.empty())
-    {
-        auto temp_task = temp_q.front();
-        temp_q.pop();
-        if(curr_idx==pri_idx) task = temp_task;
-        else td->q.push(temp_task);
-        curr_idx++;
-    }
-    
-    td->current_task = task;//지금 하고 있는 일 current task에 추가하기
+    auto task = td->q.top();
+    td->q.pop();
+    td->current_task = task;
     lk.unlock();
 
 
@@ -1381,9 +1351,9 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_time_usec += (end_micros - begin_micros);
 
 #ifdef LISTDB_BLOOM_FILTER
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist, task->imm->bloom_filter());
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist, task->imm->bloom_filter());
 #else
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist);
 #endif
   l0_table->SetManifest(task->imm->l0_manifest());
 
@@ -1858,7 +1828,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     }
     shard_manifest->l1_info = l1_manifest;
     l1_manifest->status = Level0or1Status::kInitialized;
-    auto l1_table = new PmemTable(kL1PmemTableCapacity, l1_skiplist);
+    auto l1_table = new PmemTable(kL1PmemTableCapacity / kNumShards, l1_skiplist);
     l1_table->SetManifest(l1_manifest);
     l1_tl->PushFront(l1_table);//원래 SetFront 였음
 
@@ -1876,6 +1846,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
         break;
       }
     }
+    delete task->l0;
     // Update manifest
     l0_manifest->status = Level0or1Status::kMergeDone;
     // call clwb
@@ -2012,7 +1983,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #endif
 
-  
     
   l1_table->increase_l0_compaction_cnt();
   if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;

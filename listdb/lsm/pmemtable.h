@@ -53,7 +53,7 @@ PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)
     : Table(table_capacity, TableType::kPmemTable), skiplist_(skiplist) {
       l0_compaction_cnt_ = 0;
 #ifdef LISTDB_BLOOM_FILTER
-      bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Key));
+      bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Node));
 #endif
 }
 

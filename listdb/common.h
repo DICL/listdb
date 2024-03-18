@@ -42,7 +42,7 @@ constexpr size_t kStringKeyLength = 16;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 1;
+constexpr int kNumShards = 64;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
 #endif
@@ -50,7 +50,7 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 16;
+constexpr int kMaxNumMemTables = 4;
 //for LISTDB L2 
 constexpr int kL1LevelMultiplier = 10;
 #define LISTDB_BLOOM_FILTER
@@ -59,7 +59,7 @@ constexpr int kL1LevelMultiplier = 10;
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
 //for LISTDB L2 
-constexpr int kL1PmemTableCapacity = kMemTableCapacity*kL1LevelMultiplier;
+constexpr size_t kL1PmemTableCapacity = kMemTableCapacity*kL1LevelMultiplier;
 
 constexpr int kMaxHeight = 15;
 
@@ -76,10 +76,11 @@ constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
 constexpr size_t kSkipListCacheCapacity = (45ull << 20);
-//undefine this to use only binary search
+
+//undefine this to use only binary search in array cache
 #define LISTDB_GREEDY_PLR
 #ifdef LISTDB_GREEDY_PLR
-constexpr double kLearnedIndexCapacityRatio = 0.001;
+constexpr double kLearnedIndexCapacityRatio = 0.01;
 #endif
 
 #endif

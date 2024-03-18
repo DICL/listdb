@@ -28,9 +28,9 @@
 #include "listdb/util.h"
 #include "listdb/util/random.h"
 
-DEFINE_string(workload, "a", "ycsb a b c d ");
+DEFINE_string(workload, "c", "ycsb a b c d ");
 
-DEFINE_string(query_dist, "uniform", "uniform zipfian");
+DEFINE_string(query_dist, "zipfian", "uniform zipfian");
 
 DEFINE_int64(loads, 100'000'000, "Number of key/values to place in database");
 
@@ -51,7 +51,7 @@ DEFINE_string(report_file, "", "report_file");
 
 DEFINE_bool(load_only, false, "load only");
 
-DEFINE_string(workload_dir, "/juwon/index-microbench/workloads_100M_10M_unif", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
+DEFINE_string(workload_dir, "/juwon/index-microbench/ycsb_workloadc/load_r100_zipf_int_100M_10M", "example) /home/wkim//RECIPE/index-microbench/workloads_100M_10M_zipf");
 
 DEFINE_string(bind_type, "cpu_numa_rr", "worker thread bind type: <cpu_numa_rr|numa_rr>");
 
@@ -391,7 +391,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 std::string GetFileName(const std::string& base, bool is_load, const std::string& type, const std::string& query_dist) {
   std::string_view dist_short(query_dist.data(), 4);
   std::stringstream ss;
-  ss << base << "/" << (is_load ? "load" : "txns") << type << "_" << dist_short << "_int.dat";
+  if(is_load) ss << "/juwon/index-microbench/ycsb_workloadc/load_r100_zipf_int_100M_10M";
+  else ss << "/juwon/index-microbench/ycsb_workloadc/run_r100_zipf_int_100M_10M";
+  
   return ss.str();
 }
 

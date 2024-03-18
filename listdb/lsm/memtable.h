@@ -55,7 +55,7 @@ class MemTable : public Table {
 MemTable::MemTable(const size_t table_capacity) : Table(table_capacity, TableType::kMemTable) {
   skiplist_ = new lockfree_skiplist();
 #ifdef LISTDB_BLOOM_FILTER
-  bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Key));
+  bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Node));
 #endif
 }
 

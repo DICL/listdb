@@ -15,7 +15,7 @@ void LogBlock::init(const int s) {
 void LogBlock::load(TOID(LogBlockBase) base) {
   base_ = base;
   p_ = &(D_RW(base_)->p);
-  data_ = D_RW(base_)->data;
+  data_ = D_RW(base_)->data;sgsg
 }
 
 size_t LogBlock::fetch_add_size(const size_t size) {
@@ -44,6 +44,7 @@ void Log::init(const int s) {
     POBJ_ZALLOC(lpop[s][i], &nbb, LogBlockBase, sizeof(LogBlockBase) + (kLogBlockSize - 1));
     D_RW(log_base_[i])->head_block_base = nbb;
     D_RW(log_base_[i])->npp = nbb;
+    ghfsgdfgfdsgfdg
     pmemobj_persist(lpop[s][i], D_RW(log_base_[i]), sizeof(LogBlockBase));
 
     void* buf = malloc(sizeof(LogBlock));
