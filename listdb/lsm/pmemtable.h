@@ -3,6 +3,9 @@
 
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/lsm/table.h"
+#ifdef LISTDB_BLOOM_FILTER
+#include "listdb/index/bloom_filter.h"
+#endif
 
 #include <libpmemobj++/p.hpp>
 #include <libpmemobj++/pool.hpp>
@@ -12,12 +15,24 @@ class PmemTable : public Table {
   using Node = BraidedPmemSkipList::Node;
 
   PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist);
+  #ifdef LISTDB_BLOOM_FILTER
+  PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist, BloomFilter* bloom_filter);
+  #endif
+
+  virtual ~PmemTable(){
+#ifdef LISTDB_BLOOM_FILTER
+    delete bloom_filter_;
+#endif
+  };
 
   virtual void* Put(const Key& key, const Value& value) override;
 
   virtual bool Get(const Key& key, void** value_out) override;
 
   BraidedPmemSkipList* skiplist() { return skiplist_; }
+  #ifdef LISTDB_BLOOM_FILTER
+  BloomFilter* bloom_filter() { return bloom_filter_; }
+  #endif
   uint64_t l0_compaction_cnt() {return l0_compaction_cnt_;}
   void increase_l0_compaction_cnt(){l0_compaction_cnt_++;}
 
@@ -29,6 +44,9 @@ class PmemTable : public Table {
  private:
   uint64_t l0_compaction_cnt_;
   BraidedPmemSkipList* skiplist_;
+#ifdef LISTDB_BLOOM_FILTER
+  BloomFilter* bloom_filter_;
+#endif
   pmem::obj::persistent_ptr<pmem_l0_info> manifest_;
 };
 
@@ -36,6 +54,13 @@ PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)
     : Table(table_capacity, TableType::kPmemTable), skiplist_(skiplist) {
       l0_compaction_cnt_ = 0;
 }
+
+#ifdef LISTDB_BLOOM_FILTER
+PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist, BloomFilter* bloom_filter)
+    : Table(table_capacity, TableType::kPmemTable), skiplist_(skiplist), bloom_filter_(bloom_filter) {
+      l0_compaction_cnt_ = 0;
+}
+#endif
 
 void* PmemTable::Put(const Key& key, const Value& value) {
   fprintf(stdout, "Not impl!!!! returning NULL\n");

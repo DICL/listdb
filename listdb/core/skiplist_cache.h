@@ -10,7 +10,7 @@
 #include "listdb/util/random.h"
 
 // TODO(wkim): Undefine this after doing the relevant works. Refer `SkipListCache::size_`
-//#define CACHE_SIZE_IS_FIELD_COUNT //juwon:undefine this
+#define CACHE_SIZE_IS_FIELD_COUNT //juwon:undefine this
 
 template <std::size_t N>
 class SkipListCache {
@@ -140,6 +140,8 @@ class SkipListCache {
 
   size_t AcquireLoadSize() { return size_.load(std::memory_order_acquire); }
 
+  //void print_node_cnt(){printf("node cnt is %lu\n",node_cnt_);}//test juwon cache
+
  private:
   Node* NewNode(const Key& key, const int height, PmemNode* p = nullptr);
 
@@ -167,6 +169,7 @@ class SkipListCache {
   // occupied regardless of the actual memory consumption.
   // TODO(wkim): Impl. Merge and change the semantic of size and capacity.
   std::atomic<size_t> size_;
+  //uint64_t node_cnt_; //test juwon cache
   std::vector<Cursor> smallest_cursor_;
   //std::mutex mu_;
 };
@@ -177,6 +180,7 @@ SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
     capacity_(capacity),
     head_(NewNode(uint64_t{0}, kMaxHeight_)),
     size_(0),
+    //node_cnt_(0),//test juwon cache
     smallest_cursor_(kMaxHeight) {
   for (int i = 0; i < kMaxHeight_; i++) {
     head_->next[i].store(nullptr, std::memory_order_relaxed);
@@ -187,6 +191,8 @@ SkipListCache<N>::SkipListCache(const int pool_id, size_t capacity)
 template <std::size_t N>
 int SkipListCache<N>::Insert(PmemNode* const p) {
   size_t curr_size = size_.load(std::memory_order_acquire);
+  size_t minimum_node_size = util::AlignedSize(8, sizeof(Node) + 8);
+  if(curr_size+minimum_node_size > capacity_) return 0;//test juwon cache
 #ifdef CACHE_SIZE_IS_FIELD_COUNT
   if (curr_size + sizeof(Field) > capacity_) {
     int num_evicted = EvictSome(p->height());
@@ -248,6 +254,7 @@ int SkipListCache<N>::Insert(PmemNode* const p) {
         node_size = util::AlignedSize(8, sizeof(Node) + (height - 1) * 8);
       }
     }
+    //if(curr_size + node_size <= capacity_) node_cnt_ += N; //test juwon cache
     size_.fetch_add(node_size, std::memory_order_release);
 #endif
     Node* x = NewNode(split_key, height, split_pnode);  // TODO(wkim): Impl. NewNode(Field&, height)

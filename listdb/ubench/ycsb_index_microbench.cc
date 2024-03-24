@@ -28,6 +28,9 @@
 #include "listdb/util.h"
 #include "listdb/util/random.h"
 
+int main(){return 0;}
+
+/*
 DEFINE_string(workload, "d", "ycsb a b c d ");
 
 DEFINE_string(query_dist, "uniform", "uniform zipfian");
@@ -416,3 +419,4 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
+*/

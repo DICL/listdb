@@ -37,11 +37,14 @@ class DBClient {
   size_t pmem_get_cnt() { return pmem_get_cnt_; }
   size_t search_visit_cnt() { return search_visit_cnt_; }
   size_t height_visit_cnt(int h) { return height_visit_cnt_[h]; }
+  size_t local_random_visit_cnt() { return local_random_visit_cnt_; }
+  size_t remote_random_visit_cnt() { return remote_random_visit_cnt_; }
   
 
  private:
   int DramRandomHeight();
   int PmemRandomHeight();
+  int RandomHeight();
 
   static int KeyShard(const Key& key);
 
@@ -66,6 +69,8 @@ class DBClient {
   size_t pmem_get_cnt_ = 0;
   size_t search_visit_cnt_ = 0;
   size_t height_visit_cnt_[kMaxHeight] = {};
+  size_t local_random_visit_cnt_ = 0;
+  size_t remote_random_visit_cnt_ = 0;
 
 #ifdef GROUP_LOGGING
   struct LogItem {
@@ -143,6 +148,12 @@ void DBClient::Put(const Key& key, const Value& value) {
 
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
+
+#ifdef LISTDB_BLOOM_FILTER
+  //after insertion, add key to bloom filter
+  mem->bloom_filter()->AddKey(key);
+#endif
+
   mem->w_UnRef();
 #else
   int s = KeyShard(key);
@@ -220,6 +231,12 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
@@ -263,6 +280,12 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
@@ -375,6 +398,12 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
@@ -418,6 +447,12 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
@@ -493,6 +528,17 @@ inline int DBClient::DramRandomHeight() {
   return height;
 }
 
+inline int DBClient::RandomHeight() {
+  static const unsigned int kBranching = 4;
+  int height = 1;
+  while (height < kMaxHeight && ((rnd_.Next() % kBranching) == 0)) {
+    height++;
+  }
+  return height;
+}
+
+
+
 inline int DBClient::KeyShard(const Key& key) {
   return key.key_num() % kNumShards;
   //return key.key_num() / kShardSize;
@@ -560,6 +606,7 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
   Node* pred = skiplist->head(pool_id);
   search_visit_cnt_++;
   height_visit_cnt_[kMaxHeight - 1]++;
+  local_random_visit_cnt_++;
   uint64_t curr_paddr_dump;
   Node* curr;
   int height = pred->height();
@@ -572,6 +619,7 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
+        local_random_visit_cnt_++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -586,6 +634,7 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
     if (pool_id != skiplist->primary_pool_id()) {
       search_visit_cnt_++;
       height_visit_cnt_[kMaxHeight - 1]++;
+      remote_random_visit_cnt_++;
     }
     pred = skiplist->head();
   }
@@ -593,6 +642,8 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
+      if(pool_id != ((PmemPtr*) &curr_paddr_dump)->pool_id()) remote_random_visit_cnt_++;
+      else local_random_visit_cnt_++;
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
@@ -662,6 +713,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 #endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
+  local_random_visit_cnt_++;
 
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
@@ -671,6 +723,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
+        local_random_visit_cnt_++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -685,6 +738,7 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
     if (pool_id != skiplist->primary_pool_id()) {
       search_visit_cnt_++;
       height_visit_cnt_[kMaxHeight - 1]++;
+      remote_random_visit_cnt_++;
     }
     pred = skiplist->head();
   }
@@ -692,6 +746,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
+      if(pool_id != ((PmemPtr*) &curr_paddr_dump)->pool_id()) remote_random_visit_cnt_++;
+      else local_random_visit_cnt_++;
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
@@ -733,6 +789,7 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
 #endif
   search_visit_cnt_++;
   height_visit_cnt_[height - 1]++;
+  local_random_visit_cnt_++;
 
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
@@ -742,6 +799,7 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
       if (curr) {
         search_visit_cnt_++;
         height_visit_cnt_[i]++;
+        local_random_visit_cnt_++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -756,6 +814,7 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     if (pool_id != skiplist->primary_pool_id()) {
       search_visit_cnt_++;
       height_visit_cnt_[kMaxHeight - 1]++;
+      remote_random_visit_cnt_++;
     }
     pred = skiplist->head();
   }
@@ -763,6 +822,8 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
+      if(pool_id != ((PmemPtr*) &curr_paddr_dump)->pool_id()) remote_random_visit_cnt_++;
+      else local_random_visit_cnt_++;
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
@@ -782,11 +843,14 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
+      if(pool_id != ((PmemPtr*) &curr_paddr_dump)->pool_id()) remote_random_visit_cnt_++;
+      else local_random_visit_cnt_++;
       search_visit_cnt_++;
       height_visit_cnt_[0]++;
+      pred = curr;
+      if(curr->key.Compare(key) < 0) continue;
       values_out->push_back(curr->value);
       scan_cnt--;
-      pred = curr;
       continue;
     }
     break;

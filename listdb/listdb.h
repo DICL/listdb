@@ -44,7 +44,7 @@
 #define L0_COMPACTION_ON_IDLE
 #define L0_COMPACTION_YIELD
 
-//#define REPORT_BACKGROUND_WORKS
+//#define REPORT_BACKGROUND_WORKS//test juwon reporter
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
@@ -57,6 +57,8 @@
 #define REPORT_DONE
 #endif
 
+//this used for monitoring compaction-only throughput
+//#define L0_COMPACTION_NEED_TRIGGER
 
 //#define L0_COMPACTION_ON_IDLE
 //#define L0_COMPACTION_YIELD
@@ -163,6 +165,10 @@ class ListDB {
 
   void ManualFlushMemTable(int shard);
 
+#ifdef L0_COMPACTION_NEED_TRIGGER
+  void ManualL0Compaction(int shard);
+#endif
+
   void ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
 
   void L0CompactionCopyOnWrite(L0CompactionTask* task);
@@ -241,6 +247,10 @@ class ListDB {
 
   std::atomic<Reporter*> reporter_;
   std::mutex mu_;
+
+#ifdef L0_COMPACTION_NEED_TRIGGER
+  bool triggered_ = false;
+#endif
 };
 
 
@@ -250,7 +260,7 @@ ListDB::~ListDB() {
 }
 
 void ListDB::Init() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   fs::remove_all(db_path);
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
@@ -490,7 +500,7 @@ void ListDB::Init() {
 }
 
 void ListDB::Open() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
     std::cerr << "root_pool_id must be zero (current: " << root_pool_id << ")\n";
@@ -998,7 +1008,11 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }
+#ifndef L0_COMPACTION_NEED_TRIGGER
     if (schedule_l0_compaction) {
+#else
+    if (triggered_ && schedule_l0_compaction && triggered_) {
+#endif
       for (int i = 0; i < kNumShards; i++) {
         if (l0_compaction_state[i] == 0) {
           auto tl = ll_[i]->GetTableList(0);
@@ -1254,7 +1268,11 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_cnt += flush_cnt;
   td->flush_time_usec += (end_micros - begin_micros);
 
+#ifdef LISTDB_BLOOM_FILTER
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist, task->imm->bloom_filter());
+#else
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+#endif
   l0_table->SetManifest(task->imm->l0_manifest());
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
@@ -1689,6 +1707,12 @@ void ListDB::ManualFlushMemTable(int shard) {
 #endif
 }
 
+#ifdef L0_COMPACTION_NEED_TRIGGER
+void ListDB::ManualL0Compaction(int shard) {
+  triggered_ = true;
+}
+#endif
+
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0Status::kMergeInitiated;
@@ -2049,6 +2073,13 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       break;
     }
   }
+//test juwon cache
+//#ifdef LISTDB_SKIPLIST_CACHE
+//    for(int i=0; i<kNumRegions; i++){
+//     cache_[task->shard][i]->print_node_cnt();
+//    }
+//#endif
+
 #else
   // Insert N times
   // For Test
@@ -2117,6 +2148,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       break;
     }
   }
+  delete task->l0;
 #endif
 #endif
 }

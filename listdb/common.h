@@ -16,7 +16,7 @@
 #define L0_CACHE_T_DOUBLE_HASHING 3
 #define L0_CACHE_T_LINEAR_PROBING 4
 //define this for using hashtable
-#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
+//#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
 
 #ifdef LISTDB_L0_CACHE
 #ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
@@ -47,6 +47,9 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr int kMaxNumMemTables = 4;
 constexpr int kMaxNumMemTables = 16;
 
+//for L2 Comparison
+//#define LISTDB_BLOOM_FILTER
+
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
@@ -65,14 +68,15 @@ constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
 constexpr int kSkipListCacheMinPmemHeight = 8;
-constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+constexpr size_t kSkipListCacheCapacityBeforeCalibrate = (45ull << 20);
+constexpr size_t kSkipListCacheCapacity = (45ull << 20)*0.774;
 #endif
 
 constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 30;
+constexpr int kNumWorkers = 40;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
@@ -83,9 +87,9 @@ constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 constexpr size_t kHTSize = 150ull * 1000 * 1000;
 #else
 #if LISTDB_L0_CACHE != L0_CACHE_T_SIMPLE
-constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacityBeforeCalibrate) / 8;
 #else
-constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 24;
+constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacityBeforeCalibrate) / 24;
 #endif
 #endif
 
