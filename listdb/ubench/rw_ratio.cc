@@ -391,15 +391,15 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 #ifdef COUNT_FOUND
     std::vector<int> cnt(num_threads);
 #endif
-    std::vector<size_t> pmem_get_cnt(num_threads);
-    std::vector<size_t> search_visit_cnt(num_threads);
-    std::vector<size_t> height_visit_cnt[kMaxHeight];
-    for (int i = 0; i < kMaxHeight; i++) {
-      height_visit_cnt[i].reserve(num_threads);
-      for (int j = 0; j < num_threads; j++) {
-        height_visit_cnt[i][j] = 0;
-      }
-    }
+    //std::vector<size_t> pmem_get_cnt(num_threads);
+    //std::vector<size_t> search_visit_cnt(num_threads);
+    //std::vector<size_t> height_visit_cnt[kMaxHeight];
+    //for (int i = 0; i < kMaxHeight; i++) {
+    //  height_visit_cnt[i].reserve(num_threads);
+    //  for (int j = 0; j < num_threads; j++) {
+    //    height_visit_cnt[i][j] = 0;
+    //  }
+    //}
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
 
     //std::atomic<int> lookup_fail_cnt=0;
@@ -433,11 +433,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //latency[i] = std::chrono::duration_cast<std::chrono::nanoseconds>(query_end - query_begin).count(); //test juwon
         }
 
-        pmem_get_cnt[id] = client->pmem_get_cnt();
-        search_visit_cnt[id] = client->search_visit_cnt();
-        for (int h = 0; h < kMaxHeight; h++) {
-          height_visit_cnt[h][id] = client->height_visit_cnt(h);
-        }
+        //pmem_get_cnt[id] = client->pmem_get_cnt();
+        //search_visit_cnt[id] = client->search_visit_cnt();
+        //for (int h = 0; h < kMaxHeight; h++) {
+        //  height_visit_cnt[h][id] = client->height_visit_cnt(h);
+        //}
       });
     }
     
@@ -459,17 +459,17 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     fprintf(stdout, "Found %d\n", cnt_sum);
 #endif
 
-    size_t pmem_get_cnt_total = 0;
-    size_t search_visit_cnt_total = 0;
-    size_t height_visit_cnt_total[kMaxHeight] = {};
+    //size_t pmem_get_cnt_total = 0;
+    //size_t search_visit_cnt_total = 0;
+    //size_t height_visit_cnt_total[kMaxHeight] = {};
     //size_t latency_total = 0; //test juwon
-    for (int i = 0; i < num_threads; i++) {
-      pmem_get_cnt_total += pmem_get_cnt[i];
-      search_visit_cnt_total += search_visit_cnt[i];
-      for (int h = 0; h < kMaxHeight; h++) {
-        height_visit_cnt_total[h] += height_visit_cnt[h][i];
-      }
-    }
+    //for (int i = 0; i < num_threads; i++) {
+    //  pmem_get_cnt_total += pmem_get_cnt[i];
+    //  search_visit_cnt_total += search_visit_cnt[i];
+    //  for (int h = 0; h < kMaxHeight; h++) {
+    //    height_visit_cnt_total[h] += height_visit_cnt[h][i];
+    //  }
+    //}
 
     //std::sort(latency, latency+NUM_WORKS);
     //for(size_t i=0; i<NUM_WORKS; i++){
@@ -479,12 +479,12 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     //fprintf(stdout, "avg latency: %zu\n", latency_total/NUM_WORKS);//test juwon
     //fprintf(stdout, "P95 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.95-1)]);//test juwon
     //fprintf(stdout, "P99 latency: %zu\n", latency[(size_t)(NUM_WORKS*0.99-1)]);//test juwon
-    fprintf(stdout, "Number of queries fallen back to pmem search: %zu\n", pmem_get_cnt_total);
-    fprintf(stdout, "Pmem node visit count for queries fallen back to pmem search: %zu\n", search_visit_cnt_total);
-    fprintf(stdout, "Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", (double) search_visit_cnt_total / pmem_get_cnt_total);
-    for (int h = 0; h < kMaxHeight; h++) {
-      fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
-    }
+    //fprintf(stdout, "Number of queries fallen back to pmem search: %zu\n", pmem_get_cnt_total);
+    //fprintf(stdout, "Pmem node visit count for queries fallen back to pmem search: %zu\n", search_visit_cnt_total);
+    //fprintf(stdout, "Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", (double) search_visit_cnt_total / pmem_get_cnt_total);
+    //for (int h = 0; h < kMaxHeight; h++) {
+    //   fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
+    //}
 #ifdef LISTDB_L1_LRU
     fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
 #endif
