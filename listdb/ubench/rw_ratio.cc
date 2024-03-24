@@ -653,7 +653,7 @@ int main(int argc, char* argv[]) {
   load_keys.reserve(NUM_LOADS);
   work_ops.reserve(NUM_WORKS);
   work_keys.reserve(NUM_WORKS);
-  work_scan_nums.reserve(NUM_WORKS);
+  //work_scan_nums.reserve(NUM_WORKS);
   FillLoadKeysReadRatio(NUM_LOADS, NUM_WORKS, &load_keys, read_ratio);
   //FillLoadKeys(NUM_LOADS, &load_keys, "/juwon/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
   FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
