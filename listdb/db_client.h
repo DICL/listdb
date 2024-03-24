@@ -140,6 +140,12 @@ void DBClient::Put(const Key& key, const Value& value) {
 
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
+
+#ifdef LISTDB_BLOOM_FILTER
+  //after insertion, add key to bloom filter
+  mem->bloom_filter()->AddKey(key);
+#endif
+
   mem->w_UnRef();
 #else
   int s = KeyShard(key);
@@ -217,6 +223,12 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
@@ -257,9 +269,15 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #endif
     }
 #endif
-    pmem_get_cnt_++;
+    //pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
@@ -352,6 +370,12 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!mem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
@@ -392,9 +416,15 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 #endif
     }
 #endif
-    pmem_get_cnt_++;
+    //pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
+#ifdef LISTDB_BLOOM_FILTER
+        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+          table = table->Next();
+          continue;
+        }
+#endif
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
       auto found_paddr = Lookup(key, l0_pool_id_, skiplist);
@@ -535,8 +565,8 @@ PmemPtr DBClient::LevelLookup(const Key& key, const int region, const int level,
 PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
-  search_visit_cnt_++;
-  height_visit_cnt_[kMaxHeight - 1]++;
+  //search_visit_cnt_++;
+  //height_visit_cnt_[kMaxHeight - 1]++;
   uint64_t curr_paddr_dump;
   Node* curr;
   int height = pred->height();
@@ -547,8 +577,8 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
       curr_paddr_dump = pred->next[i];
       curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
       if (curr) {
-        search_visit_cnt_++;
-        height_visit_cnt_[i]++;
+        //search_visit_cnt_++;
+        //height_visit_cnt_[i]++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -561,8 +591,8 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
     if (pool_id != skiplist->primary_pool_id()) {
-      search_visit_cnt_++;
-      height_visit_cnt_[kMaxHeight - 1]++;
+      //search_visit_cnt_++;
+      //height_visit_cnt_[kMaxHeight - 1]++;
     }
     pred = skiplist->head();
   }
@@ -570,8 +600,8 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
-      search_visit_cnt_++;
-      height_visit_cnt_[0]++;
+      //search_visit_cnt_++;
+      //height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
         pred = curr;
         continue;
@@ -637,8 +667,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
   #endif
 #endif
-  search_visit_cnt_++;
-  height_visit_cnt_[height - 1]++;
+  //search_visit_cnt_++;
+  //height_visit_cnt_[height - 1]++;
 
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
@@ -646,8 +676,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
       curr_paddr_dump = pred->next[i];
       curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
       if (curr) {
-        search_visit_cnt_++;
-        height_visit_cnt_[i]++;
+        //search_visit_cnt_++;
+        //height_visit_cnt_[i]++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -660,8 +690,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
     if (pool_id != skiplist->primary_pool_id()) {
-      search_visit_cnt_++;
-      height_visit_cnt_[kMaxHeight - 1]++;
+      //search_visit_cnt_++;
+      //height_visit_cnt_[kMaxHeight - 1]++;
     }
     pred = skiplist->head();
   }
@@ -669,8 +699,8 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
     if (curr) {
-      search_visit_cnt_++;
-      height_visit_cnt_[0]++;
+      //search_visit_cnt_++;
+      //height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
         pred = curr;
         continue;

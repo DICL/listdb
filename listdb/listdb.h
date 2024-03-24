@@ -1255,7 +1255,11 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_cnt += flush_cnt;
   td->flush_time_usec += (end_micros - begin_micros);
 
+#ifdef LISTDB_BLOOM_FILTER
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist, task->imm->bloom_filter());
+#else
   PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+#endif
   l0_table->SetManifest(task->imm->l0_manifest());
   task->imm->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery

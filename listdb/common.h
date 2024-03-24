@@ -56,6 +56,9 @@ constexpr int kNumCachedLevels = 12;
 constexpr int kLruMaxHeight = 20;
 #endif
 
+//for L2 Comparison
+#define LISTDB_BLOOM_FILTER
+
 #ifdef LISTDB_SKIPLIST_CACHE
 constexpr size_t kSkipListCacheCardinality = 4;
 #define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
