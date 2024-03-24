@@ -44,7 +44,7 @@
 #define L0_COMPACTION_ON_IDLE
 #define L0_COMPACTION_YIELD
 
-//#define REPORT_BACKGROUND_WORKS
+#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
@@ -250,7 +250,7 @@ ListDB::~ListDB() {
 }
 
 void ListDB::Init() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   fs::remove_all(db_path);
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
@@ -1054,6 +1054,7 @@ void ListDB::BackgroundThreadLoop() {
       continue;
 #endif
     }
+    continue;
 
     //available_workers.clear();
     //for (int i = 0; i < kNumWorkers; i++) {

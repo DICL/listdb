@@ -8,13 +8,13 @@ class Reporter {
     kPut,
     kGet
   };
-  Reporter(const std::string& fname, uint64_t report_interval_msecs = 1000, std::string header = "");
+  Reporter(const std::string& fname, uint64_t report_interval_msecs = 100, std::string header = "");
   ~Reporter();
   void Start();
   void ReportFinishedOps(OpType op_type, int64_t num_ops);
 
  private:
-  std::string Header() const { return "msecs_elapsed,flush_done,compaction_done,put_done,get_done"; }
+  std::string Header() const { return "secs_elapsed,flush_done,compaction_done,put_done,get_done"; }
   void SleepAndReport();
 
   static constexpr uint64_t kMicrosInMilliSecond = 1000U;
@@ -89,10 +89,10 @@ void Reporter::SleepAndReport() {
     }
     auto msecs_elapsed = (Clock::NowMicros() - time_started + kMicrosInMilliSecond / 2) / kMicrosInMilliSecond;
     std::stringstream ss;
-    ss << msecs_elapsed << ",";
+    ss << (double)msecs_elapsed/1000 << ",";
     for (unsigned int i = 0; i < total_ops_done_.size(); i++) {
       auto total_ops_done_snapshot = total_ops_done_[i].load();
-      ss << total_ops_done_snapshot - last_report_[i];
+      ss << (double)(total_ops_done_snapshot - last_report_[i])/report_interval_msecs_/1000;
       if (i < total_ops_done_.size() - 1) {
         ss << ",";
       } else  {

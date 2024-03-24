@@ -31,9 +31,9 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 40;
+constexpr int NUM_THREADS = 80;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
+constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
 
 constexpr int NUM_SHARDS = kNumShards;
 
@@ -130,7 +130,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/ycsb_workloadc/";
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -138,7 +138,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/wkim/RECIPE/index-microbench/workloads_rw_ratio_unif/";
+  ss << "/juwon/index-microbench/ycsb_workloadc/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, ss.str());
 }
@@ -323,6 +323,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
   ListDB* db = new ListDB();
   db->Init();
+
+  //test juwon reporter
+  Reporter* reporter = nullptr;
+  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
+  reporter->Start();
   
   // Load
   {
@@ -337,9 +342,19 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
           client->Put(load_keys[i], load_keys[i]);
+
+          //test juwon reporter
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
+
         }
+
+        delete reporter_client;//test juwon reporter
       });
     }
     for (auto& t : loaders) {
@@ -356,7 +371,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
-  std::this_thread::sleep_for(std::chrono::seconds(20));
+  std::this_thread::sleep_for(std::chrono::seconds(60));
   db->PrintDebugLsmState(0);
 
   // Work
