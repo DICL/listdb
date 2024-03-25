@@ -53,7 +53,7 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 constexpr int kMaxNumMemTables = 4;
 //for LISTDB L2 
 constexpr int kL1LevelMultiplier = 10;
-//#define LISTDB_BLOOM_FILTER
+#define LISTDB_BLOOM_FILTER
 
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
@@ -89,7 +89,7 @@ constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 2;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 40;
+constexpr int kNumWorkers = 20;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;

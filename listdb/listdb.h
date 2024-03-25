@@ -51,16 +51,18 @@
 #define L0_COMPACTION_ON_IDLE
 #define L0_COMPACTION_YIELD
 
-//#define REPORT_BACKGROUND_WORKS
+#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
-#define REPORT_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kCompaction, x)
+#define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL0Compaction, x)
+#define REPORT_L1_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
 #define REPORT_DONE delete reporter_client
 #else
 #define INIT_REPORTER_CLIENT
 #define REPORT_FLUSH_OPS(x)
-#define REPORT_COMPACTION_OPS(x)
+#define REPORT_L0_COMPACTION_OPS(x)
+#define REPORT_L1_COMPACTION_OPS(x)
 #define REPORT_DONE
 #define CALC_L1_COMPACTION_TIME
 #endif
@@ -1852,7 +1854,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     // call clwb
     l1_table->increase_l0_compaction_cnt();
     if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
-    if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
+    //if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
     return;
   }
   auto l1_table = (PmemTable*) l1_tl->GetFront();
@@ -1969,7 +1971,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     }
 #endif
 
-    REPORT_COMPACTION_OPS(1);
+    REPORT_L0_COMPACTION_OPS(1);
     zstack.pop();
     delete z;
   }
@@ -2008,7 +2010,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
   delete task->l0;
 
-if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
+//if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
 }
 
 void ListDB::ManualL1Compaction(int shard) {
@@ -2142,7 +2144,6 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         heads[i]->next[0].next_key = l2_node->min_key;
         clwb(&(heads[i]->next[0]), sizeof(HintedPtr));
         _mm_sfence();
-
       }
 
       //connect all first skiplist nodes of each numa
@@ -2227,8 +2228,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       //   2. Check if total counter reach to 2*NPAIRS
       //   
       //   and if so, do insert
+
       if(l1_node==nullptr || (curr && (curr->min_key.Compare(l1_node->key) <= 0)) || key_total_cnt > NPAIRS){
 
+        INIT_REPORTER_CLIENT;
 
         //
         // 1-1. if total counter exceed NPAIRS, do split exactly half number of total counter
@@ -2276,6 +2279,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           uint64_t leftmost_duplicate_pos = 0;
           //counter temorarily representing prededecessor node's kvpairs counter
           uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
+          //save buffer_cnt for use REPORT_L1_COMPACTION
+#ifdef REPORT_BACKGROUND_WORKS
+          uint64_t tmp_buffer_cnt = buffer_cnt;
+#endif
 
           //buffer_cnt와 tmp_pred_kvpairs_cnt 하나씩 줄이면서 끝에서 큰거를 하나씩 넣어준다. (buffer_cnt가 0에 도달하거나 pos가 0에 도달하면 break)
           while(buffer_cnt>0 && insert_pos>0){
@@ -2388,6 +2395,9 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           //new node가 연결되지 않았는데 l2 node의 cnt 부터 줄어들면 key를 볼 수 없다.
           pred_kvpairs->cnt = tmp_pred_kvpairs_cnt;
           key_total_cnt = pred_kvpairs->cnt + buffer_cnt;
+
+          //report number of inserted keys for monitoring
+          REPORT_L1_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
         } //split of pred node is done.
         
         //
@@ -2400,6 +2410,10 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         uint64_t leftmost_duplicate_pos = 0;
         //counter temorarily representing prededecessor node's kvpairs counter
         uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
+        //save buffer_cnt for use REPORT_L1_COMPACTION
+#ifdef REPORT_BACKGROUND_WORKS
+        uint64_t tmp_buffer_cnt = buffer_cnt;
+#endif
         //pred_kvpairs->cnt를 미리 key_total_cnt로 설정해준다. (삽입과정 중 검색하는 client가 가능한 모든 key를 볼수있게끔 하기 위해)
         pred_kvpairs->cnt = key_total_cnt;
 
@@ -2451,6 +2465,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
         //insert into preds node is done.
 
+        //report number of inserted keys for monitoring
+        REPORT_L1_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
 
         //1-3. if there is no l1_node left, break while loop
         //     only if it does insert in #1.
@@ -2476,6 +2492,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
         key_total_cnt = pred_kvpairs->cnt;
+
+        REPORT_DONE;
       }
 
 

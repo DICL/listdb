@@ -4,25 +4,26 @@ class Reporter {
  public:
   enum class OpType {
     kFlush,
-    kCompaction,
+    kL0Compaction,
     kPut,
-    kGet
+    kGet,
+    kL1Compaction
   };
-  Reporter(const std::string& fname, uint64_t report_interval_msecs = 1000, std::string header = "");
+  Reporter(const std::string& fname, uint64_t report_interval_msecs = 100, std::string header = "");
   ~Reporter();
   void Start();
   void ReportFinishedOps(OpType op_type, int64_t num_ops);
 
  private:
-  std::string Header() const { return "msecs_elapsed,flush_done,compaction_done,put_done,get_done"; }
+  std::string Header() const { return "msecs_elapsed,flush_done,l0_compaction_done,put_done,get_done,l1_compaction_done"; }
   void SleepAndReport();
 
   static constexpr uint64_t kMicrosInMilliSecond = 1000U;
 
   const uint64_t report_interval_msecs_;
   std::ofstream report_file_;
-  std::array<std::atomic<int64_t>, 4> total_ops_done_;
-  std::array<int64_t, 4> last_report_;
+  std::array<std::atomic<int64_t>, 5> total_ops_done_;
+  std::array<int64_t, 5> last_report_;
   std::thread reporting_thread_;
   std::mutex mu_;
   std::condition_variable stop_cv_;
@@ -89,10 +90,10 @@ void Reporter::SleepAndReport() {
     }
     auto msecs_elapsed = (Clock::NowMicros() - time_started + kMicrosInMilliSecond / 2) / kMicrosInMilliSecond;
     std::stringstream ss;
-    ss << msecs_elapsed << ",";
+    ss << (double)msecs_elapsed/1000 << ",";
     for (unsigned int i = 0; i < total_ops_done_.size(); i++) {
       auto total_ops_done_snapshot = total_ops_done_[i].load();
-      ss << total_ops_done_snapshot - last_report_[i];
+      ss << (double)(total_ops_done_snapshot - last_report_[i])/report_interval_msecs_/1000;
       if (i < total_ops_done_.size() - 1) {
         ss << ",";
       } else  {
