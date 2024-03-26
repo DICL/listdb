@@ -165,9 +165,12 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
   //if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
 
 #ifdef LISTDB_GREEDY_PLR
+  train_fit_ = 0;
+  GreedyPLR* new_greedy = new GreedyPLR(ERROR_BOUND, capacity_*kLearnedIndexCapacityRatio);
+  bool new_train_fit = new_greedy->train(keys_, CurrFieldNum);
   if(greedy_ != nullptr) delete greedy_;
-  greedy_ = new GreedyPLR(ERROR_BOUND, capacity_*kLearnedIndexCapacityRatio);
-  train_fit_ = greedy_->train(keys_, CurrFieldNum);
+  greedy_ = new_greedy;
+  train_fit_ = new_train_fit;
   //if(region_==0) greedy_->report();//test juwon
 #endif
 }

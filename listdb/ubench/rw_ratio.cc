@@ -33,9 +33,21 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 40;
+constexpr int NUM_THREADS = 60;
 constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
+
+//for user behavior
+constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
+constexpr size_t NUM_LOADS2 = 200 * 1000 * 1000;
+constexpr size_t NUM_LOADS3 = 200 * 1000 * 1000;
+constexpr size_t NUM_WORKS1 = 200 * 1000 * 1000;
+constexpr size_t NUM_WORKS2 = 200 * 1000 * 1000;
+constexpr int LOAD1_TIME = 60;
+constexpr int LOAD2_TIME = 60;
+constexpr int LOAD3_TIME = 60;
+constexpr int WORK1_TIME = 100;
+constexpr int WORK2_TIME = 100;
 
 constexpr int SLEEP_TIME = 25;//time to waiting l0 compactions end
 constexpr int SLEEP_TIME2 = 12;//time to waiting l1 compactions end
@@ -585,6 +597,322 @@ void Run3(const int num_threads, const int num_shards, const std::vector<uint64_
   fprintf(stdout, "\n");
 }
 
+//Run4 for user behavior
+void Run4(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys1, const std::vector<uint64_t>& load_keys2, const std::vector<uint64_t>& load_keys3,
+const std::vector<OpType>& work_ops1, const std::vector<OpType>& work_ops2, const std::vector<uint64_t>& work_keys1, const std::vector<uint64_t>& work_keys2,  const std::vector<uint64_t>& work_scan_nums) {
+  fprintf(stdout, "=== ListDB (%d-shard) ===\n", num_shards);
+
+  ListDB* db = new ListDB();
+  db->Init();
+
+  //test juwon reporter
+  Reporter* reporter = nullptr;
+  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
+  reporter->Start();
+
+  
+  // Load1
+  {
+    printf("Load %zu items\n", NUM_LOADS1);
+
+    auto begin_tp = std::chrono::steady_clock::now();
+    std::vector<std::thread> loaders;
+    const size_t num_ops_per_thread = NUM_LOADS1 / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      loaders.emplace_back([&, id] {
+        SetAffinity(Numa::CpuSequenceRR(id));
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          client->Put(load_keys1[i], load_keys1[i]);
+
+          //test juwon reporter
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
+        }
+        delete reporter_client;//test juwon reporter
+      });
+    }
+    for (auto& t : loaders) {
+      t.join();
+    }
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+    fprintf(stdout, "Load1 time : %f\n", dur_sec);
+    fprintf(stdout, "Load1 IOPS: %.3lf M\n", NUM_LOADS1/dur_sec/1000000);
+    
+    while(true){
+      if(dur_sec>=LOAD1_TIME) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      end_tp = std::chrono::steady_clock::now();
+      dur = end_tp - begin_tp;
+      dur_sec = dur.count();
+    }
+  }
+  fprintf(stdout, "\n");
+
+  // Load2
+  {
+    printf("Load %zu items\n", NUM_LOADS2);
+
+    auto begin_tp = std::chrono::steady_clock::now();
+    std::vector<std::thread> loaders;
+    const size_t num_ops_per_thread = NUM_LOADS2 / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      loaders.emplace_back([&, id] {
+        SetAffinity(Numa::CpuSequenceRR(id));
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          client->Put(load_keys2[i], load_keys2[i]);
+
+          //test juwon reporter
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
+        }
+        delete reporter_client;//test juwon reporter
+      });
+    }
+    for (auto& t : loaders) {
+      t.join();
+    }
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+    fprintf(stdout, "Load2 time : %f\n", dur_sec);
+    fprintf(stdout, "Load2 IOPS: %.3lf M\n", NUM_LOADS2/dur_sec/1000000);
+
+    
+    while(true){
+      if(dur_sec>=LOAD2_TIME) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      end_tp = std::chrono::steady_clock::now();
+      dur = end_tp - begin_tp;
+      dur_sec = dur.count();
+    }
+  }
+  fprintf(stdout, "\n");
+
+  // Load3
+  {
+    printf("Load %zu items\n", NUM_LOADS3);
+
+    auto begin_tp = std::chrono::steady_clock::now();
+    std::vector<std::thread> loaders;
+    const size_t num_ops_per_thread = NUM_LOADS3 / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      loaders.emplace_back([&, id] {
+        SetAffinity(Numa::CpuSequenceRR(id));
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          client->Put(load_keys3[i], load_keys3[i]);
+
+          //test juwon reporter
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
+        }
+        delete reporter_client;//test juwon reporter
+      });
+    }
+    for (auto& t : loaders) {
+      t.join();
+    }
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+    fprintf(stdout, "Load3 time : %f\n", dur_sec);
+    fprintf(stdout, "Load3 IOPS: %.3lf M\n", NUM_LOADS3/dur_sec/1000000);
+
+    
+    while(true){
+      if(dur_sec>=LOAD3_TIME) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      end_tp = std::chrono::steady_clock::now();
+      dur = end_tp - begin_tp;
+      dur_sec = dur.count();
+    }
+  }
+  fprintf(stdout, "\n");
+
+
+  // Work1
+  {
+    printf("WORK1 %zu queries\n", NUM_WORKS1);
+    auto begin_tp = std::chrono::steady_clock::now();
+    std::vector<std::thread> workers;
+#ifdef COUNT_FOUND
+    std::vector<int> cnt(num_threads);
+#endif
+    const size_t num_ops_per_thread = NUM_WORKS1 / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      workers.emplace_back([&, id] {
+        SetAffinity(Numa::CpuSequenceRR(id));
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          if (work_ops1[i] == OP_INSERT || work_ops1[i] == OP_UPDATE) {
+            client->Put(work_keys1[i], work_keys1[i]);
+
+            //test juwon reporter
+            if (reporter_client != nullptr) {
+              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+            }
+          } else if (work_ops1[i] == OP_READ) {
+            uint64_t val_read;
+#ifndef COUNT_FOUND
+            //if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
+            client->Get(work_keys1[i], &val_read);
+#else
+            auto ret = client->Get(work_keys1[i], &val_read);
+            if (ret) cnt[id]++;
+#endif
+            //test juwon reporter
+            if (reporter_client != nullptr) {
+              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);//its get
+            }
+          } else if (work_ops1[i] == OP_SCAN) {
+            std::vector<uint64_t> val_scan;
+            val_scan.reserve(work_scan_nums[i]);
+            
+            client->Scan(work_keys1[i], work_scan_nums[i], &val_scan);
+          } 
+        }
+        delete reporter_client;//test juwon reporter
+      });
+    }
+    
+    for (auto& t :  workers) {
+      t.join();
+    }
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+
+    fprintf(stdout, "Work1 time : %f\n", dur_sec);
+    fprintf(stdout, "Work1 IOPS: %.3lf M\n", NUM_WORKS1/dur_sec/1000000);
+    //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
+#ifdef COUNT_FOUND
+    int cnt_sum = 0;
+    for (int i = 0; i < num_threads; i++) {
+      cnt_sum += cnt[i];
+    }
+    fprintf(stdout, "Found %d\n", cnt_sum);
+#endif
+#ifdef LISTDB_L1_LRU
+    fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
+#endif
+
+    
+    while(true){
+      if(dur_sec>=WORK1_TIME) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      end_tp = std::chrono::steady_clock::now();
+      dur = end_tp - begin_tp;
+      dur_sec = dur.count();
+    }
+  }
+
+  // Work2
+  {
+    printf("WORK2 %zu queries\n", NUM_WORKS2);
+    auto begin_tp = std::chrono::steady_clock::now();
+    std::vector<std::thread> workers;
+#ifdef COUNT_FOUND
+    std::vector<int> cnt(num_threads);
+#endif
+    const size_t num_ops_per_thread = NUM_WORKS2 / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      workers.emplace_back([&, id] {
+        SetAffinity(Numa::CpuSequenceRR(id));
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          if (work_ops2[i] == OP_INSERT || work_ops2[i] == OP_UPDATE) {
+            client->Put(work_keys2[i], work_keys2[i]);
+
+            //test juwon reporter
+            if (reporter_client != nullptr) {
+              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+            }
+          } else if (work_ops2[i] == OP_READ) {
+            uint64_t val_read;
+#ifndef COUNT_FOUND
+            //if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
+            client->Get(work_keys2[i], &val_read);
+#else
+            auto ret = client->Get(work_keys2[i], &val_read);
+            if (ret) cnt[id]++;
+#endif
+              //test juwon reporter
+            if (reporter_client != nullptr) {
+              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);//its get
+            }
+          } else if (work_ops2[i] == OP_SCAN) {
+            std::vector<uint64_t> val_scan;
+            val_scan.reserve(work_scan_nums[i]);
+            
+            client->Scan(work_keys2[i], work_scan_nums[i], &val_scan);
+          } 
+        }
+        delete reporter_client;//test juwon reporter
+      });
+    }
+    
+    for (auto& t :  workers) {
+      t.join();
+    }
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+
+
+    fprintf(stdout, "Work2 IOPS: %.3lf M\n", NUM_WORKS2/dur_sec/1000000);
+    fprintf(stdout, "Work2 time : %f\n", dur_sec);
+    //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
+#ifdef COUNT_FOUND
+    int cnt_sum = 0;
+    for (int i = 0; i < num_threads; i++) {
+      cnt_sum += cnt[i];
+    }
+    fprintf(stdout, "Found %d\n", cnt_sum);
+#endif
+#ifdef LISTDB_L1_LRU
+    fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
+#endif
+
+    
+    while(true){
+      if(dur_sec>=WORK2_TIME) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      end_tp = std::chrono::steady_clock::now();
+      dur = end_tp - begin_tp;
+      dur_sec = dur.count();
+    }
+  }
+
+
+  fprintf(stdout, "\n");
+  std::string buf;
+  db->GetStatString("l2_cache_size", &buf);
+  fprintf(stdout, "%s\n", buf.c_str());
+  delete db;
+}
+
 void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::string>* props) {
   struct option long_options[] = {
     { "num_threads", required_argument, 0, 0 },
@@ -659,6 +987,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
+  /*
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -666,14 +995,63 @@ int main(int argc, char* argv[]) {
   load_keys.reserve(NUM_LOADS);
   work_ops.reserve(NUM_WORKS);
   work_keys.reserve(NUM_WORKS);
+  
   //work_scan_nums.reserve(NUM_WORKS);
   FillLoadKeysReadRatio(NUM_LOADS, NUM_WORKS, &load_keys, read_ratio);
   //FillLoadKeys(NUM_LOADS, &load_keys, "/juwon/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
   FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
+  */
 
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
-  Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
+  //Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
+
+  //user behavior
+  std::vector<uint64_t> load_keys1;
+  std::vector<uint64_t> load_keys2;
+  std::vector<uint64_t> load_keys3;
+  std::vector<OpType> work_ops1;
+  std::vector<OpType> work_ops2;
+  std::vector<uint64_t> work_keys1;
+  std::vector<uint64_t> work_keys2;
+  std::vector<uint64_t> work_scan_nums;
+  load_keys1.reserve(NUM_LOADS1);
+  load_keys2.reserve(NUM_LOADS2);
+  load_keys3.reserve(NUM_LOADS3);
+  work_ops1.reserve(NUM_WORKS1);
+  work_ops2.reserve(NUM_WORKS2);
+  work_keys1.reserve(NUM_WORKS1);
+  work_keys2.reserve(NUM_WORKS2);
+
+  std::stringstream ss;
+
+  ss.str("");
+  ss << "/juwon/index-microbench/ycsb_workloada/"; //test juwon
+  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS1 / 1000 / 1000) << "M_" << (NUM_WORKS1 / 1000 / 1000) << "M";
+  FillLoadKeys(NUM_LOADS1, &load_keys1, ss.str());
+
+  ss.str("");
+  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS2 / 1000 / 1000) << "M_" << 100 << "M";
+  FillLoadKeys(NUM_LOADS2, &load_keys2, ss.str());
+
+  ss.str("");
+  ss << "/juwon/index-microbench/ycsb_workloadd/"; //test juwon
+  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
+  FillLoadKeys(NUM_LOADS3, &load_keys3, ss.str());
+
+  ss.str("");
+  ss << "/juwon/index-microbench/ycsb_workloada/"; //test juwon
+  ss << "run_r" << read_ratio << "_unif_int_" << (NUM_LOADS1 / 1000 / 1000) << "M_" << (NUM_WORKS1 / 1000 / 1000) << "M";
+  FillWorkKeys(NUM_WORKS1, &work_ops1, &work_keys1, &work_scan_nums, ss.str());
+
+  ss.str("");
+  ss << "/juwon/index-microbench/ycsb_workloadd/"; //test juwon
+  ss << "run_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
+  FillWorkKeys(NUM_WORKS2, &work_ops2, &work_keys2, &work_scan_nums, ss.str());
+
+
+  Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
 
   return 0;
 }
