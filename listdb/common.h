@@ -52,7 +52,7 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr int kMaxNumMemTables = 4;
 constexpr int kMaxNumMemTables = 4;
 //for LISTDB L2 
-constexpr int kL1LevelMultiplier = 10;
+constexpr int kL1LevelMultiplier = 1;
 #define LISTDB_BLOOM_FILTER
 
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);

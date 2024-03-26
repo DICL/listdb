@@ -1848,7 +1848,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
         break;
       }
     }
-    delete task->l0;
     // Update manifest
     l0_manifest->status = Level0or1Status::kMergeDone;
     // call clwb
@@ -2008,7 +2007,6 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
       break;
     }
   }
-  delete task->l0;
 
 //if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
 }
