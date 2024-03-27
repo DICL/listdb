@@ -227,7 +227,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
-        if(!mem->bloom_filter()->KeyMayMatch(key)){
+        if(mem->bloom_filter() && !mem->bloom_filter()->KeyMayMatch(key)){
           table = table->Next();
           continue;
         }
@@ -276,7 +276,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
-        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+        if(pmem->bloom_filter() && !pmem->bloom_filter()->KeyMayMatch(key)){
           table = table->Next();
           continue;
         }
@@ -394,7 +394,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
-        if(!mem->bloom_filter()->KeyMayMatch(key)){
+        if(mem->bloom_filter() && !mem->bloom_filter()->KeyMayMatch(key)){
           table = table->Next();
           continue;
         }
@@ -443,7 +443,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
-        if(!pmem->bloom_filter()->KeyMayMatch(key)){
+        if(pmem->bloom_filter() && !pmem->bloom_filter()->KeyMayMatch(key)){
           table = table->Next();
           continue;
         }

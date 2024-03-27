@@ -57,6 +57,9 @@
 #define REPORT_DONE
 #endif
 
+#define L0_COMPACTION_LATENCY_BREAKDOWN
+#define L0_COMPACTION_NEEDS_TRIGGER
+
 
 //#define L0_COMPACTION_ON_IDLE
 //#define L0_COMPACTION_YIELD
@@ -1054,7 +1057,6 @@ void ListDB::BackgroundThreadLoop() {
       continue;
 #endif
     }
-    continue;
 
     //available_workers.clear();
     //for (int i = 0; i < kNumWorkers; i++) {

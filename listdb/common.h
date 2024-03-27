@@ -16,7 +16,7 @@
 #define L0_CACHE_T_DOUBLE_HASHING 3
 #define L0_CACHE_T_LINEAR_PROBING 4
 //CHOOSE L0 CACHE TYPE ABOVE
-//#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
+#define LISTDB_L0_CACHE L0_CACHE_T_DOUBLE_HASHING
 
 #ifdef LISTDB_L0_CACHE
 #ifndef LISTDB_L0_CACHE_PROBING_DISTANCE
@@ -74,7 +74,7 @@ constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 1;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 40;
+constexpr int kNumWorkers = 30;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
