@@ -69,9 +69,9 @@ inline Table* MemTableList::NewMutable(size_t table_capacity, Table* next_table)
   }
 
   // Init the new manifest for a new table
-  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l0_manifest;
+  pmem::obj::persistent_ptr<pmem_l0_info> l0_manifest;
   auto db_pool = Pmem::pool<pmem_db>(0);
-  pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, l0_manifest);
+  pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, l0_manifest);
   auto db_root = db_pool.root();
   auto shard_manifest = db_root->shard[shard_id_];
   l0_manifest->id = shard_manifest->l0_cnt++;

@@ -1144,14 +1144,6 @@ class Benchmark {
     }
   }
 
-  //add for ListDB L2
-  void L1Compaction() {
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-    for (int i = 0; i < kNumShards; i++) {
-      db_->ManualL1Compaction(i);
-    }
-  }
-
   void PrintHeader() {
     PrintEnvironment();
     fprintf(stdout,

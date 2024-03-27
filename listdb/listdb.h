@@ -21,9 +21,6 @@
 #include <numa.h>
 
 #include "listdb/common.h"
-#ifdef LISTDB_L1_LRU
-#include "listdb/core/lru_skiplist.h"
-#endif
 #ifdef LISTDB_SKIPLIST_CACHE
 #include "listdb/core/skiplist_cache.h"
 #endif
@@ -55,16 +52,13 @@
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
-#define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL0Compaction, x)
-#define REPORT_L1_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
+#define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
 #define REPORT_DONE delete reporter_client
 #else
 #define INIT_REPORTER_CLIENT
 #define REPORT_FLUSH_OPS(x)
 #define REPORT_L0_COMPACTION_OPS(x)
-#define REPORT_L1_COMPACTION_OPS(x)
 #define REPORT_DONE
-#define CALC_L1_COMPACTION_TIME
 #endif
 
 
@@ -84,7 +78,6 @@ class ListDB {
   struct Task {
     TaskType type;
     int shard;
-    int patience_stack;
   };
 
   struct MemTableFlushTask : Task {
@@ -97,14 +90,9 @@ class ListDB {
     MemTableList* memtable_list;
   };
 
-  struct L1CompactionTask : Task {
-    PmemTable* l1;
-    TableList* l1table_list;
-  };
-
   struct cmp_task_priority {
     bool operator()(Task* a, Task* b) {
-      if(b->type == TaskType::kL0Compaction || b->type == TaskType::kL1Compaction) return false;
+      if(b->type == TaskType::kL0Compaction) return false;
       return true;
     }
   };
@@ -172,8 +160,6 @@ class ListDB {
 
   int l0_pool_id(const int region) { return l0_pool_id_[region]; }
 
-  int l1_pool_id(const int region) { return l1_pool_id_[region]; }
-
   int l2_pool_id(const int region) { return l2_pool_id_[region]; }
 
   // Background Works
@@ -185,39 +171,15 @@ class ListDB {
 
   void FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td);
 
-  void FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td);
-
-  void FlushMemTableToL1WAL(MemTableFlushTask* task, CompactionWorkerData* td);
-
   void ManualFlushMemTable(int shard);
 
-  void ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
-
-  void ManualL1Compaction(int shard);
-
-  void LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task);
-
-  void L0CompactionCopyOnWrite(L0CompactionTask* task);
+  void LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
 
   // Utility Functions
   void PrintDebugLsmState(int shard);
 
   int GetStatString(const std::string& name, std::string* buf);
 
-#ifdef LISTDB_L1_LRU
-  std::vector<std::pair<uint64_t, uint64_t>>& sorted_arr(int r, int s) { return sorted_arr_[r][s]; }
-  LruSkipList* lru_cache(int s, int r) { return cache_[s][r]; }
-
-  size_t total_sorted_arr_size() {
-    size_t total_size = 0;
-    for (auto& rs : sorted_arr_) {
-      for (auto& ss : rs) {
-        total_size += ss.size() * 16;
-      }
-    }
-    return total_size;
-  }
-#endif
 #ifdef LISTDB_SKIPLIST_CACHE
   SkipListCacheRep* skiplist_cache(int s, int r) { return cache_[s][r]; }
 #endif
@@ -228,7 +190,6 @@ class ListDB {
 #endif
   PmemLog* log_[kNumRegions][kNumShards];
   PmemLog* l0_arena_[kNumRegions][kNumShards];
-  PmemLog* l1_arena_[kNumRegions][kNumShards];
   PmemLog* l2_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
 
@@ -245,7 +206,6 @@ class ListDB {
   std::unordered_map<int, int> pool_id_to_region_;
   std::unordered_map<int, int> log_pool_id_;
   std::unordered_map<int, int> l0_pool_id_;
-  std::unordered_map<int, int> l1_pool_id_;
   std::unordered_map<int, int> l2_pool_id_;
 
   //std::queue<MemTableFlushTask*> memtable_flush_queue_;
@@ -260,15 +220,9 @@ class ListDB {
   std::thread bg_thread_;
   bool stop_ = false;
   ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
-  ServiceStatus l1_compaction_scheduler_status_ = ServiceStatus::kActive;
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
-
-#ifdef LISTDB_L1_LRU
-  std::vector<std::pair<uint64_t, uint64_t>> sorted_arr_[kNumRegions][kNumShards];
-  LruSkipList* cache_[kNumShards][kNumRegions];
-#endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
   SkipListCacheRep* cache_[kNumShards][kNumRegions];
@@ -297,8 +251,8 @@ void ListDB::Init() {
   for (int i = 0; i < kNumShards; i++) {
     pmem::obj::persistent_ptr<pmem_db_shard> p_shard_manifest;
     pmem::obj::make_persistent_atomic<pmem_db_shard>(db_pool, p_shard_manifest);
-    pmem::obj::persistent_ptr<pmem_l0_or_l1_info> p_l0_manifest;
-    pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, p_l0_manifest);
+    pmem::obj::persistent_ptr<pmem_l0_info> p_l0_manifest;
+    pmem::obj::make_persistent_atomic<pmem_l0_info>(db_pool, p_l0_manifest);
     p_shard_manifest->l0_list_head = p_l0_manifest;
     db_root->shard[i] = p_shard_manifest;
   }
@@ -387,15 +341,6 @@ void ListDB::Init() {
 #endif
 
 
-  for (int i = 0; i < kNumRegions; i++) {
-    for (int j = 0; j < kNumShards; j++) {
-      l1_arena_[i][j] = l0_arena_[i][j];
-    }
-  }
-  for (int i = 0; i < kNumRegions; i++) {
-    l1_pool_id_[i] = l1_arena_[i][0]->pool_id();
-  }
-
   for (int i = 0; i < kNumShards; i++) {
     ll_[i] = new LevelList();
     // MemTableList
@@ -419,15 +364,6 @@ void ListDB::Init() {
       ll_[i]->SetTableList(0, tl);
     }
 
-    // L1 List
-    {
-      auto tl = new PmemTableList(kL1PmemTableCapacity / kNumShards, l1_arena_[0][0]->pool_id());
-      for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
-      }
-      ll_[i]->SetTableList(1, tl);
-    }
-
     // L2 List
     {
       auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
@@ -445,14 +381,6 @@ void ListDB::Init() {
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
     [[maybe_unused]] auto table = (MemTable*) tl->NewFront();
   }
-
-  /*
-  for (int i = 0; i < kNumShards; i++) {
-    auto l1_tl = ll_[i]->GetTableList(1);
-    // TODO: impl InitFrontOnce() and use it instead of GetFront()
-    [[maybe_unused]] auto l1_table = (PmemTable*) l1_tl->NewFront();
-  }
-  */
   
   for (int i = 0; i < kNumShards; i++) {
     
@@ -564,20 +492,6 @@ void ListDB::Open() {
   }
 #endif
 
-#ifdef L1_COW
-  std::cerr << "Open() for L0 CoW compaction is not implemented." << std:endl;
-  exit(1);
-#else
-  for (int i = 0; i < kNumRegions; i++) {
-    for (int j = 0; j < kNumShards; j++) {
-      l1_arena_[i][j] = l0_arena_[i][j];
-    }
-  }
-#endif
-  for (int i = 0; i < kNumRegions; i++) {
-    l1_pool_id_[i] = l1_arena_[i][0]->pool_id();
-  }
-
   for (int i = 0; i < kNumShards; i++) {
     ll_[i] = new LevelList();
     // MemTableList
@@ -601,15 +515,6 @@ void ListDB::Open() {
       ll_[i]->SetTableList(0, tl);
     }
 
-    // L1 List
-    {
-      auto tl = new PmemTableList(kL1PmemTableCapacity / kNumShards, l1_arena_[0][0]->pool_id());
-      for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
-      }
-      ll_[i]->SetTableList(1, tl);
-    }
-
     // L2 List
     {
       auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
@@ -624,7 +529,6 @@ void ListDB::Open() {
   std::atomic<int> l0_recovery_cnt_total = 0;
   std::atomic<int> l0_persisted_cnt_total = 0;
   std::atomic<int> merge_done_cnt_total = 0;
-  std::atomic<int> l1_recovery_cnt_total = 0;
   std::atomic<size_t> mem_insert_cnt_total = 0;
   std::atomic<size_t> l0_insert_cnt_total = 0;
 
@@ -646,7 +550,6 @@ void ListDB::Open() {
       int l0_recovery_cnt = 0;
       int l0_persisted_cnt = 0;
       int merge_done_cnt = 0;
-      int l1_recovery_cnt = 0;
       size_t mem_insert_cnt = 0;
       size_t l0_insert_cnt = 0;
       int shard_begin = (kNumShards / kNumRecoveryThreads) * wid;
@@ -654,29 +557,12 @@ void ListDB::Open() {
       for (int i = shard_begin ; i < shard_end; i++) {
         auto shard = db_root->shard[i];
 
-        // read l1 info
-        auto l1_info = shard->l1_info;
-        if (l1_info) {
-          l1_recovery_cnt++;
-          // Prepare L1 SkipList
-          auto l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
-          for (int j = 0; j < kNumRegions; j++) {
-            int pool_id = l1_pool_id_[j];
-            l1_skiplist->BindArena(pool_id, l1_arena_[j][i]);
-            l1_skiplist->BindHead(pool_id, (void*) l1_info->head[j].get());
-          }
-          auto l1_table = new PmemTable(kL1PmemTableCapacity / kNumShards, l1_skiplist);
-          //l1_table->SetSize(kMemTableCapacity);
-          auto l1_tl = ll_[i]->GetTableList(1);
-          l1_tl->SetFront(l1_table);
-        }
-
         auto memtable_list = GetTableList<MemTableList>(0, i);
         // L0 list
         // Initial -> Persist -> Persist -> ... -> Merging -> Merged -> Merged -> ...
         auto pred_l0_info = shard->l0_list_head;
         auto curr_l0_info = pred_l0_info->next;
-        std::deque<pmem::obj::persistent_ptr<pmem_l0_or_l1_info>> l0_manifests;
+        std::deque<pmem::obj::persistent_ptr<pmem_l0_info>> l0_manifests;
         uint64_t min_l0_id = std::numeric_limits<uint64_t>::max();
         while (curr_l0_info) {
           if (curr_l0_info->status == Level0or1Status::kMergeDone) {
@@ -688,7 +574,7 @@ void ListDB::Open() {
             auto succ_l0_info = curr_l0_info->next;
             // TODO(wkim): do the followings as a transaction
             pred_l0_info->next = succ_l0_info;
-            pmem::obj::delete_persistent_atomic<pmem_l0_or_l1_info>(curr_l0_info);
+            pmem::obj::delete_persistent_atomic<pmem_l0_info>(curr_l0_info);
             curr_l0_info = succ_l0_info;
             continue;
           }
@@ -897,7 +783,6 @@ void ListDB::Open() {
       l0_recovery_cnt_total.fetch_add(l0_recovery_cnt);
       l0_persisted_cnt_total.fetch_add(l0_persisted_cnt);
       merge_done_cnt_total.fetch_add(merge_done_cnt);
-      l1_recovery_cnt_total.fetch_add(l1_recovery_cnt);
       mem_insert_cnt_total.fetch_add(mem_insert_cnt);
       l0_insert_cnt_total.fetch_add(l0_insert_cnt);
     }));
@@ -912,7 +797,6 @@ void ListDB::Open() {
   fprintf(stdout, "  -     memtable: %d\n", memtable_recovery_cnt_total.load());
   fprintf(stdout, "  -           l0: %d\n", l0_recovery_cnt_total.load());
   fprintf(stdout, "  - persisted l0: %d\n", l0_persisted_cnt_total.load());
-  fprintf(stdout, "  -           l1: %d\n", l1_recovery_cnt_total.load());
   fprintf(stdout, "  -    merged l0: %d\n", merge_done_cnt_total.load());
   fprintf(stdout, "mem insert cnt: %zu\n", mem_insert_cnt_total.load());
   fprintf(stdout, " l0 insert cnt: %zu\n", l0_insert_cnt_total.load());
@@ -982,9 +866,7 @@ void ListDB::BackgroundThreadLoop() {
   std::unordered_map<Task*, int> task_to_worker;
   std::deque<Task*> memtable_flush_requests;
   std::deque<Task*> l0_compaction_requests;
-  std::deque<Task*> l1_compaction_requests;
   std::vector<int> l0_compaction_state(kNumShards);
-  std::vector<int> l1_compaction_state(kNumShards);
 
   struct ReqCompCounter {
     size_t req_cnt = 0;
@@ -998,7 +880,6 @@ void ListDB::BackgroundThreadLoop() {
     std::deque<Task*> work_completions;
     std::unique_lock<std::mutex> lk(wq_mu_);
     bool schedule_l0_compaction;
-    bool schedule_l1_compaction;
     wq_cv_.wait_for(lk, std::chrono::seconds(1), [&]{//1초동안 안들어오면 timeout을 발생시킨다., 그럼 넘어가는 것. 통지가 오면 멈춘다!
       //return !work_request_queue_.empty() || !work_completion_queue_.empty();
       return !work_request_queue_.empty() || !memtable_flush_requests.empty();
@@ -1006,7 +887,6 @@ void ListDB::BackgroundThreadLoop() {
     new_work_requests.swap(work_request_queue_);
     work_completions.swap(work_completion_queue_);//queue를 mutex를 받아와서 업데이트한다.
     schedule_l0_compaction = (l0_compaction_scheduler_status_ == ServiceStatus::kActive);
-    schedule_l1_compaction = (l0_compaction_scheduler_status_ == ServiceStatus::kActive);
     lk.unlock();
 
     for (auto& task : work_completions) {
@@ -1015,9 +895,6 @@ void ListDB::BackgroundThreadLoop() {
       task_to_worker.erase(it);
       if (task->type == TaskType::kL0Compaction) {//다른 worker가 kL0Compaction을 complete 해놨다면 이를 확인하고 해당 l0 compaction state를 0으로 바꿔놓는다. 이제 컴팩션 해도 된다는 뜻
         l0_compaction_state[task->shard] = 0;
-      }
-      if (task->type == TaskType::kL1Compaction) {
-        l1_compaction_state[task->shard] = 0;
       }
       num_assigned_tasks[worker_id]--;//해당 워커에 할당된 일 수를 줄요준다
       req_comp_cnt[task->type].comp_cnt++;//해당 타입 완료됐다고 올려준다.
@@ -1033,34 +910,6 @@ void ListDB::BackgroundThreadLoop() {
       }
       req_comp_cnt[task->type].req_cnt++;
     }//사실 new_work_request에는 flush해달라는 type만 있어야 한다. 그렇지 않으면 오류가 나게 된다.
-    if (schedule_l1_compaction) {
-      for (int i = 0; i < kNumShards; i++) {
-        if (l1_compaction_state[i] == 0) {
-          auto tl = ll_[i]->GetTableList(1);
-          if(tl->IsEmpty()) continue;
-          auto table = tl->GetFront();
-          while (true) {
-            auto next_table = table->Next();
-            if (next_table) {
-              table = next_table;
-            } else {
-              break;
-            }
-          }
-          if(((PmemTable*)table)->manifest<pmem_l0_or_l1_info>()->status == Level0or1Status::kFull){
-            auto task = new L1CompactionTask();
-            task->type = TaskType::kL1Compaction;
-            task->shard = i;
-            task->l1 = (PmemTable*) table;
-            task->l1table_list = (TableList*) tl;
-            task->patience_stack = 0;
-            l1_compaction_state[i] = 1;
-            l1_compaction_requests.push_back(task);
-            req_comp_cnt[task->type].req_cnt++;
-          }
-        }
-      }
-    }
     if (schedule_l0_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
       for (int i = 0; i < kNumShards; i++) {
         if (l0_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
@@ -1126,31 +975,6 @@ void ListDB::BackgroundThreadLoop() {
     //  }
     //}
 
-#ifndef LISTDB_NO_L1_COMPACTION
-    while (!available_workers.empty() && !l1_compaction_requests.empty()) {
-      std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
-        return num_assigned_tasks[a->id] > num_assigned_tasks[b->id];
-      });
-      auto& worker = available_workers.back();
-      auto& task = l1_compaction_requests.front();
-      l1_compaction_requests.pop_front();
-
-      std::unique_lock<std::mutex> wlk(worker->mu);
-      worker->q.push(task);
-      wlk.unlock();
-      worker->cv.notify_one();
-
-      task_to_worker[task] = worker->id;
-      num_assigned_tasks[worker->id]++;
-      l1_compaction_state[task->shard] = 2;  // assigned
-
-
-      if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
-        available_workers.pop_back();
-      }//똑같은 방식으로 남은 작업자에게 l1_compaction_request 뽑아서 전달.
-    }
-#endif
-
 #ifndef LISTDB_NO_L0_COMPACTION
     while (!available_workers.empty() && !l0_compaction_requests.empty()) {
       std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
@@ -1171,7 +995,7 @@ void ListDB::BackgroundThreadLoop() {
 
       if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
         available_workers.pop_back();
-      }//똑같은 방식으로 남은 작업자에게 l0_compaction_request 뽑아서 전달.
+      }
     }
 #endif
 
@@ -1198,19 +1022,10 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
 
 
     if (task->type == TaskType::kMemTableFlush) {
-#ifndef LISTDB_WAL
       FlushMemTable((MemTableFlushTask*) task, td);
-#else
-      FlushMemTableWAL((MemTableFlushTask*) task, td);
-#endif
       td->current_task = nullptr;
     } else if (task->type == TaskType::kL0Compaction) {
-      ZipperCompactionL0(td, (L0CompactionTask*) task);
-      //L0CompactionCopyOnWrite((L0CompactionTask*) task);
-      td->current_task = nullptr;
-    }//경우에 따라서 해당하는 함수를 돌려준다..
-    else if (task->type == TaskType::kL1Compaction) {
-      LogStructuredMergeCompactionL1(td, (L1CompactionTask*) task);
+      LogStructuredMergeCompactionL0(td, (L0CompactionTask*) task);
       td->current_task = nullptr;
     }
     //task안에 
@@ -1365,251 +1180,6 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   task->memtable_list->CleanUpFlushedImmutables();
 }
 
-void ListDB::FlushMemTableToL1WAL(MemTableFlushTask* task, CompactionWorkerData* td) {
-  if (task->shard == 0) fprintf(stdout, "MemTable -> L1\n");
-  // Check Reference Counter
-  while (task->imm->w_RefCount() > 0) {
-    continue;
-  }
-
-  auto l1_tl = ll_[task->shard]->GetTableList(1);
-  auto l1_table = (PmemTable*) l1_tl->GetFront();
-  auto l1_skiplist = l1_table->skiplist();
-
-  auto skiplist = task->imm->skiplist();
-  auto mem_node = skiplist->head();
-  mem_node = mem_node->next[0].load(MO_RELAXED);
-
-  using Node = PmemNode;
-  Node* preds[kNumRegions][kMaxHeight];
-  uint64_t succs[kNumRegions][kMaxHeight];
-  //Node* pred;
-  //pred = l1_skiplist->head(l1_arena_[0][0]->pool_id());
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l1_arena_[i][0]->pool_id();
-    for (int j = 0; j < kMaxHeight; j++) {
-      preds[i][j] = l1_skiplist->head(pool_id);
-      succs[i][j] = 0;
-    }
-  }
-
-  uint64_t flush_cnt = 0;
-  uint64_t begin_micros = Clock::NowMicros();
-  INIT_REPORTER_CLIENT;
-  while (mem_node) {
-    int mem_value_pool_id = ((PmemPtr*) &mem_node->value)->pool_id();
-    int region = pool_id_to_region_[mem_value_pool_id];
-
-#if 1
-    // Determine height
-    auto rnd = Random::GetTLSInstance();
-    static const unsigned int kBranching = 4;
-    int height = 1;
-    while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
-      height++;
-    }
-
-    // FindPosition
-    PmemPtr curr_paddr = preds[region][height - 1]->next[height - 1];
-    for (int i = height - 1; i > 0; i--) {
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(mem_node->key) < 0) {
-          preds[region][i] = curr;
-          curr_paddr = curr->next[i];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[region][i] = curr_paddr.dump();
-    }
-    {
-      PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(mem_node->key) < 0) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[0][0] = curr_paddr.dump();
-    }
-
-    // Init new node
-    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-    auto pool = Pmem::pool<pmem_log_root>(mem_value_pool_id);
-    pmem::obj::persistent_ptr<char[]> p_buf;
-    pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-    Node* node = (PmemNode*) p_buf.get();
-    PmemPtr node_paddr = PmemPtr(mem_value_pool_id, ((uintptr_t) node - (uintptr_t) pool.handle()));
-    node->tag = height;
-    node->value = mem_node->value;
-    node->next[0] = succs[0][0];
-    for (int i = 1; i < height; i++) {
-      node->next[i] = succs[region][i];
-    }
-    node->key = mem_node->key;
-    clwb(node, node_size);
-    _mm_sfence();
-    preds[0][0]->next[0] = node_paddr.dump();
-    clwb(&(preds[0][0]->next[0]), 8);
-    _mm_sfence();
-    for (int i = 1 ;i < height; i++) {
-      preds[region][i]->next[i] = node_paddr.dump();
-    }
-#else
-    auto rnd = Random::GetTLSInstance();
-    static const unsigned int kBranching = 4;
-    int height = 1;
-    while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
-      height++;
-    }
-    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-    auto pool = Pmem::pool<pmem_log_root>(mem_value_pool_id);
-    pmem::obj::persistent_ptr<char[]> p_buf;
-    pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-    Node* node = (PmemNode*) p_buf.get();
-    PmemPtr node_paddr = PmemPtr(mem_value_pool_id, ((uintptr_t) node - (uintptr_t) pool.handle()));
-    node->tag = height;
-    node->value = mem_node->value;
-    _mm_sfence();
-    node->key = mem_node->key;
-    clwb(node, sizeof(PmemNode) - sizeof(uint64_t));
-    l1_skiplist->Insert(node_paddr);
-#endif
-    REPORT_FLUSH_OPS(1);
-    flush_cnt++;
-
-    //std::this_thread::yield();
-    mem_node = mem_node->next[0].load(MO_RELAXED);
-  }
-  REPORT_DONE;  // Up report all remainings
-  uint64_t end_micros = Clock::NowMicros();
-  td->flush_cnt += flush_cnt;
-  td->flush_time_usec += (end_micros - begin_micros);
-
-  task->imm->SetPersistentTable((Table*) l1_table);
-  // TODO(wkim): Log this L0 table for recovery
-  //task->imm->FinalizeFlush();
-  task->memtable_list->CleanUpFlushedImmutables();
-}
-
-void ListDB::FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td) {
-#if LISTDB_FLUSH_MEMTABLE_TO_L1 == 1
-  return FlushMemTableToL1WAL(task, td);
-#endif
-  //if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm); juwon
-  // Check Reference Counter
-  while (task->imm->w_RefCount() > 0) {
-    continue;
-  }
-
-  // Flush (WAL)
-  auto l0_skiplist = task->imm->l0_skiplist();
-
-  auto skiplist = task->imm->skiplist();
-  auto mem_node = skiplist->head();
-  mem_node = mem_node->next[0].load(MO_RELAXED);
-
-  using Node = PmemNode;
-  Node* preds[kNumRegions][kMaxHeight];
-  Node* pred;
-  pred = l0_skiplist->head(l0_arena_[0][0]->pool_id());
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l0_arena_[i][0]->pool_id();
-    for (int j = 1; j < kMaxHeight; j++) {
-      preds[i][j] = l0_skiplist->head(pool_id);
-    }
-  }
-
-#ifdef LISTDB_L0_CACHE
-  auto hash_table = GetHashTable(task->shard);
-#endif
-
-  uint64_t flush_cnt = 0;
-  uint64_t begin_micros = Clock::NowMicros();
-  INIT_REPORTER_CLIENT;
-  while (mem_node) {
-    //std::this_thread::yield();
-#ifdef GROUP_LOGGING
-    while (((std::atomic<uint64_t>*) &mem_node->value)->load(std::memory_order_relaxed) == 0) continue;
-#endif
-    int mem_value_pool_id = ((PmemPtr*) &mem_node->value)->pool_id();
-    int region = pool_id_to_region_[mem_value_pool_id];
-
-    auto rnd = Random::GetTLSInstance();
-
-#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
-    static const unsigned int kBranching = 2;
-#else
-    static const unsigned int kBranching = 4;
-#endif
-    int height = 1;
-    if (rnd->Next() % std::max<int>(1, (kBranching / kNumRegions)) == 0) {
-      height++;
-      while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
-        height++;
-      }
-    }
-
-    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-    //auto node_paddr = l0_arena_[region][task->shard]->Allocate(node_size);
-    //Node* node = node_paddr.get<PmemNode>();
-    auto pool = Pmem::pool<pmem_log_root>(mem_value_pool_id);
-    pmem::obj::persistent_ptr<char[]> p_buf;
-    pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-    Node* node = (PmemNode*) p_buf.get();
-    PmemPtr node_paddr = PmemPtr(mem_value_pool_id, ((uintptr_t) node - (uintptr_t) pool.handle()));
-
-    node->tag = height;
-    node->value = mem_node->value;
-    _mm_sfence();
-    node->key = mem_node->key;
-    clwb(node, sizeof(PmemNode) - sizeof(uint64_t));
-
-    pred->next[0] = node_paddr.dump();
-    _mm_sfence();
-    clwb(&pred->next[0], 8);
-    for (int i = 1; i < height; i++) {
-      //std::this_thread::yield();
-      preds[region][i]->next[i] = node_paddr.dump();
-      preds[region][i] = ((PmemPtr*) &(preds[region][i]->next[i]))->get<Node>();
-    }
-    pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-    hash_table->Add(mem_node->key, mem_node->value);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-    hash_table->Insert(mem_node->key, node);
-#endif
-
-    REPORT_FLUSH_OPS(1);
-    flush_cnt++;
-
-    //std::this_thread::yield();
-    mem_node = mem_node->next[0].load(MO_RELAXED);
-  }
-  REPORT_DONE;  // Up report all remainings
-  uint64_t end_micros = Clock::NowMicros();
-  td->flush_cnt += flush_cnt;
-  td->flush_time_usec += (end_micros - begin_micros);
-
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
-  l0_table->SetManifest(task->imm->l0_manifest());
-  task->imm->SetPersistentTable((Table*) l0_table);
-  // TODO(wkim): Log this L0 table for recovery
-  //task->imm->FinalizeFlush();
-  task->memtable_list->CleanUpFlushedImmutables();
-}
-
 void ListDB::ManualFlushMemTable(int shard) {
 #ifndef LISTDB_WAL
   auto tl = reinterpret_cast<MemTableList*>(ll_[shard]->GetTableList(0));
@@ -1730,7 +1300,7 @@ void ListDB::ManualFlushMemTable(int shard) {
 
     auto rnd = Random::GetTLSInstance();
 
-#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
+#ifdef LISTDB_SKIPLIST_CACHE
     static const unsigned int kBranching = 2;
 #else
     static const unsigned int kBranching = 4;
@@ -1792,241 +1362,12 @@ void ListDB::ManualFlushMemTable(int shard) {
 #endif
 }
 
+void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task){
 
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
-
-void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
-  auto l0_manifest = task->l0->manifest<pmem_l0_or_l1_info>();
+  auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0or1Status::kMergeInitiated;
-  // call clwb
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n"); //show progress juwon
-  using Node = PmemNode;
-  auto l0_skiplist = task->l0->skiplist();
-  auto l1_tl = ll_[task->shard]->GetTableList(1);
-
-  if (l1_tl->IsEmpty() || ((PmemTable*) l1_tl->GetFront())->manifest<pmem_l0_or_l1_info>()->status != Level0or1Status::kInitialized) {
-    // Init the new manifest for a new table
-    pmem::obj::persistent_ptr<pmem_l0_or_l1_info> l1_manifest;
-    auto db_pool = Pmem::pool<pmem_db>(0);
-    pmem::obj::make_persistent_atomic<pmem_l0_or_l1_info>(db_pool, l1_manifest);
-    auto db_root = db_pool.root();
-    auto shard_manifest = db_root->shard[task->shard];
-
-    //l1_manifest->id = ??;
-    BraidedPmemSkipList* l1_skiplist = new BraidedPmemSkipList(l1_arena_[0][0]->pool_id());
-    for (int i = 0; i < kNumRegions; i++) {
-      l1_skiplist->BindArena(l1_pool_id_[i], l1_arena_[i][task->shard]);
-    }
-    l1_skiplist->Init();
-    for (int i = 0; i < kNumRegions; i++) {
-      auto p_head = l1_skiplist->p_head(l1_pool_id_[i]);
-      PmemNode* head = (PmemNode*) p_head.get();
-      PmemNode* l0_head = l0_skiplist->head(l0_pool_id_[i]);
-      
-      for (int h = 0; h < head->height(); h++) {
-        head->next[h] = l0_head->next[h];
-      }
-      l1_manifest->head[i] = p_head;
-    }
-    shard_manifest->l1_info = l1_manifest;
-    l1_manifest->status = Level0or1Status::kInitialized;
-    auto l1_table = new PmemTable(kL1PmemTableCapacity / kNumShards, l1_skiplist);
-    l1_table->SetManifest(l1_manifest);
-    l1_tl->PushFront(l1_table);//원래 SetFront 였음
-
-    
-    auto table = task->memtable_list->GetFront();
-    while (true) {
-      auto next_table = table->Next();
-      if (next_table) {
-        if (next_table == (Table*) task->l0) {
-          table->SetNext(nullptr);
-          break;
-        }
-        table = next_table;
-      } else {
-        break;
-      }
-    }
-    // Update manifest
-    l0_manifest->status = Level0or1Status::kMergeDone;
-    // call clwb
-    l1_table->increase_l0_compaction_cnt();
-    if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
-    //if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
-    return;
-  }
-  auto l1_table = (PmemTable*) l1_tl->GetFront();
-  auto l1_skiplist = l1_table->skiplist();
-
-  struct ZipperItem {
-    PmemPtr node_paddr;
-    Node* preds[kMaxHeight];
-  };
-
-  std::stack<ZipperItem*> zstack;
-  Node* preds[kNumRegions][kMaxHeight];
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l1_arena_[i][0]->pool_id();
-    for (int j = 0; j < kMaxHeight; j++) {
-      preds[i][j] = l1_skiplist->head(pool_id);
-    }
-  }
-
-  PmemPtr node_paddr = l0_skiplist->head_paddr();
-
-  // 1. Scan
-  while (true) {
-#ifdef L0_COMPACTION_YIELD
-    std::this_thread::yield();
-#endif
-    auto l0_node = node_paddr.get<Node>();
-    if (l0_node == nullptr) {
-      break;
-    }
-    int pool_id = node_paddr.pool_id();
-    int region = pool_id_to_region_[pool_id];
-    int height = l0_node->height();
-    Node* pred = preds[region][height - 1];
-    for (int i = height - 1; i > 0; i--) {
-      PmemPtr curr_paddr = pred->next[i];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
-          pred = curr;
-          curr_paddr = pred->next[i];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      preds[region][i] = pred;
-    }
-    {
-      PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) < 0) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-    }
-    auto z = new ZipperItem();
-    z->node_paddr = node_paddr;
-    z->preds[0] = preds[0][0];
-    for (int i = 1; i < kMaxHeight; i++) {
-      z->preds[i] = preds[region][i];
-    }
-    zstack.push(z);
-    node_paddr = l0_node->next[0];
-  }
-
-  // 2. Merge
-  //bool print_debug = false;
-  //if (preds[0][0]->next[0] != 0) {
-  //  print_debug = true;
-  //}
-  INIT_REPORTER_CLIENT;
-  while (!zstack.empty()) {
-#ifdef L0_COMPACTION_YIELD
-    std::this_thread::yield();
-#endif
-    auto& z = zstack.top();
-    auto l0_node = z->node_paddr.get<Node>();
-#ifdef LISTDB_BLOOM_FILTER
-    //add l0_node to bloom_filter of l1_table
-    l1_table->bloom_filter()->AddKey(l0_node->key);
-#endif
-    {
-      l0_node->next[0] = z->preds[0]->next[0];
-      clwb(&l0_node->next[0], 8);
-      _mm_sfence();
-      z->preds[0]->next[0] = z->node_paddr.dump();
-      clwb(&z->preds[0]->next[0], 8);
-      _mm_sfence();
-      //uint64_t tag = l0_node->tag;
-      //tag |= 0x100;
-      //l0_node->tag = tag;
-    }
-    for (int i = 1; i < l0_node->height(); i++) {
-      l0_node->next[i] = z->preds[i]->next[i];
-      z->preds[i]->next[i] = z->node_paddr.dump();
-    }
-#ifdef LISTDB_L1_LRU
-    if (l0_node->height() >= kMaxHeight - (kNumCachedLevels - 1)) {
-      int region = z->node_paddr.pool_id();
-      //sorted_arr_[region][task->shard].emplace_back(l0_node->key, z->node_paddr.dump());
-      //int lru_height = l0_node->height() - (kMaxHeight - kLruMaxHeight);
-      //lru_height = (lru_height + 1) / 2;
-      int lru_height = 1;
-      while (lru_height < kLruMaxHeight && td->rnd.Next() % 2== 0) {
-        lru_height++;
-      }
-      cache_[task->shard][region]->Insert(l0_node->key, z->node_paddr.dump(), lru_height);
-    }
-#endif
-
-    REPORT_L0_COMPACTION_OPS(1);
-    zstack.pop();
-    delete z;
-  }
-  REPORT_DONE;  // Up report all remainings
-
-#ifdef LISTDB_L1_LRU
-  using MyType1 = std::pair<uint64_t, uint64_t>;
-  for (int i = 0; i < kNumRegions; i++) {
-    std::sort(sorted_arr_[i][task->shard].begin(), sorted_arr_[i][task->shard].end(),
-        [&](const MyType1 &a, const MyType1 &b) { return a.first > b.first; });
-  }
-#endif
-
-    
-  l1_table->increase_l0_compaction_cnt();
-  if (l1_table->l0_compaction_cnt() >= kL1LevelMultiplier) l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
-
-  // Update manifest
-  l0_manifest->status = Level0or1Status::kMergeDone;
-  // call clwb
-
-  // Remove empty L0 from MemTableList
-  //auto tl = ll_[task->shard]->GetTableList(0);
-  auto table = task->memtable_list->GetFront();
-  while (true) {
-    auto next_table = table->Next();
-    if (next_table) {
-      if (next_table == (Table*) task->l0) {
-        table->SetNext(nullptr);
-        break;
-      }
-      table = next_table;
-    } else {
-      break;
-    }
-  }
-
-//if(task->shard == 0 ) printf("L0 compaction end\n");//test juwon
-}
-
-void ListDB::ManualL1Compaction(int shard) {
-  auto l1_tl = ll_[shard]->GetTableList(1);
-  auto l1_table = (PmemTable*) l1_tl->GetFront();
-  l1_table->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kFull;
-}
-
-
-void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1CompactionTask* task){
-
-#ifdef CALC_L1_COMPACTION_TIME
-  auto begin_tp = std::chrono::steady_clock::now();
-#endif
-
-  if (task->shard == 0) fprintf(stdout, "L1 compaction\n");
-
-  task->l1->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kMergeInitiated;
   
 
   using Node = PmemNode;
@@ -2036,15 +1377,12 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
   uint64_t new_node_cnt = 0;
   uint64_t pred_paddr_dump;
   
-    //get l1 skiplist
-    auto l1_skiplist = task->l1->skiplist();
-    PmemPtr node_paddr = l1_skiplist->head_paddr();
-    auto l1_node = node_paddr.get<Node>();
+    //get l0 skiplist
+    auto l0_skiplist = task->l0->skiplist();
+    PmemPtr node_paddr = l0_skiplist->head_paddr();
+    auto l0_node = node_paddr.get<Node>();
     //get l2 skiplist
     auto l2_tl = ll_[task->shard]->GetTableList(2);
-
-
-
 
     auto l2_table = (PmemTable2*) l2_tl->GetFront();
     auto l2_skiplist = l2_table->skiplist();
@@ -2183,19 +1521,19 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     KVpairs* pred_kvpairs = nullptr;
 
     //update first node info
-    while(l1_node != nullptr){
-      if(l1_node->key.key_num() == 0){
-        node_paddr = l1_node->next[0];
-        l1_node = node_paddr.get<Node>();
+    while(l0_node != nullptr){
+      if(l0_node->key.key_num() == 0){
+        node_paddr = l0_node->next[0];
+        l0_node = node_paddr.get<Node>();
         continue;
-      }//remove head nodes of l1
+      }//remove head nodes of l0
       //search preds and succes at braided level
 
       //search preds and succes at braided level
         uint64_t curr_paddr_dump = preds[0][0]->next[0].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
         while (curr) {
-          if (curr->min_key.Compare(l1_node->key) <= 0) {
+          if (curr->min_key.Compare(l0_node->key) <= 0) {
             preds[0][0] = curr;
             pred_paddr_dump = curr_paddr_dump;
             curr_paddr_dump = curr->next[0].next_ptr;
@@ -2215,19 +1553,19 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
    //initializing of next_min_key, space_cnt is done.
 
 
-    //start loop, break if no l1_node left
+    //start loop, break if no l0_node left
     while(true){
       //
       //1. check if it needs insertion keys into l2 node
       //
       //   Three conditions for insertion:
-      //   1. Check if l1_node is null pointer (need to lastly write all keys in buffer)
-      //   2. Check if l1_node->key is smaller than curr->min_key (skip check if curr is not exist)
+      //   1. Check if l0_node is null pointer (need to lastly write all keys in buffer)
+      //   2. Check if l0_node->key is smaller than curr->min_key (skip check if curr is not exist)
       //   2. Check if total counter reach to 2*NPAIRS
       //   
       //   and if so, do insert
 
-      if(l1_node==nullptr || (curr && (curr->min_key.Compare(l1_node->key) <= 0)) || key_total_cnt > NPAIRS){
+      if(l0_node==nullptr || (curr && (curr->min_key.Compare(l0_node->key) <= 0)) || key_total_cnt > NPAIRS){
 
         INIT_REPORTER_CLIENT;
 
@@ -2277,7 +1615,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           uint64_t leftmost_duplicate_pos = 0;
           //counter temorarily representing prededecessor node's kvpairs counter
           uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
-          //save buffer_cnt for use REPORT_L1_COMPACTION
+          //save buffer_cnt for use REPORT_L0_COMPACTION
 #ifdef REPORT_BACKGROUND_WORKS
           uint64_t tmp_buffer_cnt = buffer_cnt;
 #endif
@@ -2395,7 +1733,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
           key_total_cnt = pred_kvpairs->cnt + buffer_cnt;
 
           //report number of inserted keys for monitoring
-          REPORT_L1_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
+          REPORT_L0_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
         } //split of pred node is done.
         
         //
@@ -2408,7 +1746,7 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         uint64_t leftmost_duplicate_pos = 0;
         //counter temorarily representing prededecessor node's kvpairs counter
         uint64_t tmp_pred_kvpairs_cnt = pred_kvpairs->cnt;
-        //save buffer_cnt for use REPORT_L1_COMPACTION
+        //save buffer_cnt for use REPORT_L0_COMPACTION
 #ifdef REPORT_BACKGROUND_WORKS
         uint64_t tmp_buffer_cnt = buffer_cnt;
 #endif
@@ -2464,18 +1802,18 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
         //insert into preds node is done.
 
         //report number of inserted keys for monitoring
-        REPORT_L1_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
+        REPORT_L0_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
 
-        //1-3. if there is no l1_node left, break while loop
+        //1-3. if there is no l0_node left, break while loop
         //     only if it does insert in #1.
-        if(l1_node == nullptr) break;
+        if(l0_node == nullptr) break;
 
-        //1-4. set pred, curr, and buffer counter(total counter) using l1 node
+        //1-4. set pred, curr, and buffer counter(total counter) using l0 node
         //     only if it does insert in #1.
         uint64_t curr_paddr_paddr = preds[0][0]->next[0].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
         while (curr) {
-          if (curr->min_key.Compare(l1_node->key) <= 0) {
+          if (curr->min_key.Compare(l0_node->key) <= 0) {
             preds[0][0] = curr;
             pred_paddr_dump = curr_paddr_paddr;
             curr_paddr_paddr = curr->next[0].next_ptr;
@@ -2496,20 +1834,20 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
 
 
       //
-      //2. add l1_node key/value to buffer and increase buffer counter and total counter
+      //2. add l0_node key/value to buffer and increase buffer counter and total counter
       //   
-      key_buffer[buffer_cnt] = l1_node->key;
-      value_buffer[buffer_cnt] = l1_node->value;
+      key_buffer[buffer_cnt] = l0_node->key;
+      value_buffer[buffer_cnt] = l0_node->value;
       buffer_cnt++;
       key_total_cnt++;
 
 
       //
-      //3. Move on to next node of l1
+      //3. Move on to next node of l0
       //
       node_cnt++; 
-      node_paddr = l1_node->next[0];
-      l1_node = node_paddr.get<Node>();
+      node_paddr = l0_node->next[0];
+      l0_node = node_paddr.get<Node>();
     }//end of loop
 
     //set skiplist counter for each numa nodes
@@ -2519,31 +1857,24 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
       }
     }
     
-    //remove l1 table at l1 table list(because l1 compaction is done.). r means remove.
-    auto rtable = task->l1table_list->GetFront();
-
+    //remove l0 table at l0 table list(because l0 compaction is done.). r means remove.
+    auto rtable = task->memtable_list->GetFront();
     while (true) {
-      auto rnext_table = rtable->Next();
-      if (rnext_table) {
-        if (rnext_table == (Table*) task->l1) {
+      auto next_table = rtable->Next();
+      if (next_table) {
+        if (next_table == (Table*) task->l0) {
           rtable->SetNext(nullptr);
           break;
         }
-        rtable = rnext_table;
-        continue;
+        rtable = next_table;
+      } else {
+        break;
       }
-      else if(rtable == (Table*) task->l1){
-        task->l1table_list->SetFront(nullptr);
-      }
-      break;
     }
 
-    task->l1->manifest<pmem_l0_or_l1_info>()->status = Level0or1Status::kMergeDone;
-
-    delete task->l1;
-
+    l0_manifest->status = Level0or1Status::kMergeDone;
   
-  if (task->shard == 0 ) fprintf(stdout, "number of compacted l1 nodes : %lu\n", node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of compacted l0 nodes : %lu\n", node_cnt);
   if (task->shard == 0 ) fprintf(stdout, "number of generated l2 nodes : %lu\n", new_node_cnt);
 
   #ifdef LISTDB_SKIPLIST_CACHE
@@ -2552,146 +1883,8 @@ void ListDB::LogStructuredMergeCompactionL1(CompactionWorkerData* td, L1Compacti
     cache_[task->shard][i]->UpdateCache((PmemTable2List*)l2_tl);
    }
   #endif
-
-#ifdef CALC_L1_COMPACTION_TIME
-  auto end_tp = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_tp - begin_tp);
-  if(task->shard==0) std::cout << "L1 Compaction time: " << duration.count() << " ms" << std::endl;
-#endif
-
-
-
   
 }//end of L1 Compaction
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {//사용하지 않는 cow 방식이지만 살펴볼 것
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");//
-
-
-  using Node = PmemNode;
-  auto l0_skiplist = task->l0->skiplist();//해당 memtable에 대한 skiplit를 가져온다.
-
-  auto l1_tl = ll_[task->shard]->GetTableList(1);
-  auto l1_skiplist = ((PmemTable*) l1_tl->GetFront())->skiplist();//왜 table list를 쓰는지.. table이 왜 여러개인가
-
-  Node* preds[kNumRegions][kMaxHeight];
-  uint64_t succs[kNumRegions][kMaxHeight];
-  for (int i = 0; i < kNumRegions; i++) {
-    int pool_id = l1_arena_[i][0]->pool_id();
-    for (int j = 0; j < kMaxHeight; j++) {
-      preds[i][j] = l1_skiplist->head(pool_id);
-      succs[i][j] = 0;
-    }
-  }
-
-  PmemPtr node_paddr = l0_skiplist->head_paddr();//스킵리스트는 누마상관없이 한개고 4개의 head 접근법은 head(pool_id)이다.
-
-
-
-
-
-
-
-  while (true) {
-    auto l0_node = node_paddr.get<Node>();
-    if (l0_node == nullptr) {
-      break;
-    }
-    //한 누마에서 모든걸 스캔할 예정(?)
-    int pool_id = node_paddr.pool_id();
-    int region = pool_id_to_region_[pool_id];
-    int height = l0_node->height();
-    PmemPtr curr_paddr = preds[region][height - 1]->next[height - 1];
-    for (int i = height - 1; i > 0; i--) {
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) <= 0) {
-          preds[region][i] = curr;
-          curr_paddr = curr->next[i];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }//높이 i에 대한 끝을 찾는다.
-      succs[region][i] = curr_paddr.dump();//높이별 끝부분을 설정, 높이 0빼고 succ와 pred찾음
-    }
-    {
-      PmemPtr curr_paddr = preds[0][0]->next[0];
-      auto curr = curr_paddr.get<Node>();
-      while (curr) {
-        if (curr->key.Compare(l0_node->key) <= 0) {
-          preds[0][0] = curr;
-          curr_paddr = curr->next[0];
-          curr = curr_paddr.get<Node>();
-          continue;
-        }
-        break;
-      }
-      succs[0][0] = curr_paddr.dump();
-    }
-
-    size_t node_size = sizeof(PmemNode) + (height - 1) * 8;
-    auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size);
-    auto l1_node = l1_node_paddr.get<Node>();
-    l1_node->key = l0_node->key;
-    l1_node->tag = l0_node->tag;
-    l1_node->value = l0_node->value;
-    l1_node->next[0] = succs[0][0];
-    for (int i = 1; i < height; i++) {
-      l1_node->next[i] = succs[region][i];
-    }
-    clwb(l1_node, node_size);
-    _mm_sfence();
-    preds[0][0]->next[0] = l1_node_paddr.dump();
-    for (int i = 1 ;i < height; i++) {
-      preds[region][i]->next[i] = l1_node_paddr.dump();
-    }
-
-    
-    node_paddr = l0_node->next[0];
-  }
-
-
-
-
-
-  // Remove empty L0 from MemTableList
-  //auto tl = ll_[task->shard]->GetTableList(0);
-  auto table = task->memtable_list->GetFront();//이걸 tablelist l2버전으로
-  while (true) {
-    auto next_table = table->Next();
-    if (next_table) {
-      if (next_table == (Table*) task->l0) {
-        table->SetNext(nullptr);
-        break;
-      }
-      table = next_table;
-    } else {
-      break;
-    }
-  }
-
-
-
-
-}
 
 void ListDB::PrintDebugLsmState(int shard) {
   auto tl = GetTableList(0, shard);

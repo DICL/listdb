@@ -34,7 +34,7 @@
 //#define QUERY_DISTRIBUTION "zipf"
 
 constexpr int NUM_THREADS = 60;
-constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
+constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
 
 //for user behavior
@@ -394,13 +394,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     db->ManualFlushMemTable(i);
   }
 
-  //ManualL1Compaction for ListDB L2
-  fprintf(stdout, "sleep %d seconds for l0 compaction end...\n",SLEEP_TIME);
-  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
-  for (int i = 0; i < num_shards; i++) {
-    db->ManualL1Compaction(i);
-  }
-
   fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
   db->PrintDebugLsmState(0);
@@ -510,9 +503,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     //for (int h = 0; h < kMaxHeight; h++) {
     //   fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
     //}
-#ifdef LISTDB_L1_LRU
-    fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
-#endif
+    
   }
   fprintf(stdout, "\n");
   std::string buf;
@@ -811,9 +802,7 @@ const std::vector<OpType>& work_ops1, const std::vector<OpType>& work_ops2, cons
     }
     fprintf(stdout, "Found %d\n", cnt_sum);
 #endif
-#ifdef LISTDB_L1_LRU
-    fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
-#endif
+
 
     
     while(true){
@@ -890,9 +879,6 @@ const std::vector<OpType>& work_ops1, const std::vector<OpType>& work_ops2, cons
       cnt_sum += cnt[i];
     }
     fprintf(stdout, "Found %d\n", cnt_sum);
-#endif
-#ifdef LISTDB_L1_LRU
-    fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
 #endif
 
     
@@ -987,7 +973,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
-  /*
+  
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -1000,12 +986,12 @@ int main(int argc, char* argv[]) {
   FillLoadKeysReadRatio(NUM_LOADS, NUM_WORKS, &load_keys, read_ratio);
   //FillLoadKeys(NUM_LOADS, &load_keys, "/juwon/index-microbench/workloads_rw_ratio_unif/load_r20_unif_int_10M_1M");
   FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
-  */
+  
 
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
-  //Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
+  Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
-
+ /*
   //user behavior
   std::vector<uint64_t> load_keys1;
   std::vector<uint64_t> load_keys2;
@@ -1052,6 +1038,6 @@ int main(int argc, char* argv[]) {
 
 
   Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
-
+*/
   return 0;
 }

@@ -32,26 +32,22 @@ class PmemTable : public Table {
   #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter() { return bloom_filter_; }
   #endif
-  uint64_t l0_compaction_cnt() {return l0_compaction_cnt_;}
-  void increase_l0_compaction_cnt(){l0_compaction_cnt_++;}
 
-  void SetManifest(pmem::obj::persistent_ptr<pmem_l0_or_l1_info> manifest) { manifest_ = manifest; }
+  void SetManifest(pmem::obj::persistent_ptr<pmem_l0_info> manifest) { manifest_ = manifest; }
 
   template <typename T>
   pmem::obj::persistent_ptr<T> manifest() { return manifest_.raw(); }
 
  private:
-  uint64_t l0_compaction_cnt_;
   BraidedPmemSkipList* skiplist_;
 #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter_;
 #endif
-  pmem::obj::persistent_ptr<pmem_l0_or_l1_info> manifest_;
+  pmem::obj::persistent_ptr<pmem_l0_info> manifest_;
 };
 
 PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)
     : Table(table_capacity, TableType::kPmemTable), skiplist_(skiplist) {
-      l0_compaction_cnt_ = 0;
 #ifdef LISTDB_BLOOM_FILTER
       bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Node));
 #endif
@@ -60,7 +56,6 @@ PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist)
 #ifdef LISTDB_BLOOM_FILTER
 PmemTable::PmemTable(const size_t table_capacity, BraidedPmemSkipList* skiplist, BloomFilter* bloom_filter)
     : Table(table_capacity, TableType::kPmemTable), skiplist_(skiplist), bloom_filter_(bloom_filter) {
-      l0_compaction_cnt_ = 0;
 }
 #endif
 

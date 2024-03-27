@@ -16,7 +16,6 @@
 #endif
 
 //#define GROUP_LOGGING
-//#define L1_COW
 #define L0_CACHE_T_SIMPLE 1
 #define L0_CACHE_T_STATIC 2
 #define L0_CACHE_T_DOUBLE_HASHING 3
@@ -58,15 +57,7 @@ constexpr int kL1LevelMultiplier = 1;
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
 
-//for LISTDB L2 
-constexpr size_t kL1PmemTableCapacity = kMemTableCapacity*kL1LevelMultiplier;
-
 constexpr int kMaxHeight = 15;
-
-#ifdef LISTDB_L1_LRU
-constexpr int kNumCachedLevels = 12;
-constexpr int kLruMaxHeight = 20;
-#endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
 constexpr size_t kSkipListCacheCardinality = 4;

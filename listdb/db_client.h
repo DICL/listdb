@@ -486,7 +486,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 #endif
 
 inline int DBClient::PmemRandomHeight() {
-#if defined(LISTDB_L1_LRU) || defined(LISTDB_SKIPLIST_CACHE)
+#ifdef LISTDB_SKIPLIST_CACHE
   static const unsigned int kBranching = 2;
 #else
   static const unsigned int kBranching = 4;
