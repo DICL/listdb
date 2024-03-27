@@ -46,11 +46,11 @@ constexpr size_t NUM_WORKS2 = 200 * 1000 * 1000;
 constexpr int LOAD1_TIME = 60;
 constexpr int LOAD2_TIME = 60;
 constexpr int LOAD3_TIME = 60;
-constexpr int WORK1_TIME = 100;
-constexpr int WORK2_TIME = 100;
+constexpr int WORK1_TIME = 80;
+constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 25;//time to waiting l0 compactions end
-constexpr int SLEEP_TIME2 = 12;//time to waiting l1 compactions end
+constexpr int SLEEP_TIME = 60;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 60;//time to waiting l1 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -973,7 +973,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
-  
+/*  
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -991,7 +991,7 @@ int main(int argc, char* argv[]) {
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
   Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
- /*
+ */
   //user behavior
   std::vector<uint64_t> load_keys1;
   std::vector<uint64_t> load_keys2;
@@ -1038,6 +1038,6 @@ int main(int argc, char* argv[]) {
 
 
   Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
-*/
+
   return 0;
 }
