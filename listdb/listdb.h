@@ -61,6 +61,7 @@
 #define REPORT_DONE
 #endif
 
+#define L0_COMPACTION_LATENCY_BREAKDOWN
 
 //#define L0_COMPACTION_ON_IDLE
 //#define L0_COMPACTION_YIELD
@@ -1373,8 +1374,8 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
   using Node = PmemNode;
   using Node2 = PmemNode2;
     //initialize node_cnt for checking number of compation nodes
-  uint64_t node_cnt = 0;
-  uint64_t new_node_cnt = 0;
+  //uint64_t node_cnt = 0;
+  //uint64_t new_node_cnt = 0;
   uint64_t pred_paddr_dump;
   
     //get l0 skiplist
@@ -1441,7 +1442,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         //strictly adjacent allocation of node and kvpairs
         auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
         auto l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr)->get();
-        new_node_cnt++;
+        //new_node_cnt++;
 
         first_node[i] = l1_node;
         first_node_paddr[i] = l1_node_paddr;
@@ -1493,6 +1494,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         for(int j=0; j<kMaxHeight; j++){
           l1_manifest->cnt[i][j] = 1;
         }
+        l1_manifest->recent_cnt_before_update[i] = 1;
       }
 
       head_only_flag = false;
@@ -1604,7 +1606,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
           auto l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr)->get();
           uint64_t kvpairs_paddr_dump = l1_node_paddr.dump()+node_size;
           auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr_dump)->get();
-          new_node_cnt++;
+          //new_node_cnt++;
 
           //do insert in kvpair and decide min key of l1 node
           //일단 개수는 새로 생긴 l1 node의 kvpairs->cnt는 key_total_cnt/2 개이다 (3개면 1개)
@@ -1845,15 +1847,17 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       //
       //3. Move on to next node of l0
       //
-      node_cnt++; 
+      //node_cnt++; 
       node_paddr = l0_node->next[0];
       l0_node = node_paddr.get<Node>();
     }//end of loop
 
+    uint64_t total_cnt[kNumRegions] = {0};
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
       for(int j=0; j<kMaxHeight; j++){
         l1_manifest->cnt[i][j] = cnts[i][j];
+        total_cnt[i] += cnts[i][j];
       }
     }
     
@@ -1874,13 +1878,17 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
     l0_manifest->status = Level0or1Status::kMergeDone;
   
-  if (task->shard == 0 ) fprintf(stdout, "number of compacted l0 nodes : %lu\n", node_cnt);
-  if (task->shard == 0 ) fprintf(stdout, "number of generated l1 nodes : %lu\n", new_node_cnt);
+  //if (task->shard == 0 ) fprintf(stdout, "number of compacted l0 nodes : %lu\n", node_cnt);
+  //if (task->shard == 0 ) fprintf(stdout, "number of generated l1 nodes : %lu\n", new_node_cnt);
 
   #ifdef LISTDB_SKIPLIST_CACHE
-   if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon
    for(int i=0; i<kNumRegions; i++){
-    cache_[task->shard][i]->UpdateCache((PmemTable2List*)l1_tl);
+    //update only when number of nodes grow to update trigger ratio
+    if(l1_manifest->recent_cnt_before_update[i]*kUpdateTriggerRatio <= total_cnt[i]){
+      if (task->shard == 0 && i==0) fprintf(stdout, "updating lookup cache\n"); // test juwon
+      l1_manifest->recent_cnt_before_update[i] = total_cnt[i];
+      cache_[task->shard][i]->UpdateCache((PmemTable2List*)l1_tl);
+    }
    }
   #endif
   

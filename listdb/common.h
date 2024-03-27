@@ -10,7 +10,7 @@
 #include <cstdio>
 
 #if defined(LISTDB_SKIPLIST_CACHE)
-#define NPAIRS 64
+#define NPAIRS 128
 #else
 #define NPAIRS 128
 #endif
@@ -66,13 +66,15 @@ constexpr size_t kSkipListCacheCardinality = 4;
 constexpr uint16_t kSkipListCacheMaxHeight = 15;
 constexpr uint16_t kSkipListCacheBranching = 4;
 
-constexpr size_t kSkipListCacheCapacity = (45ull << 20);
+constexpr size_t kSkipListCacheCapacity = (45ull << 20);//1ull << 20 is 1Mb
 
 //undefine this to use only binary search in array cache
 #define LISTDB_GREEDY_PLR
 #ifdef LISTDB_GREEDY_PLR
-constexpr double kLearnedIndexCapacityRatio = 0.01;
+constexpr double kLearnedIndexCapacityRatio = 0.001;
 #endif
+
+constexpr double kUpdateTriggerRatio = 1.1;//1 is for always update, 1.3 for update every 30% growth of node numbers.
 
 #endif
 
@@ -91,9 +93,9 @@ constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;
 constexpr size_t kHTSize = 150ull * 1000 * 1000;
 #else
 #if LISTDB_L0_CACHE != L0_CACHE_T_SIMPLE
-constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 8;
+constexpr size_t kHTSize = (1024ull<<20) / 8;
 #else
-constexpr size_t kHTSize = ((1024ull<<20) - kSkipListCacheCapacity) / 24;
+constexpr size_t kHTSize = (1024ull<<20) / 24;
 #endif
 #endif
 

@@ -1017,13 +1017,13 @@ int main(int argc, char* argv[]) {
   FillLoadKeys(NUM_LOADS1, &load_keys1, ss.str());
 
   ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS2 / 1000 / 1000) << "M_" << 100 << "M";
+  ss << "/juwon/index-microbench/ycsb_workloadb/"; //test juwon
+  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS2 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
   FillLoadKeys(NUM_LOADS2, &load_keys2, ss.str());
 
   ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadd/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
+  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << 100 << "M";
   FillLoadKeys(NUM_LOADS3, &load_keys3, ss.str());
 
   ss.str("");
@@ -1032,7 +1032,7 @@ int main(int argc, char* argv[]) {
   FillWorkKeys(NUM_WORKS1, &work_ops1, &work_keys1, &work_scan_nums, ss.str());
 
   ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadd/"; //test juwon
+  ss << "/juwon/index-microbench/ycsb_workloadb/"; //test juwon
   ss << "run_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
   FillWorkKeys(NUM_WORKS2, &work_ops2, &work_keys2, &work_scan_nums, ss.str());
 

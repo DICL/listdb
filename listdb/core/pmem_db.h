@@ -49,6 +49,7 @@ struct pmem_l0_info {
 struct pmem_l1_info {
   uint64_t id;
   uint64_t cnt[kNumRegions][kMaxHeight];
+  uint64_t recent_cnt_before_update[kNumRegions];
   Level1Status status;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
