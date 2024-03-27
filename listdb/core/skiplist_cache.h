@@ -29,7 +29,7 @@ class SkipListCache {
   // Constructor
   SkipListCache(const int pool_id, const int region, size_t capacity = kSkipListCacheCapacity);
 
-  void UpdateCache(PmemTable2List* l2_tl);
+  void UpdateCache(PmemTable2List* l1_tl);
 
   // Returns 0 if equal, -1 lessthan, 1 not found
   int LookupLessThanOrEqualsTo(const Key& key, uint64_t* out);
@@ -78,23 +78,23 @@ SkipListCache<N>::SkipListCache(const int pool_id, const int region, size_t capa
 }
 
 template <std::size_t N>
-void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
+void SkipListCache<N>::UpdateCache(PmemTable2List* l1_tl) {
   uint64_t cnt[kMaxHeight] = {0,};
   uint64_t MaxFieldNum = (uint64_t)(capacity_/(sizeof(Key)+sizeof(uint64_t)));
 
-  //sum-up all cnt of l2 manifests
-  auto l2_table = (PmemTable2*) l2_tl->GetFront();
+  //sum-up all cnt of l1 manifests
+  auto l1_table = (PmemTable2*) l1_tl->GetFront();
 
   while (true) {
-    if (l2_table){
-      auto l2_manifest = l2_table->manifest<pmem_l2_info>();
+    if (l1_table){
+      auto l1_manifest = l1_table->manifest<pmem_l1_info>();
       for(int i=0; i<kMaxHeight; i++){
-        cnt[i] += l2_manifest->cnt[region_][i];
+        cnt[i] += l1_manifest->cnt[region_][i];
       }
     }
     else break;
     
-    l2_table = (PmemTable2*)l2_table->Next();
+    l1_table = (PmemTable2*)l1_table->Next();
   }
 
 
@@ -114,13 +114,13 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
   //user prev key to guarantee sorted order
   Key prev_key(0);
 
-  l2_table = (PmemTable2*) l2_tl->GetFront();
+  l1_table = (PmemTable2*) l1_tl->GetFront();
   
   //traverse table list
   while (true) {
-    if (l2_table){
-      auto l2_skiplist = l2_table->skiplist();
-      PmemNode* pred = l2_skiplist->head(pool_id_);
+    if (l1_table){
+      auto l1_skiplist = l1_table->skiplist();
+      PmemNode* pred = l1_skiplist->head(pool_id_);
       uint64_t curr_paddr_dump = pred->next[0].next_ptr;
       //pass through dummy node (head node)
       PmemNode* curr = (PmemNode*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -157,7 +157,7 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l2_tl) {
     }
     else break;
     
-    l2_table = (PmemTable2*)l2_table->Next();
+    l1_table = (PmemTable2*)l1_table->Next();
 
 
   }

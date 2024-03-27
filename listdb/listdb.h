@@ -52,7 +52,7 @@
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
-#define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
+#define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL0Compaction, x)
 #define REPORT_DONE delete reporter_client
 #else
 #define INIT_REPORTER_CLIENT
@@ -160,7 +160,7 @@ class ListDB {
 
   int l0_pool_id(const int region) { return l0_pool_id_[region]; }
 
-  int l2_pool_id(const int region) { return l2_pool_id_[region]; }
+  int l1_pool_id(const int region) { return l1_pool_id_[region]; }
 
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
@@ -190,7 +190,7 @@ class ListDB {
 #endif
   PmemLog* log_[kNumRegions][kNumShards];
   PmemLog* l0_arena_[kNumRegions][kNumShards];
-  PmemLog* l2_arena_[kNumRegions][kNumShards];
+  PmemLog* l1_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
 
 #if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
@@ -206,7 +206,7 @@ class ListDB {
   std::unordered_map<int, int> pool_id_to_region_;
   std::unordered_map<int, int> log_pool_id_;
   std::unordered_map<int, int> l0_pool_id_;
-  std::unordered_map<int, int> l2_pool_id_;
+  std::unordered_map<int, int> l1_pool_id_;
 
   //std::queue<MemTableFlushTask*> memtable_flush_queue_;
   //std::mutex bg_mu_;
@@ -283,10 +283,10 @@ void ListDB::Init() {
     }
   }
 
-  // L2 Pmem Pool
+  // l1 Pmem Pool
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/listdb_l2";
+    pss << "/pmem" << i << "/wkim/listdb_l1";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);
@@ -299,10 +299,10 @@ void ListDB::Init() {
     strm.close();
     int pool_id = Pmem::BindPoolSet<pmem_log_root>(poolset, "");
     pool_id_to_region_[pool_id] = i;
-    l2_pool_id_[i] = pool_id;
+    l1_pool_id_[i] = pool_id;
     auto pool = Pmem::pool<pmem_log_root>(pool_id);
     for (int j = 0; j < kNumShards; j++) {
-      l2_arena_[i][j] = new PmemLog(pool_id, j);
+      l1_arena_[i][j] = new PmemLog(pool_id, j);
     }
   }
 #ifndef LISTDB_WAL
@@ -364,11 +364,11 @@ void ListDB::Init() {
       ll_[i]->SetTableList(0, tl);
     }
 
-    // L2 List
+    // l1 List
     {
-      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
+      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(l2_arena_[j][i]->pool_id(), l2_arena_[j][i]);
+        tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
       ll_[i]->SetTableList(2, tl);
     }
@@ -384,9 +384,9 @@ void ListDB::Init() {
   
   for (int i = 0; i < kNumShards; i++) {
     
-    auto l2_tl = ll_[i]->GetTableList(2);
+    auto l1_tl = ll_[i]->GetTableList(2);
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
-    [[maybe_unused]] auto l2_table = (PmemTable2*) l2_tl->NewFront();
+    [[maybe_unused]] auto l1_table = (PmemTable2*) l1_tl->NewFront();
     
   }
 #endif
@@ -395,7 +395,7 @@ void ListDB::Init() {
 #ifdef LISTDB_SKIPLIST_CACHE
   for (int i = 0; i < kNumShards; i++) {
     for (int j = 0; j < kNumRegions; j++) {
-      cache_[i][j] = new SkipListCacheRep(l2_arena_[j][i]->pool_id(), j, kSkipListCacheCapacity / kNumShards / kNumRegions);
+      cache_[i][j] = new SkipListCacheRep(l1_arena_[j][i]->pool_id(), j, kSkipListCacheCapacity / kNumShards / kNumRegions);
     }
   }
 #endif
@@ -515,11 +515,11 @@ void ListDB::Open() {
       ll_[i]->SetTableList(0, tl);
     }
 
-    // L2 List
+    // l1 List
     {
-      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l2_arena_[0][0]->pool_id());
+      auto tl = new PmemTable2List(std::numeric_limits<size_t>::max(), l1_arena_[0][0]->pool_id());
       for (int j = 0; j < kNumRegions; j++) {
-        tl->BindArena(l2_arena_[j][i]->pool_id(), l2_arena_[j][i]);
+        tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
       ll_[i]->SetTableList(2, tl);
     }
@@ -1381,12 +1381,12 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     auto l0_skiplist = task->l0->skiplist();
     PmemPtr node_paddr = l0_skiplist->head_paddr();
     auto l0_node = node_paddr.get<Node>();
-    //get l2 skiplist
-    auto l2_tl = ll_[task->shard]->GetTableList(2);
+    //get l1 skiplist
+    auto l1_tl = ll_[task->shard]->GetTableList(2);
 
-    auto l2_table = (PmemTable2*) l2_tl->GetFront();
-    auto l2_skiplist = l2_table->skiplist();
-    auto l2_manifest = l2_table->manifest<pmem_l2_info>();
+    auto l1_table = (PmemTable2*) l1_tl->GetFront();
+    auto l1_skiplist = l1_table->skiplist();
+    auto l1_manifest = l1_table->manifest<pmem_l1_info>();
     
   #if defined(LISTDB_SKIPLIST_CACHE)
       static const unsigned int tmp_kBranching = 4;
@@ -1402,31 +1402,31 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
     for (int i = 0; i < kNumRegions; i++) {
-      int pool_id = l2_arena_[i][task->shard]->pool_id();
-      heads[i] = l2_skiplist->head(pool_id);
+      int pool_id = l1_arena_[i][task->shard]->pool_id();
+      heads[i] = l1_skiplist->head(pool_id);
       //check there is only head
     }
     for(int i=0; i<kNumRegions; i++){ 
-      uint64_t l2_node_paddr_dump = heads[i]->next[0].next_ptr;
-      auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr_dump)->get();
-      if(l2_node != nullptr){
+      uint64_t l1_node_paddr_dump = heads[i]->next[0].next_ptr;
+      auto l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr_dump)->get();
+      if(l1_node != nullptr){
         for(int j=0; j<kMaxHeight; j++){
-          preds[i][j] = l2_node;
+          preds[i][j] = l1_node;
           succs[i][j] = 0;
           succs_key[i][j] = 0;
         }
         head_only_flag = false;
-        pred_paddr_dump = l2_node_paddr_dump;
+        pred_paddr_dump = l1_node_paddr_dump;
       }
     }
     //if no head, make head
     if(head_only_flag == true){
       //Allocate new manifest
-      pmem::obj::persistent_ptr<pmem_l2_info> tmp_manifest;
+      pmem::obj::persistent_ptr<pmem_l1_info> tmp_manifest;
       auto db_pool = Pmem::pool<pmem_db>(0);
-      pmem::obj::make_persistent_atomic<pmem_l2_info>(db_pool, tmp_manifest);
-      l2_table->SetManifest(tmp_manifest);
-      l2_manifest = tmp_manifest;
+      pmem::obj::make_persistent_atomic<pmem_l1_info>(db_pool, tmp_manifest);
+      l1_table->SetManifest(tmp_manifest);
+      l1_manifest = tmp_manifest;
 
       //first nodes of each numa
       Node2* first_node[kNumRegions];
@@ -1439,19 +1439,19 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
         size_t node_size = sizeof(PmemNode2) + (height - 1) * sizeof(HintedPtr);
         //strictly adjacent allocation of node and kvpairs
-        auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
-        auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
+        auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
+        auto l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr)->get();
         new_node_cnt++;
 
-        first_node[i] = l2_node;
-        first_node_paddr[i] = l2_node_paddr;
+        first_node[i] = l1_node;
+        first_node_paddr[i] = l1_node_paddr;
 
-        l2_node->min_key = i;
-        //set height of l2 node
-        l2_node->height = height;
+        l1_node->min_key = i;
+        //set height of l1 node
+        l1_node->height = height;
 
-        //allocate kvpairs to l2 node
-        uint64_t kvpairs_paddr_dump = l2_node_paddr.dump()+node_size;
+        //allocate kvpairs to l1 node
+        uint64_t kvpairs_paddr_dump = l1_node_paddr.dump()+node_size;
         auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr_dump)->get();
 
         //initialize key/value/cnt of kvpairs
@@ -1464,20 +1464,20 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         _mm_sfence();
 
         
-        clwb(l2_node, node_size);
+        clwb(l1_node, node_size);
         _mm_sfence();
 
 
         
 
         for(int j=0; j<kMaxHeight; j++){
-          preds[i][j] = l2_node;
+          preds[i][j] = l1_node;
           succs[i][j] = 0;
           succs_key[i][j] = 0;
         }
-        pred_paddr_dump = l2_node_paddr.dump();
-        heads[i]->next[0].next_ptr = l2_node_paddr.dump();
-        heads[i]->next[0].next_key = l2_node->min_key;
+        pred_paddr_dump = l1_node_paddr.dump();
+        heads[i]->next[0].next_ptr = l1_node_paddr.dump();
+        heads[i]->next[0].next_key = l1_node->min_key;
         clwb(&(heads[i]->next[0]), sizeof(HintedPtr));
         _mm_sfence();
       }
@@ -1491,7 +1491,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       //heads의 value를 각 numa당 skiplist node 개수로 설정해준다.
       for(int i=0; i<kNumRegions; i++){
         for(int j=0; j<kMaxHeight; j++){
-          l2_manifest->cnt[i][j] = 1;
+          l1_manifest->cnt[i][j] = 1;
         }
       }
 
@@ -1501,7 +1501,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     //set cnts
     for(int i=0; i<kNumRegions; i++){
       for(int j=0; j<kMaxHeight; j++){
-        cnts[i][j] = l2_manifest->cnt[i][j];
+        cnts[i][j] = l1_manifest->cnt[i][j];
       }
     }
  
@@ -1556,7 +1556,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     //start loop, break if no l0_node left
     while(true){
       //
-      //1. check if it needs insertion keys into l2 node
+      //1. check if it needs insertion keys into l1 node
       //
       //   Three conditions for insertion:
       //   1. Check if l0_node is null pointer (need to lastly write all keys in buffer)
@@ -1600,14 +1600,14 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
           // 4) calculate node size and allocate node and kvpair
           size_t node_size = sizeof(PmemNode2) + (height - 1) * sizeof(HintedPtr);
-          auto l2_node_paddr = l2_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
-          auto l2_node = (Node2*) ((PmemPtr*) &l2_node_paddr)->get();
-          uint64_t kvpairs_paddr_dump = l2_node_paddr.dump()+node_size;
+          auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size+sizeof(KVpairs));
+          auto l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr)->get();
+          uint64_t kvpairs_paddr_dump = l1_node_paddr.dump()+node_size;
           auto kvpairs = (KVpairs*) ((PmemPtr*) &kvpairs_paddr_dump)->get();
           new_node_cnt++;
 
-          //do insert in kvpair and decide min key of l2 node
-          //일단 개수는 새로 생긴 l2 node의 kvpairs->cnt는 key_total_cnt/2 개이다 (3개면 1개)
+          //do insert in kvpair and decide min key of l1 node
+          //일단 개수는 새로 생긴 l1 node의 kvpairs->cnt는 key_total_cnt/2 개이다 (3개면 1개)
           //넣어주기 위해서 넣어주는 곳을 pos = key_total_cnt/2 (혹은 kvpairs->cnt) 로 설정해준다. (pos는 넣어줘야 하는 곳을 의미한다.)
           kvpairs->cnt = key_total_cnt/2;
           uint64_t insert_pos = key_total_cnt/2;
@@ -1678,15 +1678,15 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             kvpairs->cnt = dest;
           }
 
-          //kvpairs->key[0] 가 l2_node의 min_key가 된다.
-          l2_node->min_key = kvpairs->key[0];
+          //kvpairs->key[0] 가 l1_node의 min_key가 된다.
+          l1_node->min_key = kvpairs->key[0];
 
           // 5) find remain preds and succs
           for (int t = kMaxHeight-1; t > 0; t--) {
             uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             while (curr) {
-              if (curr->min_key.Compare(l2_node->min_key) <= 0) {
+              if (curr->min_key.Compare(l1_node->min_key) <= 0) {
                 preds[region][t] = curr;
                 curr_paddr_paddr = curr->next[t].next_ptr;
                 curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
@@ -1700,35 +1700,35 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             succs[region][t] = curr_paddr_paddr;
           }
         
-          // 6) update next pointers and kvpair_ptr of new l2_node
-          l2_node->next[0].next_key = succs_key[0][0];
-          l2_node->next[0].next_ptr = succs[0][0];
+          // 6) update next pointers and kvpair_ptr of new l1_node
+          l1_node->next[0].next_key = succs_key[0][0];
+          l1_node->next[0].next_ptr = succs[0][0];
           for (int i = 1; i < height; i++) {
-            l2_node->next[i].next_key =  succs_key[region][i];
-            l2_node->next[i].next_ptr =  succs[region][i];
+            l1_node->next[i].next_key =  succs_key[region][i];
+            l1_node->next[i].next_ptr =  succs[region][i];
           }
-          l2_node->height = height;
+          l1_node->height = height;
 
           // 7) update next pointers of predecessor nodes
-          preds[0][0]->next[0].next_key = l2_node->min_key;
-          preds[0][0]->next[0].next_ptr = l2_node_paddr.dump();
+          preds[0][0]->next[0].next_key = l1_node->min_key;
+          preds[0][0]->next[0].next_ptr = l1_node_paddr.dump();
           clwb(&(preds[0][0]->next[0]), sizeof(HintedPtr));
           _mm_sfence();
           for (int i = 1 ;i < height; i++) {
-            preds[region][i]->next[i].next_key = l2_node->min_key;
-            preds[region][i]->next[i].next_ptr = l2_node_paddr.dump();
+            preds[region][i]->next[i].next_key = l1_node->min_key;
+            preds[region][i]->next[i].next_ptr = l1_node_paddr.dump();
             clwb(&(preds[region][i]->next[i]), sizeof(HintedPtr));
             _mm_sfence();
             //clwb changed next pointer of preds node
           }
 
-          // 8) clwb kvpairs and l2 node
+          // 8) clwb kvpairs and l1 node
           clwb(kvpairs, sizeof(KVpairs));
           _mm_sfence();
-          clwb(l2_node, node_size);
+          clwb(l1_node, node_size);
           _mm_sfence();
 
-          //new node가 연결되지 않았는데 l2 node의 cnt 부터 줄어들면 key를 볼 수 없다.
+          //new node가 연결되지 않았는데 l1 node의 cnt 부터 줄어들면 key를 볼 수 없다.
           pred_kvpairs->cnt = tmp_pred_kvpairs_cnt;
           key_total_cnt = pred_kvpairs->cnt + buffer_cnt;
 
@@ -1853,7 +1853,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     //set skiplist counter for each numa nodes
     for(int i=0; i<kNumRegions; i++){
       for(int j=0; j<kMaxHeight; j++){
-        l2_manifest->cnt[i][j] = cnts[i][j];
+        l1_manifest->cnt[i][j] = cnts[i][j];
       }
     }
     
@@ -1875,16 +1875,16 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     l0_manifest->status = Level0or1Status::kMergeDone;
   
   if (task->shard == 0 ) fprintf(stdout, "number of compacted l0 nodes : %lu\n", node_cnt);
-  if (task->shard == 0 ) fprintf(stdout, "number of generated l2 nodes : %lu\n", new_node_cnt);
+  if (task->shard == 0 ) fprintf(stdout, "number of generated l1 nodes : %lu\n", new_node_cnt);
 
   #ifdef LISTDB_SKIPLIST_CACHE
    if (task->shard == 0 ) fprintf(stdout, "updating lookup cache\n"); // test juwon
    for(int i=0; i<kNumRegions; i++){
-    cache_[task->shard][i]->UpdateCache((PmemTable2List*)l2_tl);
+    cache_[task->shard][i]->UpdateCache((PmemTable2List*)l1_tl);
    }
   #endif
   
-}//end of L1 Compaction
+}//end of L0 Compaction
 
 void ListDB::PrintDebugLsmState(int shard) {
   auto tl = GetTableList(0, shard);
@@ -1906,7 +1906,7 @@ void ListDB::PrintDebugLsmState(int shard) {
 int ListDB::GetStatString(const std::string& name, std::string* buf) {
   int rv = 0;
   std::stringstream ss;
-  if (name == "l2_cache_size") {
+  if (name == "l1_cache_size") {
   #ifdef LISTDB_SKIPLIST_CACHE
     
   #else

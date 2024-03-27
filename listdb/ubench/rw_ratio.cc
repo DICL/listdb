@@ -507,7 +507,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
   std::string buf;
-  db->GetStatString("l2_cache_size", &buf);
+  db->GetStatString("l1_cache_size", &buf);
   fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
@@ -894,7 +894,7 @@ const std::vector<OpType>& work_ops1, const std::vector<OpType>& work_ops2, cons
 
   fprintf(stdout, "\n");
   std::string buf;
-  db->GetStatString("l2_cache_size", &buf);
+  db->GetStatString("l1_cache_size", &buf);
   fprintf(stdout, "%s\n", buf.c_str());
   delete db;
 }
@@ -959,11 +959,11 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
-    fprintf(stdout, "L2_cache_size: %zu bytes\n", kSkipListCacheCapacity);
+    fprintf(stdout, "l1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
 
     std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
 #else
-    fprintf(stdout, "L2_cache_size: disabled.\n");
+    fprintf(stdout, "l1_cache_size: disabled.\n");
 #endif
 
 #ifdef LISTDB_L0_CACHE

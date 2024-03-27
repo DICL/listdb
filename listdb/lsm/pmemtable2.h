@@ -25,7 +25,7 @@ class PmemTable2 : public Table {
 #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter() { return bloom_filter_; }
 #endif
-  void SetManifest(pmem::obj::persistent_ptr<pmem_l2_info> manifest) { manifest_ = manifest; }
+  void SetManifest(pmem::obj::persistent_ptr<pmem_l1_info> manifest) { manifest_ = manifest; }
 
   template <typename T>
   pmem::obj::persistent_ptr<T> manifest() { return manifest_.raw(); }
@@ -35,12 +35,12 @@ class PmemTable2 : public Table {
 #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* bloom_filter_;
 #endif
-  pmem::obj::persistent_ptr<pmem_l2_info> manifest_;
+  pmem::obj::persistent_ptr<pmem_l1_info> manifest_;
 };
 
 PmemTable2::PmemTable2(const size_t table_capacity, PackedPmemSkipList* skiplist)
     : Table(table_capacity, TableType::kPmemTable2), skiplist_(skiplist) {
-    //there is no bloom filter for l2 (because there is no limit of l2 table capacity)
+    //there is no bloom filter for l1 (because there is no limit of l1 table capacity)
     //bloom_filter_ = new BloomFilter(10,table_capacity/sizeof(Key));
 }
 

@@ -53,14 +53,14 @@ class DBClient {
   PmemPtr LevelLookup(const Key& key, const int pool_id, const int level, BraidedPmemSkipList* skiplist);
 #endif
   PmemPtr Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist);
-  bool LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out);
-  PmemPtr LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
+  bool Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out);
+  PmemPtr LookupRangel1(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out);
 
   ListDB* db_;
   int id_;
   int region_;
   int l0_pool_id_;
-  int l2_pool_id_;
+  int l1_pool_id_;
   Random rnd_;
   PmemLog* log_[kNumShards];
 #ifdef LISTDB_WISCKEY
@@ -94,7 +94,7 @@ DBClient::DBClient(ListDB* db, int id, int region) : db_(db), id_(id), region_(r
 #endif
   }
   l0_pool_id_ = db_->l0_pool_id(region_);
-  l2_pool_id_ = db_->l2_pool_id(region_);
+  l1_pool_id_ = db_->l1_pool_id(region_);
 }
 
 void DBClient::SetRegion(int region) {
@@ -309,7 +309,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
-      if(LookupL2(key, l2_pool_id_, skiplist, s, value_out)) return true;
+      if(Lookupl1(key, l1_pool_id_, skiplist, s, value_out)) return true;
       table = table->Next();
     }
   }
@@ -327,7 +327,7 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
       //auto found_paddr = skiplist->Lookup(key, region_);
-      LookupRangeL2(key, l2_pool_id_, skiplist, s, scan_num, values_out);
+      LookupRangel1(key, l1_pool_id_, skiplist, s, scan_num, values_out);
       if (!values_out->empty()) return true;
       table = table->Next();
     }
@@ -477,7 +477,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
-      if(LookupL2(key, l2_pool_id_, skiplist, s, value_out)) return true;
+      if(Lookupl1(key, l1_pool_id_, skiplist, s, value_out)) return true;
       table = table->Next();
     }
   }
@@ -629,7 +629,7 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
   return curr_paddr_dump;
 }
 
-bool DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out) {
+bool DBClient::Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, Value* value_out) {
   using Node2 = PmemNode2;
   uint64_t pred_paddr_dump;
   Node2* pred;
@@ -764,7 +764,7 @@ bool DBClient::LookupL2(const Key& key, const int pool_id, PackedPmemSkipList* s
   
 }
 
-PmemPtr DBClient::LookupRangeL2(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
+PmemPtr DBClient::LookupRangel1(const Key& key, const int pool_id, PackedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   using Node2 = PmemNode2;
   uint64_t pred_paddr_dump;
   Node2* pred;

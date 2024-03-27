@@ -42,6 +42,6 @@ class ReporterClient {
   Reporter* reporter_;  // not owned.
   const uint64_t report_interval_msecs_;
   uint64_t last_up_report_time_;  // micro
-  std::array<int64_t, 5> total_ops_done_;
-  std::array<int64_t, 5> last_report_;
+  std::array<int64_t, 4> total_ops_done_;
+  std::array<int64_t, 4> last_report_;
 };

@@ -8,7 +8,7 @@
 
 struct pmem_db_shard;
 struct pmem_l0_info;
-struct pmem_l2_info;
+struct pmem_l1_info;
 
 enum class Level0or1Status {
   kInitialized,
@@ -18,7 +18,7 @@ enum class Level0or1Status {
   kMergeDone,
 };
 
-enum class Level2Status {
+enum class Level1Status {
   kMergeWaiting,
   kMergeDone,
 };
@@ -36,7 +36,6 @@ struct pmem_db_shard {
   //pmem_l0_info l0_info[100];  // TODO(wkim): Manage this as like a circular-array
   pmem::obj::persistent_ptr<pmem_l0_info> l0_list_head;
   pmem::obj::persistent_ptr<pmem_l0_info> l1_info;
-  pmem::obj::persistent_ptr<pmem_l2_info> l2_info;
 };
 
 struct pmem_l0_info {
@@ -47,10 +46,10 @@ struct pmem_l0_info {
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 
-struct pmem_l2_info {
+struct pmem_l1_info {
   uint64_t id;
   uint64_t cnt[kNumRegions][kMaxHeight];
-  Level2Status status;
+  Level1Status status;
   pmem::obj::persistent_ptr<char[]> head[kNumRegions];
 };
 
