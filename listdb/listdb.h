@@ -46,9 +46,9 @@
 #include "listdb/util/reporter_client.h"
 
 #define L0_COMPACTION_ON_IDLE
-#define L0_COMPACTION_YIELD
+// /#define L0_COMPACTION_YIELD
 
-#define REPORT_BACKGROUND_WORKS
+//#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
@@ -62,6 +62,7 @@
 #endif
 
 #define L0_COMPACTION_LATENCY_BREAKDOWN
+#define L0_COMPACTION_NEEDS_TRIGGER
 
 //#define L0_COMPACTION_ON_IDLE
 //#define L0_COMPACTION_YIELD
@@ -220,7 +221,11 @@ class ListDB {
 
   std::thread bg_thread_;
   bool stop_ = false;
+#ifdef L0_COMPACTION_NEEDS_TRIGGER
+  ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kStop;
+#else
   ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
+#endif
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
@@ -1365,6 +1370,13 @@ void ListDB::ManualFlushMemTable(int shard) {
 
 void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task){
 
+#ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+  auto compaction_begin_tp = std::chrono::steady_clock::now();
+  auto prev_tp = std::chrono::high_resolution_clock::now();
+  size_t merge_latency_nanoseconds = 0;
+  size_t scan_latency_nanoseconds = 0;
+#endif
+
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
@@ -1557,6 +1569,9 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
     //start loop, break if no l0_node left
     while(true){
+#ifdef L0_COMPACTION_YIELD
+    std::this_thread::yield();
+#endif
       //
       //1. check if it needs insertion keys into l1 node
       //
@@ -1568,7 +1583,12 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       //   and if so, do insert
 
       if(l0_node==nullptr || (curr && (curr->min_key.Compare(l0_node->key) <= 0)) || key_total_cnt > NPAIRS){
-
+        #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+          auto curr_tp = std::chrono::high_resolution_clock::now();
+          auto scan_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
+          scan_latency_nanoseconds += scan_duration.count();
+          prev_tp = curr_tp;
+        #endif
         INIT_REPORTER_CLIENT;
 
         //
@@ -1683,6 +1703,13 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
           //kvpairs->key[0] 가 l1_node의 min_key가 된다.
           l1_node->min_key = kvpairs->key[0];
 
+          #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+            curr_tp = std::chrono::high_resolution_clock::now();
+            auto merge_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
+            merge_latency_nanoseconds += merge_duration.count();
+            prev_tp = curr_tp;
+          #endif
+
           // 5) find remain preds and succs
           for (int t = kMaxHeight-1; t > 0; t--) {
             uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
@@ -1701,6 +1728,13 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             if(t>1 && (preds[region][t]->min_key.Compare(preds[region][t-1]->min_key) >= 0)) preds[region][t-1] = preds[region][t];
             succs[region][t] = curr_paddr_paddr;
           }
+
+          #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+            curr_tp = std::chrono::high_resolution_clock::now();
+            auto scan_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
+            scan_latency_nanoseconds += scan_duration.count();
+            prev_tp = curr_tp;
+          #endif
         
           // 6) update next pointers and kvpair_ptr of new l1_node
           l1_node->next[0].next_key = succs_key[0][0];
@@ -1810,6 +1844,13 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         //     only if it does insert in #1.
         if(l0_node == nullptr) break;
 
+        #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+          curr_tp = std::chrono::high_resolution_clock::now();
+          auto merge_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
+          merge_latency_nanoseconds += merge_duration.count();
+          prev_tp = curr_tp;
+        #endif
+
         //1-4. set pred, curr, and buffer counter(total counter) using l0 node
         //     only if it does insert in #1.
         uint64_t curr_paddr_paddr = preds[0][0]->next[0].next_ptr;
@@ -1885,6 +1926,9 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
    for(int i=0; i<kNumRegions; i++){
     //update only when number of nodes grow to update trigger ratio
     if(l1_manifest->recent_cnt_before_update[i]*kUpdateTriggerRatio <= total_cnt[i]){
+#ifdef L0_COMPACTION_YIELD
+    std::this_thread::yield();
+#endif
       if (task->shard == 0 && i==0) fprintf(stdout, "updating lookup cache\n"); // test juwon
       l1_manifest->recent_cnt_before_update[i] = total_cnt[i];
       cache_[task->shard][i]->UpdateCache((PmemTable2List*)l1_tl);
@@ -1892,6 +1936,18 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
    }
   #endif
   
+  #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+    auto curr_tp = std::chrono::high_resolution_clock::now();
+    auto scan_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
+    scan_latency_nanoseconds += scan_duration.count();
+
+    auto compaction_end_tp = std::chrono::steady_clock::now();
+    auto compaction_duration = std::chrono::duration_cast<std::chrono::milliseconds>(compaction_end_tp - compaction_begin_tp);
+    auto compaction_latency = compaction_duration.count();
+    printf("compaction_total_latency(ms): %lu\n",compaction_latency);
+    printf("compaction_scan_latency(ms): %lu\n",scan_latency_nanoseconds/1000/1000);
+    printf("compaction_merge_latency(ms): %lu\n",merge_latency_nanoseconds/1000/1000);
+  #endif
 }//end of L0 Compaction
 
 void ListDB::PrintDebugLsmState(int shard) {

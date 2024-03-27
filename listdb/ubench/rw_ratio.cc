@@ -394,6 +394,10 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     db->ManualFlushMemTable(i);
   }
 
+  //if using l0 compaction needs trigger
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
+
   fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
   db->PrintDebugLsmState(0);
@@ -973,7 +977,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
-/*  
+
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -991,7 +995,7 @@ int main(int argc, char* argv[]) {
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
   Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
- */
+ /*
   //user behavior
   std::vector<uint64_t> load_keys1;
   std::vector<uint64_t> load_keys2;
@@ -1038,6 +1042,6 @@ int main(int argc, char* argv[]) {
 
 
   Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
-
+*/
   return 0;
 }
