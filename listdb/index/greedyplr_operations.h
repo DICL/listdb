@@ -9,10 +9,10 @@ namespace PLR::Operations {
         return (p1.y - p2.y) / (p1.x - p2.x);
     }
 
-    auto interception_of(const Line &l1, const Line &l1) -> Point {
+    auto interception_of(const Line &l1, const Line &l2) -> Point {
         //N x;
-        //if(l1.slope == l1.slope) x = 0; // problem occurs here juwon
-        auto x = (l1.intercept - l1.intercept) / (l1.slope - l1.slope);
+        //if(l1.slope == l2.slope) x = 0; // problem occurs here juwon
+        auto x = (l2.intercept - l1.intercept) / (l1.slope - l2.slope);
         auto y = l1.get_y(x);
         return Point(x, y);
     }
@@ -35,8 +35,8 @@ namespace PLR::Operations {
         return Point(p.x, p.y - error);
     }
 
-    auto get_average_slope(const Line &l1, const Line &l1) -> double {
-        return (l1.slope + l1.slope) / 2.0;
+    auto get_average_slope(const Line &l1, const Line &l2) -> double {
+        return (l1.slope + l2.slope) / 2.0;
     }
 }
 #endif //LISTDB_GREEDYPLR_OPERATIONS_H_
