@@ -42,9 +42,9 @@
 #include "listdb/util/reporter_client.h"
 
 #define L0_COMPACTION_ON_IDLE
-#define L0_COMPACTION_YIELD
+//#define L0_COMPACTION_YIELD
 
-#define REPORT_BACKGROUND_WORKS
+//#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
@@ -228,7 +228,11 @@ class ListDB {
 
   std::thread bg_thread_;
   bool stop_ = false;
+#ifdef L0_COMPACTION_NEEDS_TRIGGER
+  ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kStop;
+#else
   ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
+#endif
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
@@ -1699,6 +1703,11 @@ void ListDB::ManualFlushMemTable(int shard) {
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0Status::kMergeInitiated;
+
+#ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+  auto compaction_begin_tp = std::chrono::steady_clock::now();
+#endif
+
   // call clwb
 #if 0
   if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
@@ -1976,6 +1985,10 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     node_paddr = l0_node->next[0];
   }
 
+#ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+  auto merge_begin_tp = std::chrono::steady_clock::now();
+#endif
+
   // 2. Merge
   //bool print_debug = false;
   //if (preds[0][0]->next[0] != 0) {
@@ -2028,6 +2041,10 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     delete z;
   }
   REPORT_DONE;  // Up report all remainings
+
+#ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+  auto merge_end_tp = std::chrono::steady_clock::now();
+#endif
 
 #ifdef LISTDB_L1_LRU
   using MyType1 = std::pair<uint64_t, uint64_t>;
@@ -2125,6 +2142,17 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     }
   }
 #endif
+#endif
+
+#ifdef L0_COMPACTION_LATENCY_BREAKDOWN
+    auto compaction_end_tp = std::chrono::steady_clock::now();
+    auto compaction_duration = std::chrono::duration_cast<std::chrono::milliseconds>(compaction_end_tp - compaction_begin_tp);
+    auto compaction_latency = compaction_duration.count();
+    auto merge_duration = std::chrono::duration_cast<std::chrono::milliseconds>(merge_end_tp - merge_begin_tp);
+    auto merge_latency = merge_duration.count();
+    printf("compaction_total_latency(ms): %lu\n",compaction_latency);
+    printf("compaction_scan_latency(ms): %lu\n",compaction_latency-merge_latency);
+    printf("compaction_merge_latency(ms): %lu\n",merge_latency);
 #endif
 }
 
