@@ -1710,7 +1710,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   // call clwb
 #if 0
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
 
@@ -1865,7 +1865,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #else
 #if 1
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
 
@@ -2076,7 +2076,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #else
   // Insert N times
   // For Test
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
@@ -2150,14 +2150,12 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     auto compaction_latency = compaction_duration.count();
     auto merge_duration = std::chrono::duration_cast<std::chrono::milliseconds>(merge_end_tp - merge_begin_tp);
     auto merge_latency = merge_duration.count();
-    printf("compaction_total_latency(ms): %lu\n",compaction_latency);
-    printf("compaction_scan_latency(ms): %lu\n",compaction_latency-merge_latency);
-    printf("compaction_merge_latency(ms): %lu\n",merge_latency);
+    printf("%lu\t%lu\t%lu\n",compaction_latency,compaction_latency-merge_latency,merge_latency);
 #endif
 }
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();

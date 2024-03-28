@@ -31,10 +31,10 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 60;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr int NUM_THREADS = 20;
+constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
-constexpr int SLEEP_TIME = 300;
+constexpr int SLEEP_TIME = 20000;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
