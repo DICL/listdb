@@ -33,8 +33,8 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 60;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr int NUM_THREADS = 20;
+constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
 
 //for user behavior
@@ -49,8 +49,7 @@ constexpr int LOAD3_TIME = 60;
 constexpr int WORK1_TIME = 80;
 constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 60;//time to waiting l0 compactions end
-constexpr int SLEEP_TIME2 = 60;//time to waiting l1 compactions end
+constexpr int SLEEP_TIME = 20000;//time to waiting l0 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -398,8 +397,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   std::this_thread::sleep_for(std::chrono::seconds(3));
   db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
 
-  fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
-  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
+  fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME);
+  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
   db->PrintDebugLsmState(0);
 
   // Work

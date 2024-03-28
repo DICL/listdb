@@ -1377,7 +1377,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
   size_t scan_latency_nanoseconds = 0;
 #endif
 
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0or1Status::kMergeInitiated;
@@ -1944,9 +1944,8 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     auto compaction_end_tp = std::chrono::steady_clock::now();
     auto compaction_duration = std::chrono::duration_cast<std::chrono::milliseconds>(compaction_end_tp - compaction_begin_tp);
     auto compaction_latency = compaction_duration.count();
-    printf("compaction_total_latency(ms): %lu\n",compaction_latency);
-    printf("compaction_scan_latency(ms): %lu\n",scan_latency_nanoseconds/1000/1000);
-    printf("compaction_merge_latency(ms): %lu\n",merge_latency_nanoseconds/1000/1000);
+    printf("%lu\t%lu\t%lu\n",compaction_latency,scan_latency_nanoseconds/1000/1000,merge_latency_nanoseconds/1000/1000);
+    //printf("%f\t%f\n",(double)scan_latency_nanoseconds/(scan_latency_nanoseconds+merge_latency_nanoseconds),(double)merge_latency_nanoseconds/(scan_latency_nanoseconds+merge_latency_nanoseconds));
   #endif
 }//end of L0 Compaction
 
