@@ -33,8 +33,8 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 20;
-constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
+constexpr int NUM_THREADS = 60;
+constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
 
 //for user behavior
@@ -49,7 +49,7 @@ constexpr int LOAD3_TIME = 60;
 constexpr int WORK1_TIME = 80;
 constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 20000;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME = 60;//time to waiting l0 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -388,7 +388,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  std::this_thread::sleep_for(std::chrono::seconds(10));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }

@@ -148,11 +148,6 @@ void DBClient::Put(const Key& key, const Value& value) {
   auto skiplist = mem->skiplist();
   skiplist->Insert(node);
 
-#ifdef LISTDB_BLOOM_FILTER
-  //after insertion, add key to bloom filter
-  mem->bloom_filter()->AddKey(key);
-#endif
-
   mem->w_UnRef();
 #else
   int s = KeyShard(key);
@@ -231,12 +226,6 @@ bool DBClient::Get(const Key& key, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
-#ifdef LISTDB_BLOOM_FILTER
-        if(!mem->bloom_filter()->KeyMayMatch(key)){
-          table = table->Next();
-          continue;
-        }
-#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
@@ -395,12 +384,6 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
     while (table) {
       if (table->type() == TableType::kMemTable) {
         auto mem = (MemTable*) table;
-#ifdef LISTDB_BLOOM_FILTER
-        if(!mem->bloom_filter()->KeyMayMatch(key)){
-          table = table->Next();
-          continue;
-        }
-#endif
         auto skiplist = mem->skiplist();
         auto found = skiplist->Lookup(key);
         if (found && found->key == key) {
