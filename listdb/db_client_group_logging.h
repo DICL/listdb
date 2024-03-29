@@ -52,7 +52,7 @@ class DBClient {
 void DBClient::Put(const Key& key, const Value& value) {
   int s = KeyShard(key);
 
-  int height = RandomHeight();
+  int height = DBClient::RandomHeight();
   size_t log_alloc_size = util::AlignedSize(8, LogWriter::Entry::ComputeAllocSize(key, height));
   size_t node_alloc_size = util::AlignedSize(8, MemNode::ComputeAllocSize(key, height));
 

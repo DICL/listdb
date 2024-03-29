@@ -40,9 +40,12 @@
 #include "listdb/util/random.h"
 #include "listdb/util/reporter.h"
 #include "listdb/util/reporter_client.h"
+#ifdef LISTDB_BLOOM_FILTER
+#include "listdb/index/bloom_filter.h"
+#endif
 
 #define L0_COMPACTION_ON_IDLE
-//#define L0_COMPACTION_YIELD
+#define L0_COMPACTION_YIELD
 
 //#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
@@ -57,7 +60,7 @@
 #define REPORT_DONE
 #endif
 
-#define L0_COMPACTION_LATENCY_BREAKDOWN
+//#define L0_COMPACTION_LATENCY_BREAKDOWN
 #define L0_COMPACTION_NEEDS_TRIGGER
 
 
@@ -497,7 +500,7 @@ void ListDB::Init() {
 }
 
 void ListDB::Open() {
-  std::string db_path = "/pmem/wkim/listdb";
+  std::string db_path = "/pmem0/wkim/listdb";
   int root_pool_id = Pmem::BindPool<pmem_db>(db_path, "", 64*1024*1024);
   if (root_pool_id != 0) {
     std::cerr << "root_pool_id must be zero (current: " << root_pool_id << ")\n";
@@ -531,7 +534,7 @@ void ListDB::Open() {
     }
   }
 #else
-  std::cerr << "Open() for LISTDB_WAL is not implemented." << std:endl;
+  std::cerr << "Open() for LISTDB_WAL is not implemented." << std::endl;
   exit(1);
 #endif
 
@@ -553,7 +556,7 @@ void ListDB::Open() {
 #endif
 
 #ifdef L1_COW
-  std::cerr << "Open() for L0 CoW compaction is not implemented." << std:endl;
+  std::cerr << "Open() for L0 CoW compaction is not implemented." << std::endl;
   exit(1);
 #else
   for (int i = 0; i < kNumRegions; i++) {
@@ -1223,6 +1226,11 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   uint64_t flush_cnt = 0;
   uint64_t begin_micros = Clock::NowMicros();
   INIT_REPORTER_CLIENT;
+
+#ifdef LISTDB_BLOOM_FILTER
+  BloomFilter* l0_bloom_filter = new BloomFilter(10,kMemTableCapacity/kNumShards/sizeof(PmemNode));
+#endif
+
   while (mem_node) {
     //std::this_thread::yield();
 #ifdef GROUP_LOGGING
@@ -1250,6 +1258,10 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
     hash_table->Insert(mem_node->key, node);
 #endif
 
+#ifdef LISTDB_BLOOM_FILTER
+  l0_bloom_filter->AddKey(mem_node->key);
+#endif
+
     REPORT_FLUSH_OPS(1);
     flush_cnt++;
 
@@ -1262,9 +1274,9 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
   td->flush_time_usec += (end_micros - begin_micros);
 
 #ifdef LISTDB_BLOOM_FILTER
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist, task->imm->bloom_filter());
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist, l0_bloom_filter);
 #else
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist);
 #endif
   l0_table->SetManifest(task->imm->l0_manifest());
   task->imm->SetPersistentTable((Table*) l0_table);
@@ -1555,6 +1567,11 @@ void ListDB::ManualFlushMemTable(int shard) {
 #endif
 
   INIT_REPORTER_CLIENT;
+
+#ifdef LISTDB_BLOOM_FILTER
+  BloomFilter* l0_bloom_filter = new BloomFilter(10,kMemTableCapacity/kNumShards/sizeof(PmemNode));
+#endif
+
   while (mem_node) {
 #ifdef GROUP_LOGGING
     while (((std::atomic<uint64_t>*) &mem_node->value)->load(std::memory_order_relaxed) == 0) continue;
@@ -1580,6 +1597,10 @@ void ListDB::ManualFlushMemTable(int shard) {
     hash_table->Insert(mem_node->key, node);
 #endif
 
+#ifdef LISTDB_BLOOM_FILTER
+  l0_bloom_filter->AddKey(mem_node->key);
+#endif
+
     REPORT_FLUSH_OPS(1);
 
     //std::this_thread::yield();
@@ -1587,7 +1608,11 @@ void ListDB::ManualFlushMemTable(int shard) {
   }
   REPORT_DONE;  // Up report all remainings
 
-  PmemTable* l0_table = new PmemTable(kMemTableCapacity, l0_skiplist);
+#ifdef LISTDB_BLOOM_FILTER
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist, l0_bloom_filter);
+#else
+  PmemTable* l0_table = new PmemTable(kMemTableCapacity / kNumShards, l0_skiplist);
+#endif
   l0_table->SetManifest(reinterpret_cast<MemTable*>(table)->l0_manifest());
   reinterpret_cast<MemTable*>(table)->SetPersistentTable((Table*) l0_table);
   // TODO(wkim): Log this L0 table for recovery
@@ -1604,7 +1629,7 @@ void ListDB::ManualFlushMemTable(int shard) {
     return;
   }
 
-  tl->NewFront();
+  tl->CreateNewFront();
   
   // Flush (WAL)
   auto l0_skiplist = reinterpret_cast<MemTable*>(table)->l0_skiplist();
@@ -1710,7 +1735,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 
   // call clwb
 #if 0
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
 
@@ -1865,7 +1890,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
   }
 #else
 #if 1
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
 
@@ -2076,7 +2101,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 #else
   // Insert N times
   // For Test
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
@@ -2155,7 +2180,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 }
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
