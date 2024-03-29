@@ -1477,13 +1477,8 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td)
     }
 
     size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-    //auto node_paddr = l0_arena_[region][task->shard]->Allocate(node_size);
-    //Node* node = node_paddr.get<PmemNode>();
-    auto pool = Pmem::pool<pmem_log_root>(mem_value_pool_id);
-    pmem::obj::persistent_ptr<char[]> p_buf;
-    pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-    Node* node = (PmemNode*) p_buf.get();
-    PmemPtr node_paddr = PmemPtr(mem_value_pool_id, ((uintptr_t) node - (uintptr_t) pool.handle()));
+    auto node_paddr = l0_arena_[region][task->shard]->Allocate(node_size);
+    Node* node = node_paddr.get<PmemNode>();
 
     node->tag = height;
     node->value = mem_node->value;
@@ -1500,6 +1495,7 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td)
       preds[region][i] = ((PmemPtr*) &(preds[region][i]->next[i]))->get<Node>();
     }
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
+
 
 #if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
     hash_table->Add(mem_node->key, mem_node->value);
@@ -1677,13 +1673,8 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
 
     size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
-    //auto node_paddr = l0_arena_[region][shard]->Allocate(node_size);
-    //Node* node = node_paddr.get<PmemNode>();
-    auto pool = Pmem::pool<pmem_log_root>(mem_value_pool_id);
-    pmem::obj::persistent_ptr<char[]> p_buf;
-    pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-    Node* node = (PmemNode*) p_buf.get();
-    PmemPtr node_paddr = PmemPtr(mem_value_pool_id, ((uintptr_t) node - (uintptr_t) pool.handle()));
+    auto node_paddr = l0_arena_[region][shard]->Allocate(node_size);
+    Node* node = node_paddr.get<PmemNode>();
 
     node->tag = height;
     node->value = mem_node->value;
