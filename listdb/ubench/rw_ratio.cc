@@ -34,7 +34,7 @@
 constexpr int NUM_THREADS = 60;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
-constexpr int SLEEP_TIME = 30;
+constexpr int SLEEP_TIME = 240;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -150,7 +150,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/";
+  ss << "/juwon/index-microbench/ycsb_workloade/";
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -158,7 +158,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/";
+  ss << "/juwon/index-microbench/ycsb_workloade/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }

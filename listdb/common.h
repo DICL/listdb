@@ -37,7 +37,7 @@ constexpr size_t kStringKeyLength = 16;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 128;
+constexpr int kNumShards = 1;
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
 #endif
@@ -57,7 +57,7 @@ constexpr int kLruMaxHeight = 20;
 #endif
 
 //for L2 Comparison
-#define LISTDB_BLOOM_FILTER
+//#define LISTDB_BLOOM_FILTER
 
 #ifdef LISTDB_SKIPLIST_CACHE
 constexpr size_t kSkipListCacheCardinality = 4;
