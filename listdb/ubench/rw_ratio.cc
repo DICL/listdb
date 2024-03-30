@@ -150,7 +150,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloade/";
+  ss << "/juwon/index-microbench/ycsb_workloadc/";
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -158,7 +158,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloade/";
+  ss << "/juwon/index-microbench/ycsb_workloadc/";
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
@@ -345,9 +345,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   db->Init();
 
   //test juwon reporter
-  Reporter* reporter = nullptr;
-  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
-  reporter->Start();
+  //Reporter* reporter = nullptr;
+  //reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
+  //reporter->Start();
   
   // Load
   {
@@ -362,19 +362,19 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+        //ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
 
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
           client->Put(load_keys[i], load_keys[i]);
 
           //test juwon reporter
-          if (reporter_client != nullptr) {
-            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          }
+          //if (reporter_client != nullptr) {
+          //  reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          //}
 
         }
 
-        delete reporter_client;//test juwon reporter
+        //delete reporter_client;//test juwon reporter
       });
     }
     for (auto& t : loaders) {
@@ -387,7 +387,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  std::this_thread::sleep_for(std::chrono::seconds(15));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
@@ -409,15 +409,20 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 #ifdef COUNT_FOUND
     std::vector<int> cnt(num_threads);
 #endif
-    //std::vector<size_t> pmem_get_cnt(num_threads);
-    //std::vector<size_t> search_visit_cnt(num_threads);
-    //std::vector<size_t> height_visit_cnt[kMaxHeight];
-    //for (int i = 0; i < kMaxHeight; i++) {
-    //  height_visit_cnt[i].reserve(num_threads);
-    //  for (int j = 0; j < num_threads; j++) {
-    //    height_visit_cnt[i][j] = 0;
-    //  }
-    //}
+    std::vector<size_t> pmem_get_cnt(num_threads);
+    std::vector<size_t> search_visit_cnt(num_threads);
+    std::vector<size_t> height_visit_cnt[kMaxHeight];
+    for (int i = 0; i < kMaxHeight; i++) {
+      height_visit_cnt[i].reserve(num_threads);
+      for (int j = 0; j < num_threads; j++) {
+        height_visit_cnt[i][j] = 0;
+      }
+    }
+
+    //for tracking seq access count
+    std::vector<size_t> remote_seq_access_cnt(num_threads);
+    std::vector<size_t> local_seq_access_cnt(num_threads);
+
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
     for (int id = 0; id < num_threads; id++) {
       workers.emplace_back([&, id] {
@@ -445,11 +450,16 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //latency[i] = std::chrono::steady_clock::now() - query_begin;
         }
 
-        //pmem_get_cnt[id] = client->pmem_get_cnt();
-        //search_visit_cnt[id] = client->search_visit_cnt();
-        //for (int h = 0; h < kMaxHeight; h++) {
-        //  height_visit_cnt[h][id] = client->height_visit_cnt(h);
-        //}
+        pmem_get_cnt[id] = client->pmem_get_cnt();
+        search_visit_cnt[id] = client->search_visit_cnt();
+        for (int h = 0; h < kMaxHeight; h++) {
+          height_visit_cnt[h][id] = client->height_visit_cnt(h);
+        }
+
+        //for tracking seq access count
+        remote_seq_access_cnt[id] = client->remote_seq_access_cnt();
+        local_seq_access_cnt[id] = client->local_seq_access_cnt();
+
       });
     }
     for (auto& t :  workers) {
@@ -467,22 +477,33 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     fprintf(stdout, "Found %d\n", cnt_sum);
 #endif
 
-    //size_t pmem_get_cnt_total = 0;
-    //size_t search_visit_cnt_total = 0;
-    //size_t height_visit_cnt_total[kMaxHeight] = {};
-    //for (int i = 0; i < num_threads; i++) {
-    //  pmem_get_cnt_total += pmem_get_cnt[i];
-    //  search_visit_cnt_total += search_visit_cnt[i];
-    //  for (int h = 0; h < kMaxHeight; h++) {
-    //    height_visit_cnt_total[h] += height_visit_cnt[h][i];
-    //  }
-    //}
-    //fprintf(stdout, "Number of queries fallen back to pmem search: %zu\n", pmem_get_cnt_total);
-    //fprintf(stdout, "Pmem node visit count for queries fallen back to pmem search: %zu\n", search_visit_cnt_total);
-    //fprintf(stdout, "Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", (double) search_visit_cnt_total / pmem_get_cnt_total);
-    //for (int h = 0; h < kMaxHeight; h++) {
-    //  fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
-    //}
+    size_t pmem_get_cnt_total = 0;
+    size_t search_visit_cnt_total = 0;
+    size_t height_visit_cnt_total[kMaxHeight] = {};
+    for (int i = 0; i < num_threads; i++) {
+      pmem_get_cnt_total += pmem_get_cnt[i];
+      search_visit_cnt_total += search_visit_cnt[i];
+      for (int h = 0; h < kMaxHeight; h++) {
+        height_visit_cnt_total[h] += height_visit_cnt[h][i];
+      }
+    }
+    fprintf(stdout, "Number of queries fallen back to pmem search: %zu\n", pmem_get_cnt_total);
+    fprintf(stdout, "Pmem node visit count for queries fallen back to pmem search: %zu\n", search_visit_cnt_total);
+    fprintf(stdout, "Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", (double) search_visit_cnt_total / pmem_get_cnt_total);
+    for (int h = 0; h < kMaxHeight; h++) {
+      fprintf(stdout, "height: %d - Avg. Pmem node visit count per query fallen back to pmem search: %.3lf\n", h + 1, (double) height_visit_cnt_total[h] / pmem_get_cnt_total);
+    }
+
+    //for tracking seq access count
+    size_t remote_seq_access_cnt_total = 0;
+    size_t local_seq_access_cnt_total = 0;
+    for (int i = 0; i < num_threads; i++) {
+      remote_seq_access_cnt_total += remote_seq_access_cnt[i];
+      local_seq_access_cnt_total += local_seq_access_cnt[i];
+    }
+    fprintf(stdout, "remote_seq_access_cnt_total: %zu\n", remote_seq_access_cnt_total);
+    fprintf(stdout, "local_seq_access_cnt_total: %zu\n", local_seq_access_cnt_total);
+
 #ifdef LISTDB_L1_LRU
     fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
 #endif

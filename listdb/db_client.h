@@ -10,6 +10,7 @@
 #include "listdb/util/random.h"
 
 #define LEVEL_CHECK_PERIOD_FACTOR 1
+#define DIFF_ABS(X,Y) ((X)>(Y)? (X)-(Y) : (Y)-(X)) 
 
 //#define LOG_NTSTORE
 class DBClient {
@@ -37,6 +38,8 @@ class DBClient {
   size_t pmem_get_cnt() { return pmem_get_cnt_; }
   size_t search_visit_cnt() { return search_visit_cnt_; }
   size_t height_visit_cnt(int h) { return height_visit_cnt_[h]; }
+  size_t remote_seq_access_cnt() { return remote_seq_access_cnt_; }//다른 numa 안가고 seq함
+  size_t local_seq_access_cnt() { return local_seq_access_cnt_; }//다른 numa 갔는지 여부 상관없이
   
 
  private:
@@ -66,6 +69,8 @@ class DBClient {
   size_t pmem_get_cnt_ = 0;
   size_t search_visit_cnt_ = 0;
   size_t height_visit_cnt_[kMaxHeight] = {};
+  size_t remote_seq_access_cnt_ = 0;
+  size_t local_seq_access_cnt_ = 0;
 
 #ifdef GROUP_LOGGING
   struct LogItem {
@@ -261,7 +266,7 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 #endif
     }
 #endif
-    //pmem_get_cnt_++;
+    pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
@@ -307,7 +312,7 @@ bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* va
   int s = KeyShard(key);
   
   {
-    //pmem_get_cnt_++;
+    pmem_get_cnt_++;
     // Level 1 LookupRange
     auto tl = (PmemTableList*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
@@ -422,7 +427,7 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
 #endif
     }
 #endif
-    //pmem_get_cnt_++;
+    pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
 #ifdef LISTDB_BLOOM_FILTER
@@ -571,8 +576,13 @@ PmemPtr DBClient::LevelLookup(const Key& key, const int region, const int level,
 PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
-  //search_visit_cnt_++;
-  //height_visit_cnt_[kMaxHeight - 1]++;
+  search_visit_cnt_++;
+  height_visit_cnt_[kMaxHeight - 1]++;
+  
+  //for tracking seq access count
+  uint64_t remote_pred_paddr_dump = 0;
+  uint64_t local_pred_paddr_dump[kNumRegions] = {};
+
   uint64_t curr_paddr_dump;
   Node* curr;
   int height = pred->height();
@@ -582,9 +592,18 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
     while (true) {
       curr_paddr_dump = pred->next[i];
       curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+      //for tracking seq access count
+      int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+      int curr_region = db_->pool_id_to_region(curr_pool_id);
+      if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+      if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+      remote_pred_paddr_dump = curr_paddr_dump;
+      local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
       if (curr) {
-        //search_visit_cnt_++;
-        //height_visit_cnt_[i]++;
+        search_visit_cnt_++;
+        height_visit_cnt_[i]++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -597,17 +616,26 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
     if (pool_id != skiplist->primary_pool_id()) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[kMaxHeight - 1]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[kMaxHeight - 1]++;
     }
     pred = skiplist->head();
   }
   while (true) {
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+    //for tracking seq access count
+    int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+    int curr_region = db_->pool_id_to_region(curr_pool_id);
+    if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+    if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+    remote_pred_paddr_dump = curr_paddr_dump;
+    local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
     if (curr) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[0]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
         pred = curr;
         continue;
@@ -622,6 +650,11 @@ PmemPtr DBClient::Lookup(const Key& key, const int pool_id, BraidedPmemSkipList*
 PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
+
+  //for tracking seq access count
+  uint64_t remote_pred_paddr_dump = 0;
+  uint64_t local_pred_paddr_dump[kNumRegions] = {};
+
   uint64_t curr_paddr_dump;
   Node* curr;
   int height = pred->height();
@@ -673,17 +706,26 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 
   #endif
 #endif
-  //search_visit_cnt_++;
-  //height_visit_cnt_[height - 1]++;
+  search_visit_cnt_++;
+  height_visit_cnt_[height - 1]++;
 
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
       curr_paddr_dump = pred->next[i];
       curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+      //for tracking seq access count
+      int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+      int curr_region = db_->pool_id_to_region(curr_pool_id);
+      if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+      if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+      remote_pred_paddr_dump = curr_paddr_dump;
+      local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
       if (curr) {
-        //search_visit_cnt_++;
-        //height_visit_cnt_[i]++;
+        search_visit_cnt_++;
+        height_visit_cnt_[i]++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -696,17 +738,26 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
     if (pool_id != skiplist->primary_pool_id()) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[kMaxHeight - 1]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[kMaxHeight - 1]++;
     }
     pred = skiplist->head();
   }
   while (true) {
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+    //for tracking seq access count
+    int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+    int curr_region = db_->pool_id_to_region(curr_pool_id);
+    if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+    if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+    remote_pred_paddr_dump = curr_paddr_dump;
+    local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
     if (curr) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[0]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
       if (curr->key.Compare(key) < 0) {
         pred = curr;
         continue;
@@ -721,6 +772,11 @@ PmemPtr DBClient::LookupL1(const Key& key, const int pool_id, BraidedPmemSkipLis
 PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSkipList* skiplist, const int shard, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   using Node = PmemNode;
   Node* pred = skiplist->head(pool_id);
+
+  //for tracking seq access count
+  uint64_t remote_pred_paddr_dump = 0;
+  uint64_t local_pred_paddr_dump[kNumRegions] = {};
+
   uint64_t curr_paddr_dump;
   Node* curr;
   int height = pred->height();
@@ -744,17 +800,26 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
 
   #endif
 #endif
-  //search_visit_cnt_++;
-  //height_visit_cnt_[height - 1]++;
+  search_visit_cnt_++;
+  height_visit_cnt_[height - 1]++;
 
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
       curr_paddr_dump = pred->next[i];
       curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+      //for tracking seq access count
+      int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+      int curr_region = db_->pool_id_to_region(curr_pool_id);
+      if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+      if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+      remote_pred_paddr_dump = curr_paddr_dump;
+      local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
       if (curr) {
-        //search_visit_cnt_++;
-        //height_visit_cnt_[i]++;
+        search_visit_cnt_++;
+        height_visit_cnt_[i]++;
         if (curr->key.Compare(key) < 0) {
           pred = curr;
           continue;
@@ -767,8 +832,8 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   // Braided bottom layer
   if (pred == skiplist->head(pool_id)) {
     if (pool_id != skiplist->primary_pool_id()) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[kMaxHeight - 1]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[kMaxHeight - 1]++;
     }
     pred = skiplist->head();
   }
@@ -794,9 +859,18 @@ PmemPtr DBClient::LookupRangeL1(const Key& key, const int pool_id, BraidedPmemSk
   while (scan_cnt>0) {
     curr_paddr_dump = pred->next[0];
     curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+
+    //for tracking seq access count
+    int curr_pool_id = ((PmemPtr*) &curr_paddr_dump)->pool_id();
+    int curr_region = db_->pool_id_to_region(curr_pool_id);
+    if(curr_paddr_dump - remote_pred_paddr_dump < 256) remote_seq_access_cnt_++;
+    if(curr_paddr_dump - local_pred_paddr_dump[curr_region] < 256) local_seq_access_cnt_++;
+    remote_pred_paddr_dump = curr_paddr_dump;
+    local_pred_paddr_dump[curr_region] = curr_paddr_dump;
+
     if (curr) {
-      //search_visit_cnt_++;
-      //height_visit_cnt_[0]++;
+      search_visit_cnt_++;
+      height_visit_cnt_[0]++;
       pred = curr;
       if(curr->key.Compare(key) < 0) continue;
       values_out->push_back(curr->value);

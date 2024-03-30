@@ -1122,8 +1122,11 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
 #endif
       td->current_task = nullptr;
     } else if (task->type == TaskType::kL0Compaction) {
+#ifndef L1_COW
       ZipperCompactionL0(td, (L0CompactionTask*) task);
-      //L0CompactionCopyOnWrite((L0CompactionTask*) task);
+#else
+      L0CompactionCopyOnWrite((L0CompactionTask*) task);
+#endif
       td->current_task = nullptr;
     }
     std::unique_lock<std::mutex> bg_lk(wq_mu_);
@@ -1422,7 +1425,7 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td)
 #if LISTDB_FLUSH_MEMTABLE_TO_L1 == 1
   return FlushMemTableToL1WAL(task, td);
 #endif
-  if (task->shard == 0) fprintf(stdout, "FlushMemTable: %p\n", task->imm);
+  if (task->shard == 0) fprintf(stdout, "FlushMemTable(WAL): %p\n", task->imm);
   // Check Reference Counter
   while (task->imm->w_RefCount() > 0) {
     continue;
@@ -1484,7 +1487,7 @@ void ListDB::FlushMemTableWAL(MemTableFlushTask* task, CompactionWorkerData* td)
     node->value = mem_node->value;
     _mm_sfence();
     node->key = mem_node->key;
-    clwb(node, sizeof(PmemNode) - sizeof(uint64_t));
+    clwb(node, node_size);
 
     pred->next[0] = node_paddr.dump();
     _mm_sfence();
@@ -2171,7 +2174,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
 }
 
 void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction (COW)\n");
 
   using Node = PmemNode;
   auto l0_skiplist = task->l0->skiplist();
@@ -2204,8 +2207,8 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
     int pool_id = node_paddr.pool_id();
     int region = pool_id_to_region_[pool_id];
     int height = l0_node->height();
-    PmemPtr curr_paddr = preds[region][height - 1]->next[height - 1];
     for (int i = height - 1; i > 0; i--) {
+      PmemPtr curr_paddr = preds[region][i]->next[i];
       auto curr = curr_paddr.get<Node>();
       while (curr) {
         if (curr->key.Compare(l0_node->key) < 0) {
@@ -2233,20 +2236,25 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
       succs[0][0] = curr_paddr.dump();
     }
 
-    size_t node_size = sizeof(PmemNode) + (height - 1) * 8;
+    size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
     auto l1_node_paddr = l1_arena_[region][task->shard]->Allocate(node_size);
-    auto l1_node = l1_node_paddr.get<Node>();
-    l1_node->key = l0_node->key;
-    l1_node->tag = l0_node->tag;
+    Node* l1_node = l1_node_paddr.get<PmemNode>();
+
+    l1_node->tag = height;
     l1_node->value = l0_node->value;
+    
+    l1_node->key = l0_node->key;
     l1_node->next[0] = succs[0][0];
-    for (int i = 1; i < height; i++) {
-      l1_node->next[i] = succs[region][i];
-    }
-    clwb(l1_node, node_size);
+    clwb(l1_node, sizeof(PmemNode));
     _mm_sfence();
     preds[0][0]->next[0] = l1_node_paddr.dump();
-    for (int i = 1 ;i < height; i++) {
+    clwb(&preds[0][0]->next[0], 8);
+    _mm_sfence();
+    
+    
+    for (int i = 1; i < height; i++) {
+      //std::this_thread::yield();
+      l1_node->next[i] = succs[region][i];
       preds[region][i]->next[i] = l1_node_paddr.dump();
     }
 
@@ -2271,6 +2279,7 @@ void ListDB::L0CompactionCopyOnWrite(L0CompactionTask* task) {
       break;
     }
   }
+  if (task->shard == 0) fprintf(stdout, "L0 compaction done (COW)\n");
 }
 
 void ListDB::PrintDebugLsmState(int shard) {
