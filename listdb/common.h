@@ -42,8 +42,9 @@ constexpr size_t kStringKeyLength = 16;
 
 constexpr int kNumRegions = 4;
 constexpr int kNumShards = 64;
+#define LISTDB_RANGE_SHARD
 #ifdef LISTDB_RANGE_SHARD
-constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards + (kNumShards > 1);
+constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards / 2 + (kNumShards > 1); // juwon edited (this is proper for index-microbench)
 #endif
 
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);

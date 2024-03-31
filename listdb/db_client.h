@@ -500,8 +500,11 @@ inline int DBClient::DramRandomHeight() {
 }
 
 inline int DBClient::KeyShard(const Key& key) {
+#ifndef LISTDB_RANGE_SHARD
   return key.key_num() % kNumShards;
-  //return key.key_num() / kShardSize;
+#else
+  return key.key_num() / kShardSize;
+#endif
 }
 
 #ifdef LISTDB_EXPERIMENTAL_SEARCH_LEVEL_CHECK
