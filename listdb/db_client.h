@@ -40,7 +40,6 @@ class DBClient {
   size_t height_visit_cnt(int h) { return height_visit_cnt_[h]; }
   size_t remote_seq_access_cnt() { return remote_seq_access_cnt_; }//다른 numa 안가고 seq함
   size_t local_seq_access_cnt() { return local_seq_access_cnt_; }//다른 numa 갔는지 여부 상관없이
-  size_t shard_put_cnt(int s) { return shard_put_cnt_[s]; }
   
 
  private:
@@ -72,7 +71,6 @@ class DBClient {
   size_t height_visit_cnt_[kMaxHeight] = {};
   size_t remote_seq_access_cnt_ = 0;
   size_t local_seq_access_cnt_ = 0;
-  size_t shard_put_cnt_[kNumShards] = {};
 
 #ifdef GROUP_LOGGING
   struct LogItem {
@@ -113,7 +111,6 @@ void DBClient::SetRegion(int region) {
 void DBClient::Put(const Key& key, const Value& value) {
 #ifndef GROUP_LOGGING
   int s = KeyShard(key);
-  shard_put_cnt_[s]++;
 
   uint64_t pmem_height = PmemRandomHeight();
   size_t iul_entry_size = sizeof(PmemNode) + (pmem_height - 1) * sizeof(uint64_t);

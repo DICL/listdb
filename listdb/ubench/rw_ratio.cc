@@ -355,16 +355,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
     auto begin_tp = std::chrono::steady_clock::now();
     std::vector<std::thread> loaders;
-
-    //for tune range sharding
-    std::vector<size_t> shard_put_cnt[kNumShards];
-    for (int i = 0; i < kNumShards; i++) {
-      shard_put_cnt[i].reserve(num_threads);
-      for (int j = 0; j < num_threads; j++) {
-        shard_put_cnt[i][j] = 0;
-      }
-    }
-
     const size_t num_ops_per_thread = NUM_LOADS / num_threads;
     for (int id = 0; id < num_threads; id++) {
       loaders.emplace_back([&, id] {
@@ -383,11 +373,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //}
 
         }
-        //for tune range sharding
-        for (int s = 0; s < kNumShards; s++) {
-          shard_put_cnt[s][id] = client->shard_put_cnt(s);
-        }
-
 
         //delete reporter_client;//test juwon reporter
       });
@@ -399,17 +384,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
     fprintf(stdout, "Load IOPS: %.3lf M\n", NUM_LOADS/dur_sec/1000000);
-    
-    //for tune range sharding
-    size_t shard_put_cnt_total[kNumShards] = {};
-    for (int i = 0; i < num_threads; i++) {
-      for (int s = 0; s < kNumShards; s++) {
-       shard_put_cnt_total[s] += shard_put_cnt[s][i];
-      }
-    }
-    for (int s = 0; s < kNumShards; s++) {
-      fprintf(stdout, "shard: %d - number of put keys: %lu\n", s + 1, shard_put_cnt_total[s]);
-    }
   }
   fprintf(stdout, "\n");
 
