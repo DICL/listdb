@@ -34,7 +34,7 @@
 constexpr int NUM_THREADS = 60;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
-constexpr int SLEEP_TIME = 240;
+constexpr int SLEEP_TIME = 30;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -355,6 +355,16 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
     auto begin_tp = std::chrono::steady_clock::now();
     std::vector<std::thread> loaders;
+
+    //for tune range sharding
+    std::vector<size_t> shard_put_cnt[kNumShards];
+    for (int i = 0; i < kNumShards; i++) {
+      shard_put_cnt[i].reserve(num_threads);
+      for (int j = 0; j < num_threads; j++) {
+        shard_put_cnt[i][j] = 0;
+      }
+    }
+
     const size_t num_ops_per_thread = NUM_LOADS / num_threads;
     for (int id = 0; id < num_threads; id++) {
       loaders.emplace_back([&, id] {
@@ -373,6 +383,11 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //}
 
         }
+        //for tune range sharding
+        for (int s = 0; s < kNumShards; s++) {
+          shard_put_cnt[s][id] = client->shard_put_cnt(s);
+        }
+
 
         //delete reporter_client;//test juwon reporter
       });
@@ -384,10 +399,21 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     std::chrono::duration<double> dur = end_tp - begin_tp;
     double dur_sec = dur.count();
     fprintf(stdout, "Load IOPS: %.3lf M\n", NUM_LOADS/dur_sec/1000000);
+    
+    //for tune range sharding
+    size_t shard_put_cnt_total[kNumShards] = {};
+    for (int i = 0; i < num_threads; i++) {
+      for (int s = 0; s < kNumShards; s++) {
+       shard_put_cnt_total[s] += shard_put_cnt[s][i];
+      }
+    }
+    for (int s = 0; s < kNumShards; s++) {
+      fprintf(stdout, "shard: %d - number of put keys: %lu\n", s + 1, shard_put_cnt_total[s]);
+    }
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(15));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
@@ -409,19 +435,19 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 #ifdef COUNT_FOUND
     std::vector<int> cnt(num_threads);
 #endif
-    std::vector<size_t> pmem_get_cnt(num_threads);
-    std::vector<size_t> search_visit_cnt(num_threads);
-    std::vector<size_t> height_visit_cnt[kMaxHeight];
-    for (int i = 0; i < kMaxHeight; i++) {
-      height_visit_cnt[i].reserve(num_threads);
-      for (int j = 0; j < num_threads; j++) {
-        height_visit_cnt[i][j] = 0;
-      }
-    }
+    //std::vector<size_t> pmem_get_cnt(num_threads);
+    //std::vector<size_t> search_visit_cnt(num_threads);
+    //std::vector<size_t> height_visit_cnt[kMaxHeight];
+    //for (int i = 0; i < kMaxHeight; i++) {
+    //  height_visit_cnt[i].reserve(num_threads);
+    //  for (int j = 0; j < num_threads; j++) {
+    //    height_visit_cnt[i][j] = 0;
+    //  }
+    //}
 
     //for tracking seq access count
-    std::vector<size_t> remote_seq_access_cnt(num_threads);
-    std::vector<size_t> local_seq_access_cnt(num_threads);
+    //std::vector<size_t> remote_seq_access_cnt(num_threads);
+    //std::vector<size_t> local_seq_access_cnt(num_threads);
 
     const size_t num_ops_per_thread = NUM_WORKS / num_threads;
     for (int id = 0; id < num_threads; id++) {
@@ -450,15 +476,15 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
           //latency[i] = std::chrono::steady_clock::now() - query_begin;
         }
 
-        pmem_get_cnt[id] = client->pmem_get_cnt();
-        search_visit_cnt[id] = client->search_visit_cnt();
-        for (int h = 0; h < kMaxHeight; h++) {
-          height_visit_cnt[h][id] = client->height_visit_cnt(h);
-        }
+        //pmem_get_cnt[id] = client->pmem_get_cnt();
+        //search_visit_cnt[id] = client->search_visit_cnt();
+        //for (int h = 0; h < kMaxHeight; h++) {
+        //  height_visit_cnt[h][id] = client->height_visit_cnt(h);
+        //}
 
         //for tracking seq access count
-        remote_seq_access_cnt[id] = client->remote_seq_access_cnt();
-        local_seq_access_cnt[id] = client->local_seq_access_cnt();
+        //remote_seq_access_cnt[id] = client->remote_seq_access_cnt();
+        //local_seq_access_cnt[id] = client->local_seq_access_cnt();
 
       });
     }
@@ -476,7 +502,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     }
     fprintf(stdout, "Found %d\n", cnt_sum);
 #endif
-
+    /*
     size_t pmem_get_cnt_total = 0;
     size_t search_visit_cnt_total = 0;
     size_t height_visit_cnt_total[kMaxHeight] = {};
@@ -503,6 +529,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
     }
     fprintf(stdout, "remote_seq_access_cnt_total: %zu\n", remote_seq_access_cnt_total);
     fprintf(stdout, "local_seq_access_cnt_total: %zu\n", local_seq_access_cnt_total);
+    */
 
 #ifdef LISTDB_L1_LRU
     fprintf(stdout, "DRAM COPY LAYER SIZE = %zu\n", db->total_sorted_arr_size());
