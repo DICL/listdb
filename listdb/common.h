@@ -50,10 +50,13 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 16;
+constexpr int kMaxNumMemTables = 4;
 //for LISTDB l1 
 constexpr int kLevelMultiplier = 10;
 //#define LISTDB_BLOOM_FILTER
+
+//for LISTDB l2
+constexpr size_t kDiskWriteBatchSize = 4096*128; //single ssd block size
 
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
 constexpr size_t kMemTableCapacity = 1 * (1ull << 30) / kMaxNumMemTables;
@@ -115,7 +118,8 @@ enum class TableType {
 
 enum class TaskType {
   kMemTableFlush,
-  kL0Compaction
+  kL0Compaction,
+  kL1Compaction
 };
 
 inline void SetAffinity(int coreid) {

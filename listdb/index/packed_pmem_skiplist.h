@@ -28,7 +28,7 @@ class PackedPmemSkipList {
   struct KVpairs{
     uint64_t cnt;
     Key key[NPAIRS];
-    uint64_t value[NPAIRS];
+    Value value[NPAIRS];
   };
 
 

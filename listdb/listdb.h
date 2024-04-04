@@ -48,19 +48,24 @@
 #include "listdb/index/bloom_filter.h"
 #endif
 
+//for disk write
+#include <fcntl.h>
+
 #define L0_COMPACTION_ON_IDLE
 // /#define L0_COMPACTION_YIELD
 
-//#define REPORT_BACKGROUND_WORKS
+#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
 #define REPORT_L0_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL0Compaction, x)
+#define REPORT_L1_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
 #define REPORT_DONE delete reporter_client
 #else
 #define INIT_REPORTER_CLIENT
 #define REPORT_FLUSH_OPS(x)
 #define REPORT_L0_COMPACTION_OPS(x)
+#define REPORT_L1_COMPACTION_OPS(x)
 #define REPORT_DONE
 #endif
 
@@ -93,6 +98,9 @@ class ListDB {
   struct L0CompactionTask : Task {
     PmemTable* l0;
     MemTableList* memtable_list;
+  };
+
+  struct L1CompactionTask : Task {
   };
 
   struct cmp_task_priority {
@@ -170,6 +178,8 @@ class ListDB {
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
 
+  void SetL1CompactionSchedulerStatus(const ServiceStatus& status);
+
   void BackgroundThreadLoop();
 
   void CompactionWorkerThreadLoop(CompactionWorkerData* td);
@@ -177,6 +187,8 @@ class ListDB {
   void FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td);
 
   void ManualFlushMemTable(int shard);
+  
+  void L1Compaction(int shard);
 
   void LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
 
@@ -229,6 +241,7 @@ class ListDB {
 #else
   ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
 #endif
+  ServiceStatus l1_compaction_scheduler_status_ = ServiceStatus::kStop;
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
@@ -379,7 +392,7 @@ void ListDB::Init() {
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
-      ll_[i]->SetTableList(2, tl);
+      ll_[i]->SetTableList(1, tl);
     }
   }
 
@@ -393,7 +406,7 @@ void ListDB::Init() {
   
   for (int i = 0; i < kNumShards; i++) {
     
-    auto l1_tl = ll_[i]->GetTableList(2);
+    auto l1_tl = ll_[i]->GetTableList(1);
     // TODO: impl InitFrontOnce() and use it instead of GetFront()
     [[maybe_unused]] auto l1_table = (PmemTable2*) l1_tl->NewFront();
     
@@ -530,7 +543,7 @@ void ListDB::Open() {
       for (int j = 0; j < kNumRegions; j++) {
         tl->BindArena(l1_arena_[j][i]->pool_id(), l1_arena_[j][i]);
       }
-      ll_[i]->SetTableList(2, tl);
+      ll_[i]->SetTableList(1, tl);
     }
   }
 
@@ -866,6 +879,11 @@ void ListDB::SetL0CompactionSchedulerStatus(const ServiceStatus& status) {
   l0_compaction_scheduler_status_ = status;
 }
 
+void ListDB::SetL1CompactionSchedulerStatus(const ServiceStatus& status) {
+  std::lock_guard<std::mutex> guard(wq_mu_);
+  l1_compaction_scheduler_status_ = status;
+}
+
 void ListDB::BackgroundThreadLoop() {
 #if 0
   numa_run_on_node(0);
@@ -875,7 +893,9 @@ void ListDB::BackgroundThreadLoop() {
   std::unordered_map<Task*, int> task_to_worker;
   std::deque<Task*> memtable_flush_requests;
   std::deque<Task*> l0_compaction_requests;
+  std::deque<Task*> l1_compaction_requests;
   std::vector<int> l0_compaction_state(kNumShards);
+  std::vector<int> l1_compaction_state(kNumShards);
 
   struct ReqCompCounter {
     size_t req_cnt = 0;
@@ -889,6 +909,7 @@ void ListDB::BackgroundThreadLoop() {
     std::deque<Task*> work_completions;
     std::unique_lock<std::mutex> lk(wq_mu_);
     bool schedule_l0_compaction;
+    bool schedule_l1_compaction;
     wq_cv_.wait_for(lk, std::chrono::seconds(1), [&]{//1초동안 안들어오면 timeout을 발생시킨다., 그럼 넘어가는 것. 통지가 오면 멈춘다!
       //return !work_request_queue_.empty() || !work_completion_queue_.empty();
       return !work_request_queue_.empty() || !memtable_flush_requests.empty();
@@ -896,6 +917,7 @@ void ListDB::BackgroundThreadLoop() {
     new_work_requests.swap(work_request_queue_);
     work_completions.swap(work_completion_queue_);//queue를 mutex를 받아와서 업데이트한다.
     schedule_l0_compaction = (l0_compaction_scheduler_status_ == ServiceStatus::kActive);
+    schedule_l1_compaction = (l1_compaction_scheduler_status_ == ServiceStatus::kActive);
     lk.unlock();
 
     for (auto& task : work_completions) {
@@ -905,6 +927,9 @@ void ListDB::BackgroundThreadLoop() {
       if (task->type == TaskType::kL0Compaction) {//다른 worker가 kL0Compaction을 complete 해놨다면 이를 확인하고 해당 l0 compaction state를 0으로 바꿔놓는다. 이제 컴팩션 해도 된다는 뜻
         l0_compaction_state[task->shard] = 0;
       }
+      //if (task->type == TaskType::kL1Compaction) {//다른 worker가 kL0Compaction을 complete 해놨다면 이를 확인하고 해당 l0 compaction state를 0으로 바꿔놓는다. 이제 컴팩션 해도 된다는 뜻
+      //  l1_compaction_state[task->shard] = 0;
+      //}
       num_assigned_tasks[worker_id]--;//해당 워커에 할당된 일 수를 줄요준다
       req_comp_cnt[task->type].comp_cnt++;//해당 타입 완료됐다고 올려준다.
       delete task;
@@ -942,6 +967,19 @@ void ListDB::BackgroundThreadLoop() {
             l0_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
             req_comp_cnt[task->type].req_cnt++;
           }
+        }
+      }
+    }
+    if (schedule_l1_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
+      for (int i = 0; i < kNumShards; i++) {
+        if (l1_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
+            auto task = new L1CompactionTask();
+            task->type = TaskType::kL1Compaction;
+            task->shard = i;
+            l1_compaction_state[i] = 1;  // configured// 컴팩션 진행중 건들지 마세요 컴팩션 안해도 됩니다~
+            l1_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
+            req_comp_cnt[task->type].req_cnt++;
+
         }
       }
     }
@@ -1008,6 +1046,30 @@ void ListDB::BackgroundThreadLoop() {
     }
 #endif
 
+#ifndef LISTDB_NO_L1_COMPACTION
+    while (!available_workers.empty() && !l1_compaction_requests.empty()) {
+      std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
+        return num_assigned_tasks[a->id] > num_assigned_tasks[b->id];
+      });
+      auto& worker = available_workers.back();
+      auto& task = l1_compaction_requests.front();
+      l1_compaction_requests.pop_front();
+
+      std::unique_lock<std::mutex> wlk(worker->mu);
+      worker->q.push(task);
+      wlk.unlock();
+      worker->cv.notify_one();
+
+      task_to_worker[task] = worker->id;
+      num_assigned_tasks[worker->id]++;
+      l1_compaction_state[task->shard] = 2;  // assigned
+
+      if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
+        available_workers.pop_back();
+      }
+    }
+#endif
+
     if (stop_) {
       fprintf(stdout, "bg thread terminating\n");
       break;
@@ -1035,6 +1097,9 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
       td->current_task = nullptr;
     } else if (task->type == TaskType::kL0Compaction) {
       LogStructuredMergeCompactionL0(td, (L0CompactionTask*) task);
+      td->current_task = nullptr;
+    } else if (task->type == TaskType::kL1Compaction) {
+      L1Compaction(task->shard);
       td->current_task = nullptr;
     }
     //task안에 
@@ -1392,6 +1457,89 @@ void ListDB::ManualFlushMemTable(int shard) {
 #endif
 }
 
+void ListDB::L1Compaction(int shard) {
+  fprintf(stdout, "Manual L1 Compaction : shard %d\n",shard); //show progress juwon
+  
+  using Node2 = PmemNode2;
+
+  //Get Table of L1
+  auto l1_tl = ll_[shard]->GetTableList(1);
+  auto l1_table = (PmemTable2*) l1_tl->GetFront();
+  auto l1_skiplist = l1_table->skiplist();
+
+  //Get first node of L1
+  int pool_id = l1_arena_[0][shard]->pool_id();
+  auto l1_node = l1_skiplist->head(pool_id);
+  auto l1_node_paddr_dump = l1_node->next[0].next_ptr;
+  l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr_dump)->get();
+
+  //preparation for write to disk
+  //declare temporal structor for kvpair (not kvpairs)
+  struct KVpair {
+    Key key;
+    Value value;
+  };
+
+
+  int num_kvpairs_in_buffer = kDiskWriteBatchSize/sizeof(KVpair);
+  KVpair aligned_buffer[num_kvpairs_in_buffer];
+  int aligned_buffer_index = 0;
+
+  // Open the file with O_DIRECT
+  char filename[50]; // adjust the size as needed
+  sprintf(filename, "L2_SSTable_shard_%d", shard);
+  int fd = open(filename, O_WRONLY | O_CREAT | O_DIRECT, S_IRUSR | S_IWUSR);
+  if (fd == -1) {
+      // Handle error
+      printf("file discriptor error!\n");
+      return;
+  }
+
+  INIT_REPORTER_CLIENT; //REPORT_FLUSH_OPS(1);
+//start loop
+  while(l1_node){
+    auto l1_node_kvpairs_paddr = l1_node_paddr_dump + sizeof(PmemNode2) + (l1_node->height-1)*sizeof(HintedPtr);
+    auto l1_node_kvpairs = (KVpairs*) ((PmemPtr*) &l1_node_kvpairs_paddr)->get();
+    uint64_t l1_node_cnt = l1_node_kvpairs->cnt;
+
+    //start nested loop
+    for(uint64_t k=0;k<l1_node_cnt;k++){
+      aligned_buffer[aligned_buffer_index].key = l1_node_kvpairs->key[k];
+      aligned_buffer[aligned_buffer_index].value = l1_node_kvpairs->value[k];
+      aligned_buffer_index++;
+      //if buffer full, do write to disk
+      if(aligned_buffer_index >= num_kvpairs_in_buffer){
+        ssize_t written = write(fd, aligned_buffer, kDiskWriteBatchSize);
+        REPORT_L1_COMPACTION_OPS(aligned_buffer_index);
+        if (written == -1) {
+            // Handle error
+            printf("write system call error!\n");
+        }
+        aligned_buffer_index = 0;
+      }
+    }
+
+    l1_node_paddr_dump = l1_node->next[0].next_ptr;
+    l1_node = (Node2*) ((PmemPtr*) &l1_node_paddr_dump)->get();
+  }
+//write remaining keys (for stylist db)
+
+  if(aligned_buffer_index > 0){
+      ssize_t written = write(fd, aligned_buffer, aligned_buffer_index*sizeof(KVpair));
+      if (written == -1) {
+          // Handle error
+          printf("write system call error!\n");
+      }
+      aligned_buffer_index = 0;
+    }
+  // Clean up buffer
+  close(fd);
+
+  REPORT_DONE;
+
+  fprintf(stdout, "Manual L1 Compaction done. : shard %d\n",shard); //show progress juwon
+}
+
 void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task){
 
 #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
@@ -1419,7 +1567,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     PmemPtr node_paddr = l0_skiplist->head_paddr();
     auto l0_node = node_paddr.get<Node>();
     //get l1 skiplist
-    auto l1_tl = ll_[task->shard]->GetTableList(2);
+    auto l1_tl = ll_[task->shard]->GetTableList(1);
 
     auto l1_table = (PmemTable2*) l1_tl->GetFront();
     auto l1_skiplist = l1_table->skiplist();
@@ -1430,11 +1578,9 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
   #else
       static const unsigned int tmp_kBranching = 4;
   #endif
-    //set preds and succs
+    //set preds
     Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
-    uint64_t succs[kNumRegions][kMaxHeight];
-    Key succs_key[kNumRegions][kMaxHeight];
     uint64_t cnts[kNumRegions][kMaxHeight];
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
@@ -1449,8 +1595,6 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       if(l1_node != nullptr){
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l1_node;
-          succs[i][j] = 0;
-          succs_key[i][j] = 0;
         }
         head_only_flag = false;
         pred_paddr_dump = l1_node_paddr_dump;
@@ -1509,8 +1653,6 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l1_node;
-          succs[i][j] = 0;
-          succs_key[i][j] = 0;
         }
         pred_paddr_dump = l1_node_paddr.dump();
         heads[i]->next[0].next_ptr = l1_node_paddr.dump();
@@ -1578,10 +1720,8 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
             continue;
           }
-          succs_key[0][0] = curr->min_key;
           break;
         }
-        succs[0][0] = curr_paddr_dump;
 
         uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
@@ -1734,23 +1874,23 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             prev_tp = curr_tp;
           #endif
 
-          // 5) find remain preds and succs
+          // 5) find remain preds
+          bool move_next = false;
           for (int t = kMaxHeight-1; t > 0; t--) {
             uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
-            while (curr) {
+            while (curr) { 
               if (curr->min_key.Compare(l1_node->min_key) <= 0) {
                 preds[region][t] = curr;
                 curr_paddr_paddr = curr->next[t].next_ptr;
                 curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
+                move_next=true;
                 continue;
               }
-              succs_key[region][t] = curr->min_key;
               break;
             }
             //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
-            if(t>1 && (preds[region][t]->min_key.Compare(preds[region][t-1]->min_key) >= 0)) preds[region][t-1] = preds[region][t];
-            succs[region][t] = curr_paddr_paddr;
+            if(t>1 && move_next) preds[region][t-1] = preds[region][t];
           }
 
           #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
@@ -1761,11 +1901,11 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
           #endif
         
           // 6) update next pointers and kvpair_ptr of new l1_node
-          l1_node->next[0].next_key = succs_key[0][0];
-          l1_node->next[0].next_ptr = succs[0][0];
+          l1_node->next[0].next_key = preds[0][0]->next[0].next_key;
+          l1_node->next[0].next_ptr = preds[0][0]->next[0].next_ptr;
           for (int i = 1; i < height; i++) {
-            l1_node->next[i].next_key =  succs_key[region][i];
-            l1_node->next[i].next_ptr =  succs[region][i];
+            l1_node->next[i].next_key =  preds[region][i]->next[i].next_key;
+            l1_node->next[i].next_ptr =  preds[region][i]->next[i].next_ptr;
           }
           l1_node->height = height;
 
@@ -1887,10 +2027,8 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             continue;
           }
-          succs_key[0][0] = curr->min_key;
           break;
         }
-        succs[0][0] = curr_paddr_paddr;
 
         uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();

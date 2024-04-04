@@ -49,7 +49,8 @@ constexpr int LOAD3_TIME = 60;
 constexpr int WORK1_TIME = 80;
 constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 60;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME = 20;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME2 = 10;//time to waiting l0 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
@@ -388,7 +389,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(10));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
@@ -397,8 +398,15 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   std::this_thread::sleep_for(std::chrono::seconds(3));
   db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
 
-  fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME);
+  fprintf(stdout, "sleep %d seconds for l0 compaction end...\n",SLEEP_TIME);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
+
+  //db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
+
+  //fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
+  //std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
+
+  std::this_thread::sleep_for(std::chrono::seconds(3));
   db->PrintDebugLsmState(0);
 
   // Work

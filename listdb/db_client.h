@@ -292,8 +292,8 @@ bool DBClient::Get(const Key& key, Value* value_out) {
   }
   
   {
-    // Level 2 Lookup
-    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
+    // Level 1 Lookup
+    auto tl = (PmemTable2List*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable2*) table;
@@ -309,8 +309,8 @@ bool DBClient::Get(const Key& key, Value* value_out) {
 bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   int s = KeyShard(key);
   {
-    // Level 2 LookupRange
-    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
+    // Level 1 LookupRange
+    auto tl = (PmemTable2List*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable2*) table;
@@ -453,9 +453,9 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
   }
 
   {
-    // Level 2 Lookup
+    // Level 1 Lookup
     
-    auto tl = (PmemTable2List*) db_->GetTableList(2, s);
+    auto tl = (PmemTable2List*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable2*) table;
