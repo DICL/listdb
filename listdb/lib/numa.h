@@ -13,6 +13,7 @@ class Numa {
   static void Init();
   static int num_cpus() { return num_cpus_; }
   inline static int CpuSequenceRR(const int id);
+  inline static int PriorCpu();
 
  private:
   inline static int num_cpus_;
@@ -39,6 +40,11 @@ int Numa::CpuSequenceRR(const int num) {
   const int socket = num % num_sockets_;
   const int seq_in_socket = num / num_sockets_;
   return table_[socket][seq_in_socket];
+}
+
+int Numa::PriorCpu() {
+  assert(is_initialized_ == true);
+  return table_[0][0];
 }
 
 #endif  // LISTDB_LIB_NUMA_H_

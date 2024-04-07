@@ -54,7 +54,7 @@
 #define L0_COMPACTION_ON_IDLE
 // /#define L0_COMPACTION_YIELD
 
-#define REPORT_BACKGROUND_WORKS
+//#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
@@ -69,7 +69,7 @@
 #define REPORT_DONE
 #endif
 
-//#define L0_COMPACTION_LATENCY_BREAKDOWN
+#define L0_COMPACTION_LATENCY_BREAKDOWN
 #define L0_COMPACTION_NEEDS_TRIGGER
 
 //#define L0_COMPACTION_ON_IDLE
@@ -200,6 +200,17 @@ class ListDB {
 #ifdef LISTDB_SKIPLIST_CACHE
   SkipListCacheRep* skiplist_cache(int s, int r) { return cache_[s][r]; }
 #endif
+  PmemNode* head_m_;
+  PmemNode* head_m() { return head_m_; }
+
+  PmemPtr allocate_pmemptr(size_t alloc_size);
+
+  void set_head_m(PmemNode* head_ptr);
+
+  Key* key_array_;
+  Key* key_array() { return key_array_; }
+
+  void set_key_array(Key* key_array_ptr);
 
  private:
 #ifdef LISTDB_WISCKEY
@@ -1555,7 +1566,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
   size_t scan_latency_nanoseconds = 0;
 #endif
 
-  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0or1Status::kMergeInitiated;
@@ -2167,4 +2178,15 @@ int ListDB::GetStatString(const std::string& name, std::string* buf) {
   return rv;
 }
 
+PmemPtr ListDB::allocate_pmemptr(size_t alloc_size){
+  return l0_arena_[0][0]->Allocate(alloc_size);
+}
+
+void ListDB::set_head_m(PmemNode* head_ptr){
+  head_m_ = head_ptr;
+}
+
+void ListDB::set_key_array(Key* key_array_ptr){
+  key_array_ = key_array_ptr;
+}
 #endif  // LISTDB_LISTDB_H_

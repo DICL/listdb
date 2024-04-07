@@ -16,6 +16,13 @@
 
 #include <getopt.h>
 
+#include <libpmemobj++/make_persistent_array.hpp>
+#include <libpmemobj++/pool.hpp>
+#include <thread>
+#include <chrono>
+#include <algorithm>
+#include <libpmemobj++/transaction.hpp>
+
 #include "listdb/common.h"
 #include "listdb/core/pmem_log.h"
 #include "listdb/db_client.h"
@@ -33,8 +40,8 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 60;
-constexpr size_t NUM_LOADS = 400 * 1000 * 1000;
+constexpr int NUM_THREADS = 20;
+constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 0 * 1000 * 1000;
 
 //for user behavior
@@ -49,13 +56,15 @@ constexpr int LOAD3_TIME = 60;
 constexpr int WORK1_TIME = 80;
 constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 40;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME = 10000;//time to waiting l0 compactions end
 constexpr int SLEEP_TIME2 = 10;//time to waiting l0 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
 
 namespace fs = std::experimental::filesystem::v1;
+
+using namespace pmem::obj;
 
 enum OpType {
   OP_INSERT,
@@ -349,9 +358,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   db->Init();
 
   //test juwon reporter
-  Reporter* reporter = nullptr;
-  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
-  reporter->Start();
+  //Reporter* reporter = nullptr;
+  //reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
+  //reporter->Start();
   
   // Load
   {
@@ -366,17 +375,17 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+        //ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
 
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
           client->Put(load_keys[i], load_keys[i]);
 
           //test juwon reporter
-          if (reporter_client != nullptr) {
-            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          }
+          //if (reporter_client != nullptr) {
+          //  reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          //}
         }
-        delete reporter_client;//test juwon reporter
+        //delete reporter_client;//test juwon reporter
       });
     }
     for (auto& t : loaders) {
@@ -389,7 +398,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  std::this_thread::sleep_for(std::chrono::seconds(20));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
@@ -936,6 +945,97 @@ void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::strin
   }
 }
 
+void Run5(){//for motivation test juwon
+  fprintf(stdout, "=== ListDB (1-shard) ===\n");
+
+  size_t key_num = 1000000;
+  int num_threads = 60;
+
+  //generate put keys
+  std::vector<uint64_t> put_keys(key_num);
+  for (uint64_t i = 0; i < key_num; ++i) {
+      put_keys[i] = i + 1;
+  }
+  unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+  std::shuffle(put_keys.begin(), put_keys.end(), std::default_random_engine(seed));
+
+  //generate get keys
+  std::vector<uint64_t> get_keys(key_num);
+  for (uint64_t i = 0; i < key_num; ++i) {
+      get_keys[i] = i + 1;
+  }
+  seed = std::chrono::system_clock::now().time_since_epoch().count();
+  std::shuffle(get_keys.begin(), get_keys.end(), std::default_random_engine(seed));
+
+  ListDB* db = new ListDB();
+  db->Init();
+
+  printf("start put keys\n");
+  //write of single thread
+  /*
+  {
+    DBClient* client = new DBClient(db, 0, 0);
+    for (size_t i = 0; i < key_num; i++) {
+      if(i%(key_num/10) == 0) printf("%lu done.\n",i);
+      client->Put_m(put_keys[i], put_keys[i]);
+    }
+  }
+  */
+  {
+    DBClient* client = new DBClient(db, 0, 0);
+    client->Put_b(key_num);
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+  //read of multiple thread (client 수 조절)
+  printf("start get keys\n");
+  auto begin_tp = std::chrono::steady_clock::now();
+  std::vector<std::thread> workers;
+
+  const size_t num_ops_per_thread = key_num / num_threads;
+    for (int id = 0; id < num_threads; id++) {
+      workers.emplace_back([&, id] {
+        SetAffinity(Numa::PriorCpu());
+        int r = GetChip();
+        DBClient* client = new DBClient(db, id, r);
+
+        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
+          uint64_t val_read;
+          client->Get_m(get_keys[i], &val_read);
+        }
+      });
+    }
+    
+    for (auto& t :  workers) {
+      t.join();
+    }
+
+    auto end_tp = std::chrono::steady_clock::now();
+    std::chrono::duration<double> dur = end_tp - begin_tp;
+    double dur_sec = dur.count();
+
+    fprintf(stdout, "Work1 time : %f\n", dur_sec);
+    fprintf(stdout, "Work1 IOPS: %.3lf M\n", key_num/dur_sec/1000000);
+
+}
+
+ssize_t binary_search(Key* array, size_t size, Key key) {
+    size_t left = 0;
+    size_t right = size - 1;
+    while (left <= right) {
+        size_t mid = left + (right - left) / 2;
+        if (array[mid] == key) {
+            return mid;
+        } else if (array[mid] < key) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return -1;
+}
+
 int main(int argc, char* argv[]) {
   std::unordered_map<std::string, std::string> props;
   ParseCLA(argc, argv, &props);
@@ -984,7 +1084,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
-
+/*
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -1002,7 +1102,7 @@ int main(int argc, char* argv[]) {
   //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
   Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
   //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
- /*
+ 
   //user behavior
   std::vector<uint64_t> load_keys1;
   std::vector<uint64_t> load_keys2;
@@ -1050,5 +1150,78 @@ int main(int argc, char* argv[]) {
 
   Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
 */
+  //Run5();
+
+  // Path to the pmem pool
+    const std::string path = "/pmem0/testpool";
+
+    // Size of the memory pool in bytes
+size_t pool_size = 100 * 1024 * 1024;  // 100 MB
+
+    // Create or open the pmem pool
+    pool_base pop = pool_base::create(path, "KeyArray", pool_size, S_IWUSR | S_IRUSR);
+
+    // Set the number of keys, number of threads, and total number of key searches
+size_t num_keys = 1000000;
+int num_searches = num_keys;
+
+// Allocate a persistent array for keys
+persistent_ptr<Key[]> parray_keys;
+transaction::run(pop, [&] {
+    parray_keys = make_persistent<Key[]>(num_keys);
+    for (size_t i = 0; i < num_keys; ++i) {
+        parray_keys[i] = i + 1;
+    }
+});
+
+// Allocate a persistent array for values
+persistent_ptr<Key[]> parray_values;
+transaction::run(pop, [&] {
+    parray_values = make_persistent<Key[]>(num_keys);
+    for (size_t i = 0; i < num_keys; ++i) {
+        parray_values[i] = i + 1;
+    }
+});
+
+// Start the timer
+auto start = std::chrono::high_resolution_clock::now();
+
+// Launch multiple threads to perform binary searches
+std::vector<std::thread> threads;
+for (int i = 0; i < num_threads; ++i) {
+    threads.push_back(std::thread([&] {
+        for (int j = 0; j < num_searches / num_threads; ++j) {
+            uint64_t val_read;
+            ssize_t idx = binary_search(parray_keys.get(), num_keys, rand() % num_keys + 1);
+            if (idx != -1) {
+                val_read = parray_values[idx];
+            }
+        }
+    }));
+}
+
+// Wait for all threads to finish
+for (auto& thread : threads) {
+    thread.join();
+}
+
+// Stop the timer and print the elapsed time
+auto end = std::chrono::high_resolution_clock::now();
+std::chrono::duration<double> elapsed = end - start;
+// Calculate the MIOPS
+double miops = num_searches / elapsed.count() / 1e6;
+std::cout << "MIOPS: " << miops << "\n";
+std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
+
+    // Deallocate the array when done
+    transaction::run(pop, [&] {
+        delete_persistent<Key[]>(parray_keys, 1000000);
+    });
+
+    // Close the pmem pool
+    pop.close();
+
+    return 0;
+
   return 0;
 }

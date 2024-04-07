@@ -28,6 +28,14 @@ class DBClient {
 
   bool Get(const Key& key, Value* value_out);
 
+  void Put_m(const Key& key, const Value& value);
+
+  bool Get_m(const Key& key, Value* value_out);
+
+  void Put_b(size_t key_num);
+
+  bool Get_b(const Key& key, Value* value_out);
+
   bool Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out);
 
 
@@ -305,6 +313,126 @@ bool DBClient::Get(const Key& key, Value* value_out) {
   //printf("fail to search! Key : %lu\n",key.key_num());//juwon test
   return false;
 }
+
+void DBClient:: Put_m(const Key& key, const Value& value){
+  using Node = PmemNode;
+
+  //if no head, make head
+  Node* preds[kMaxHeight];
+  preds[0] = db_->head_m_;
+  if(!preds[0]){
+    printf("no head !\n");
+    size_t node_size = sizeof(PmemNode) + (kMaxHeight - 1) * sizeof(uint64_t);
+    auto node_paddr = db_->allocate_pmemptr(node_size);
+    preds[0] = node_paddr.get<PmemNode>();
+    db_->set_head_m(preds[0]);
+    preds[0]->tag = kMaxHeight;
+    preds[0]->value = 0;
+    preds[0]->key = 0;
+    clwb(preds[0], node_size);
+    _mm_sfence();
+  }
+
+  //decide height
+  auto rnd = Random::GetTLSInstance();
+  static const unsigned int kBranching = 4;
+  int height = 1;
+  if (rnd->Next() % kBranching == 0) {
+    height++;
+    while (height < kMaxHeight && ((rnd->Next() % kBranching) == 0)) {
+      height++;
+    }
+  }
+
+  for (int j = 1; j < kMaxHeight; j++) {
+    preds[j] = preds[0];
+  }
+
+  //find position
+  for (int i = kMaxHeight-1; i >= 0; i--) {
+    uint64_t curr_paddr_dump = preds[i]->next[i];
+    auto curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+    while (curr) {
+        if (curr->key.Compare(key) < 0) {
+           preds[i] = curr;
+          curr_paddr_dump = preds[i]->next[i];
+          curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+          continue;
+        }
+      break;
+    }
+    if(i>0) preds[i-1] = preds[i];
+  }
+
+  //allocate new node
+  size_t node_size = sizeof(PmemNode) + (height - 1) * sizeof(uint64_t);
+  auto node_paddr = db_->allocate_pmemptr(node_size);
+  auto new_node = node_paddr.get<PmemNode>();
+  new_node->tag = height;
+  new_node->key = key;
+  new_node->value = value;
+
+  for(int i = height - 1; i >= 0; i--){
+    new_node->next[i] = preds[i]->next[i];
+    preds[i]->next[i] = node_paddr.dump();
+    clwb(&preds[i]->next[i], 8);
+    _mm_sfence();
+  }
+  clwb(new_node, node_size);
+  _mm_sfence();
+}
+
+bool DBClient::Get_m(const Key& key, Value* value_out) {
+  using Node = PmemNode;
+
+  Node* pred = db_->head_m_;
+  uint64_t curr_paddr_dump;
+  Node* curr = nullptr;
+
+  for (int i = kMaxHeight-1; i >= 0; i--) {
+    while (true) {
+      curr_paddr_dump = pred->next[i];
+      curr = (Node*) ((PmemPtr*) &curr_paddr_dump)->get();
+      if (curr) {
+        if (curr->key.Compare(key) < 0) {
+          pred = curr;
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  if (curr && curr->key.Compare(key)==0) {
+    //fprintf(stdout, "found on pmem\n");
+    *value_out = curr->value;
+    return true;
+  }
+  printf("fail to search!\n");
+  return false;
+}
+
+void DBClient::Put_b(size_t key_num){
+  auto key_array_paddr = db_->allocate_pmemptr(key_num*(sizeof(Key)));
+  auto key_array = key_array_paddr.get<Key>();
+  printf("array getted!\n");
+  db_->set_key_array(key_array);
+  for(size_t i=0; i<key_num; i++){
+    key_array[i] = i+1;
+  }
+  auto value_array_paddr_dump = key_array_paddr.dump() + key_num*sizeof(Key);
+  auto value_array = (Value*) ((PmemPtr*) &value_array_paddr_dump)->get();
+  for(size_t i=0; i<key_num; i++){
+    value_array[i] = i+1;
+  }
+  clwb(key_array, key_num*(sizeof(Key)+sizeof(Value)));
+  _mm_sfence();
+}
+
+bool DBClient::Get_b(const Key& key, Value* value_out) {
+  return false;
+}
+
 
 bool DBClient::Scan(const Key& key, uint64_t scan_num, std::vector<uint64_t>* values_out) {
   int s = KeyShard(key);
