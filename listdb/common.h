@@ -60,6 +60,9 @@ constexpr int kLruMaxHeight = 20;
 //for L2 Comparison
 //#define LISTDB_BLOOM_FILTER
 
+//for LISTDB l2
+constexpr size_t kDiskWriteBatchSize = 4096*128; //single ssd block size
+
 #ifdef LISTDB_SKIPLIST_CACHE
 constexpr size_t kSkipListCacheCardinality = 4;
 #define SkipListCacheRep SkipListCache<kSkipListCacheCardinality>
@@ -106,7 +109,8 @@ enum class TableType {
 
 enum class TaskType {
   kMemTableFlush,
-  kL0Compaction
+  kL0Compaction,
+  kL1Compaction
 };
 
 inline void SetAffinity(int coreid) {

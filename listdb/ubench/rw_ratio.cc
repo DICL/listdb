@@ -34,7 +34,8 @@
 constexpr int NUM_THREADS = 60;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
-constexpr int SLEEP_TIME = 30;
+constexpr int SLEEP_TIME = 60;
+constexpr int SLEEP_TIME2 = 180;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -394,9 +395,13 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
 
   //if using l0 compaction needs trigger
   std::this_thread::sleep_for(std::chrono::seconds(3));
-  db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
 
+  db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
+
+  db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
+  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
+
   db->PrintDebugLsmState(0);
 
   // Work

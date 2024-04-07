@@ -44,19 +44,24 @@
 #include "listdb/index/bloom_filter.h"
 #endif
 
+//for disk write
+#include <fcntl.h>
+
 #define L0_COMPACTION_ON_IDLE
 #define L0_COMPACTION_YIELD
 
-//#define REPORT_BACKGROUND_WORKS
+#define REPORT_BACKGROUND_WORKS
 #ifdef REPORT_BACKGROUND_WORKS
 #define INIT_REPORTER_CLIENT auto reporter_client = new ReporterClient(reporter_)
 #define REPORT_FLUSH_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kFlush, x)
 #define REPORT_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kCompaction, x)
+#define REPORT_L1_COMPACTION_OPS(x) reporter_client->ReportFinishedOps(Reporter::OpType::kL1Compaction, x)
 #define REPORT_DONE delete reporter_client
 #else
 #define INIT_REPORTER_CLIENT
 #define REPORT_FLUSH_OPS(x)
 #define REPORT_COMPACTION_OPS(x)
+#define REPORT_L1_COMPACTION_OPS(x)
 #define REPORT_DONE
 #endif
 
@@ -87,6 +92,9 @@ class ListDB {
   struct L0CompactionTask : Task {
     PmemTable* l0;
     MemTableList* memtable_list;
+  };
+
+  struct L1CompactionTask : Task {
   };
 
   struct alignas(64) CompactionWorkerData {
@@ -157,6 +165,8 @@ class ListDB {
   // Background Works
   void SetL0CompactionSchedulerStatus(const ServiceStatus& status);
 
+  void SetL1CompactionSchedulerStatus(const ServiceStatus& status);
+
   void BackgroundThreadLoop();
 
   void CompactionWorkerThreadLoop(CompactionWorkerData* td);
@@ -168,6 +178,8 @@ class ListDB {
   void FlushMemTableToL1WAL(MemTableFlushTask* task, CompactionWorkerData* td);
 
   void ManualFlushMemTable(int shard);
+
+  void L1Compaction(int shard);
 
   void ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task);
 
@@ -236,6 +248,7 @@ class ListDB {
 #else
   ServiceStatus l0_compaction_scheduler_status_ = ServiceStatus::kActive;
 #endif
+  ServiceStatus l1_compaction_scheduler_status_ = ServiceStatus::kStop;
 
   CompactionWorkerData worker_data_[kNumWorkers];
   std::thread worker_threads_[kNumWorkers];
@@ -956,6 +969,11 @@ void ListDB::SetL0CompactionSchedulerStatus(const ServiceStatus& status) {
   l0_compaction_scheduler_status_ = status;
 }
 
+void ListDB::SetL1CompactionSchedulerStatus(const ServiceStatus& status) {
+  std::lock_guard<std::mutex> guard(wq_mu_);
+  l1_compaction_scheduler_status_ = status;
+}
+
 void ListDB::BackgroundThreadLoop() {
 #if 0
   numa_run_on_node(0);
@@ -965,7 +983,9 @@ void ListDB::BackgroundThreadLoop() {
   std::unordered_map<Task*, int> task_to_worker;
   std::deque<Task*> memtable_flush_requests;
   std::deque<Task*> l0_compaction_requests;
+  std::deque<Task*> l1_compaction_requests;
   std::vector<int> l0_compaction_state(kNumShards);
+  std::vector<int> l1_compaction_state(kNumShards);
   struct ReqCompCounter {
     size_t req_cnt = 0;
     size_t comp_cnt = 0;
@@ -978,6 +998,7 @@ void ListDB::BackgroundThreadLoop() {
     std::deque<Task*> work_completions;
     std::unique_lock<std::mutex> lk(wq_mu_);
     bool schedule_l0_compaction;
+    bool schedule_l1_compaction;
     wq_cv_.wait_for(lk, std::chrono::seconds(1), [&]{
       //return !work_request_queue_.empty() || !work_completion_queue_.empty();
       return !work_request_queue_.empty() || !memtable_flush_requests.empty();
@@ -985,6 +1006,7 @@ void ListDB::BackgroundThreadLoop() {
     new_work_requests.swap(work_request_queue_);
     work_completions.swap(work_completion_queue_);
     schedule_l0_compaction = (l0_compaction_scheduler_status_ == ServiceStatus::kActive);
+    schedule_l1_compaction = (l1_compaction_scheduler_status_ == ServiceStatus::kActive);
     lk.unlock();
 
     for (auto& task : work_completions) {
@@ -994,6 +1016,9 @@ void ListDB::BackgroundThreadLoop() {
       if (task->type == TaskType::kL0Compaction) {
         l0_compaction_state[task->shard] = 0;
       }
+      //if (task->type == TaskType::kL1Compaction) {
+      //  l1_compaction_state[task->shard] = 0;
+      //}
       num_assigned_tasks[worker_id]--;
       req_comp_cnt[task->type].comp_cnt++;
       delete task;
@@ -1031,6 +1056,19 @@ void ListDB::BackgroundThreadLoop() {
             l0_compaction_requests.push_back(task);
             req_comp_cnt[task->type].req_cnt++;
           }
+        }
+      }
+    }
+    if (schedule_l1_compaction) {//이건 무조건 켜있게 된다 계속 일어난다는 의미 --> 그렇다면 l1 compaction이 일어나는 기준은 어떻게 해야 하는가??
+      for (int i = 0; i < kNumShards; i++) {
+        if (l1_compaction_state[i] == 0) {//아니다 컴팩션 안되어 있는 것만 이렇다
+            auto task = new L1CompactionTask();
+            task->type = TaskType::kL1Compaction;
+            task->shard = i;
+            l1_compaction_state[i] = 1;  // configured// 컴팩션 진행중 건들지 마세요 컴팩션 안해도 됩니다~
+            l1_compaction_requests.push_back(task);//이제 요청하기 위해서 만든 kl0compaction task를 넣어준다.
+            req_comp_cnt[task->type].req_cnt++;
+
         }
       }
     }
@@ -1094,6 +1132,30 @@ void ListDB::BackgroundThreadLoop() {
     }
 #endif
 
+#ifndef LISTDB_NO_L1_COMPACTION
+    while (!available_workers.empty() && !l1_compaction_requests.empty()) {
+      std::sort(available_workers.begin(), available_workers.end(), [&](auto& a, auto& b) {
+        return num_assigned_tasks[a->id] > num_assigned_tasks[b->id];
+      });
+      auto& worker = available_workers.back();
+      auto& task = l1_compaction_requests.front();
+      l1_compaction_requests.pop_front();
+
+      std::unique_lock<std::mutex> wlk(worker->mu);
+      worker->q.push(task);
+      wlk.unlock();
+      worker->cv.notify_one();
+
+      task_to_worker[task] = worker->id;
+      num_assigned_tasks[worker->id]++;
+      l1_compaction_state[task->shard] = 2;  // assigned
+
+      if (num_assigned_tasks[worker->id] >= kWorkerQueueDepth) {
+        available_workers.pop_back();
+      }
+    }
+#endif
+
     if (stop_) {
       fprintf(stdout, "bg thread terminating\n");
       break;
@@ -1127,6 +1189,9 @@ void ListDB::CompactionWorkerThreadLoop(CompactionWorkerData* td) {
 #else
       L0CompactionCopyOnWrite((L0CompactionTask*) task);
 #endif
+      td->current_task = nullptr;
+    } else if (task->type == TaskType::kL1Compaction) {
+      L1Compaction(task->shard);
       td->current_task = nullptr;
     }
     std::unique_lock<std::mutex> bg_lk(wq_mu_);
@@ -1717,6 +1782,80 @@ void ListDB::ManualFlushMemTable(int shard) {
   // TODO(wkim): Log this L0 table for recovery
   tl->CleanUpFlushedImmutables();
 #endif
+}
+
+void ListDB::L1Compaction(int shard) {
+  fprintf(stdout, "Manual L1 Compaction : shard %d\n",shard); //show progress juwon
+  
+  using Node = PmemNode;
+
+  //Get Table of L1
+  auto l1_tl = ll_[shard]->GetTableList(1);
+  auto l1_table = (PmemTable*) l1_tl->GetFront();
+  auto l1_skiplist = l1_table->skiplist();
+
+  //Get first node of L1
+  int pool_id = l1_arena_[0][shard]->pool_id();
+  auto l1_node = l1_skiplist->head(pool_id);
+
+  //preparation for write to disk
+  //declare temporal structor for kvpair (not kvpairs)
+  struct KVpair {
+    Key key;
+    Value value;
+  };
+
+  int num_kvpairs_in_buffer = kDiskWriteBatchSize/sizeof(KVpair);
+  KVpair aligned_buffer[num_kvpairs_in_buffer];
+  int aligned_buffer_index = 0;
+
+  // Open the file with O_DIRECT
+  char filename[50]; // adjust the size as needed
+  sprintf(filename, "L2_SSTable_shard_%d", shard);
+  int fd = open(filename, O_WRONLY | O_CREAT | O_DIRECT, S_IRUSR | S_IWUSR);
+  if (fd == -1) {
+      // Handle error
+      printf("file discriptor error!\n");
+      return;
+  }
+
+  INIT_REPORTER_CLIENT; //REPORT_FLUSH_OPS(1);
+//start loop
+  while(l1_node){
+
+    aligned_buffer[aligned_buffer_index].key = l1_node->key;
+    aligned_buffer[aligned_buffer_index].value = l1_node->value;
+    aligned_buffer_index++;
+    //if buffer full, do write to disk
+    if(aligned_buffer_index >= num_kvpairs_in_buffer){
+      ssize_t written = write(fd, aligned_buffer, kDiskWriteBatchSize);
+      REPORT_L1_COMPACTION_OPS(aligned_buffer_index);
+      if (written == -1) {
+          // Handle error
+          printf("write system call error!\n");
+      }
+      aligned_buffer_index = 0;
+    }
+
+    auto l1_node_paddr_dump = l1_node->next[0];
+    l1_node = (Node*) ((PmemPtr*) &l1_node_paddr_dump)->get();
+  }
+//write remaining keys (for stylist db)
+
+  if(aligned_buffer_index > 0){
+      ssize_t written = write(fd, aligned_buffer, aligned_buffer_index*sizeof(KVpair));
+      if (written == -1) {
+          // Handle error
+          printf("write system call error!\n");
+      }
+      aligned_buffer_index = 0;
+    }
+  // Clean up buffer
+  close(fd);
+
+  REPORT_DONE;
+
+  fprintf(stdout, "Manual L1 Compaction done. : shard %d\n",shard); //show progress juwon
 }
 
 void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task) {
