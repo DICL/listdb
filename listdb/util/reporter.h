@@ -9,13 +9,13 @@ class Reporter {
     kGet,
     kL1Compaction
   };
-  Reporter(const std::string& fname, uint64_t report_interval_msecs = 1000, std::string header = "");
+  Reporter(const std::string& fname, uint64_t report_interval_msecs = 100, std::string header = "");
   ~Reporter();
   void Start();
   void ReportFinishedOps(OpType op_type, int64_t num_ops);
 
  private:
-  std::string Header() const { return "secs_elapsed,flush_done,compaction_done,put_done,get_done,l1_compaction_done"; }
+  std::string Header() const { return "secs_elapsed,flush_done,l0_compaction_done,put_done,get_done,l1_compaction_done"; }
   void SleepAndReport();
 
   static constexpr uint64_t kMicrosInMilliSecond = 1000U;
