@@ -9,7 +9,7 @@ class Reporter {
     kGet,
     kL1Compaction,
   };
-  Reporter(const std::string& fname, uint64_t report_interval_msecs = 100, std::string header = "");
+  Reporter(const std::string& fname, uint64_t report_interval_msecs = 30, std::string header = "");
   ~Reporter();
   void Start();
   void ReportFinishedOps(OpType op_type, int64_t num_ops);

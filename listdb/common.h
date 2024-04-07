@@ -56,6 +56,7 @@ constexpr int kLevelMultiplier = 10;
 //#define LISTDB_BLOOM_FILTER
 
 //for LISTDB l2
+constexpr size_t kDiskBlockSize = 4096*128;//memory alignment size
 constexpr size_t kDiskWriteBatchSize = 4096*128; //single ssd block size
 
 //constexpr size_t kMemTableCapacity = 256 * (1ull << 20);
@@ -86,7 +87,7 @@ constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 2;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 30;
+constexpr int kNumWorkers = 10;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;

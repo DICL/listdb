@@ -5,7 +5,7 @@
 class ReporterClient {
  public:
   using OpType = Reporter::OpType;
-  ReporterClient(Reporter* reporter, uint64_t report_interval_msecs = 100)
+  ReporterClient(Reporter* reporter, uint64_t report_interval_msecs = 30)
     : reporter_(reporter),
       report_interval_msecs_(report_interval_msecs),
       last_up_report_time_(Clock::NowMicros()) {
