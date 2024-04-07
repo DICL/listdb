@@ -32,10 +32,10 @@
 //#define QUERY_DISTRIBUTION "zipf"
 
 constexpr int NUM_THREADS = 60;
-constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr size_t NUM_LOADS = 400 * 1000 * 1000;
 constexpr size_t NUM_WORKS = 0 * 1000 * 1000;
 constexpr int SLEEP_TIME = 180;
-constexpr int SLEEP_TIME2 = 180;
+constexpr int SLEEP_TIME2 = 400;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -399,8 +399,8 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   db->SetL0CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
 
-  //db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
-  //std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
+  db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
+  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
 
   db->PrintDebugLsmState(0);
 

@@ -1806,13 +1806,19 @@ void ListDB::L1Compaction(int shard) {
   };
 
   int num_kvpairs_in_buffer = kDiskWriteBatchSize/sizeof(KVpair);
-  KVpair aligned_buffer[num_kvpairs_in_buffer];
+  if(kDiskWriteBatchSize%sizeof(KVpair) != 0) std::cerr << "KVpair size is not match to Disk Write Batch Size!\n"  << std::endl;
+
+  KVpair* aligned_buffer = (KVpair*)std::aligned_alloc(kDiskBlockSize, kDiskWriteBatchSize);
+  if (aligned_buffer == nullptr) {
+      std::cerr << "Failed to allocate memory." << std::endl;
+  }
+
   int aligned_buffer_index = 0;
 
   // Open the file with O_DIRECT
-  char filename[50]; // adjust the size as needed
-  sprintf(filename, "L2_SSTable_shard_%d", shard);
-  int fd = open(filename, O_WRONLY | O_CREAT | O_DIRECT, S_IRUSR | S_IWUSR);
+  char pathname[100]; // adjust the size as needed
+  sprintf(pathname, "/juwon/SSTable/L2_SSTable_shard_%d", shard);
+  int fd = open(pathname, O_WRONLY | O_CREAT | O_DIRECT, S_IRUSR | S_IWUSR);
   if (fd == -1) {
       // Handle error
       printf("file discriptor error!\n");
@@ -1828,26 +1834,26 @@ void ListDB::L1Compaction(int shard) {
     aligned_buffer_index++;
     //if buffer full, do write to disk
     if(aligned_buffer_index >= num_kvpairs_in_buffer){
-      ssize_t written = write(fd, aligned_buffer, kDiskWriteBatchSize);
+      //ssize_t written = write(fd, aligned_buffer, kDiskWriteBatchSize);
       REPORT_L1_COMPACTION_OPS(aligned_buffer_index);
-      if (written == -1) {
-          // Handle error
-          printf("write system call error!\n");
-      }
+      //if (written == -1) {
+      ///    // Handle error
+      //    printf("write system call error!\n");
+      //}
       aligned_buffer_index = 0;
     }
 
     auto l1_node_paddr_dump = l1_node->next[0];
     l1_node = (Node*) ((PmemPtr*) &l1_node_paddr_dump)->get();
   }
-//write remaining keys (for stylist db)
+//write remaining keys
 
   if(aligned_buffer_index > 0){
-      ssize_t written = write(fd, aligned_buffer, aligned_buffer_index*sizeof(KVpair));
-      if (written == -1) {
-          // Handle error
-          printf("write system call error!\n");
-      }
+      //ssize_t written = write(fd, aligned_buffer, ((aligned_buffer_index*sizeof(KVpair))/kDiskBlockSize + 1)*kDiskBlockSize);
+      //if (written == -1) {
+      //    // Handle error
+      //    printf("write system call error!2\n");
+      //}
       aligned_buffer_index = 0;
     }
   // Clean up buffer
