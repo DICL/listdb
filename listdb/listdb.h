@@ -1930,21 +1930,33 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     }
     int pool_id = node_paddr.pool_id();
     int region = pool_id_to_region_[pool_id];
-    int height = l0_node->height();
-    Node* pred = preds[region][height - 1];
-    for (int i = height - 1; i > 0; i--) {
-      PmemPtr curr_paddr = pred->next[i];
+
+    int search_start_height=0;
+    while(search_start_height<kMaxHeight-1){
+      PmemPtr curr_paddr = preds[region][search_start_height+1]->next[search_start_height+1];
+      auto curr = curr_paddr.get<Node>();
+      if(!curr || curr->key.Compare(l0_node->key) > 0) break;
+      search_start_height++;
+    }
+
+    bool is_moved = false;
+    for (int i = search_start_height; i > 0; i--) {
+      PmemPtr curr_paddr = preds[region][i]->next[i];
       auto curr = curr_paddr.get<Node>();
       while (curr) {
         if (curr->key.Compare(l0_node->key) < 0) {
-          pred = curr;
-          curr_paddr = pred->next[i];
+          preds[region][i] = curr;
+          curr_paddr = preds[region][i]->next[i];
           curr = curr_paddr.get<Node>();
+          is_moved = true;
           continue;
         }
         break;
       }
-      preds[region][i] = pred;
+      if(is_moved){
+        if(i>1) preds[region][i - 1] = preds[region][i];
+        else preds[0][0] = preds[region][i];
+      }
     }
     {
       PmemPtr curr_paddr = preds[0][0]->next[0];
@@ -1962,7 +1974,7 @@ void ListDB::ZipperCompactionL0(CompactionWorkerData* td, L0CompactionTask* task
     auto z = new ZipperItem();
     z->node_paddr = node_paddr;
     z->preds[0] = preds[0][0];
-    for (int i = 1; i < kMaxHeight; i++) {
+    for (int i = 1; i < l0_node->height(); i++) {
       z->preds[i] = preds[region][i];
     }
     zstack.push(z);
