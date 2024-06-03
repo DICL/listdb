@@ -1557,6 +1557,14 @@ void ListDB::L1Compaction(int shard) {
   fprintf(stdout, "Manual L1 Compaction done. : shard %d\n",shard); //show progress juwon
 }
 
+double power(double base, uint64_t exponent) {
+    double result = 1.0;
+    for(uint64_t i = 0; i < exponent; i++) {
+        result *= base;
+    }
+    return result;
+}
+
 void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0CompactionTask* task){
 
 #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
@@ -1566,7 +1574,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
   size_t scan_latency_nanoseconds = 0;
 #endif
 
-  //if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
+  if (task->shard == 0) fprintf(stdout, "L0 compaction\n");
 
   auto l0_manifest = task->l0->manifest<pmem_l0_info>();
   l0_manifest->status = Level0or1Status::kMergeInitiated;
@@ -1591,13 +1599,14 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     auto l1_manifest = l1_table->manifest<pmem_l1_info>();
     
   #if defined(LISTDB_SKIPLIST_CACHE)
-      static const unsigned int tmp_kBranching = 4;
+      //static const unsigned int tmp_kBranching = 4;
   #else
-      static const unsigned int tmp_kBranching = 4;
+      //static const unsigned int tmp_kBranching = 4;
   #endif
     //set preds
     Node2* heads[kNumRegions];
     Node2* preds[kNumRegions][kMaxHeight];
+    uint64_t path_cnts[kNumRegions][kMaxHeight];//use for skiplist balancing (height decision)
     uint64_t cnts[kNumRegions][kMaxHeight];
     //각 height에 대한 head를 preds에 담아준다.
     bool head_only_flag = true;
@@ -1612,6 +1621,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       if(l1_node != nullptr){
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l1_node;
+          path_cnts[i][j] = 1;
         }
         head_only_flag = false;
         pred_paddr_dump = l1_node_paddr_dump;
@@ -1670,6 +1680,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 
         for(int j=0; j<kMaxHeight; j++){
           preds[i][j] = l1_node;
+          path_cnts[i][j] = 1;
         }
         pred_paddr_dump = l1_node_paddr.dump();
         heads[i]->next[0].next_ptr = l1_node_paddr.dump();
@@ -1727,23 +1738,12 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     KVpairs* pred_kvpairs = nullptr;
 
     //update first node info
-    while(l0_node != nullptr && l0_node->key.key_num() == 0){
-      node_paddr = l0_node->next[0];
-      l0_node = node_paddr.get<Node>();
-    }//remove head nodes of l0
-   //initializing of next_min_key, space_cnt is done.
-
-
-    //
-    // Start Compaction
-    //
     while(l0_node != nullptr){
-#ifdef L0_COMPACTION_YIELD
-    std::this_thread::yield();
-#endif
-      //
-      //1. Set L1 node
-      //
+      if(l0_node->key.key_num() == 0){
+        node_paddr = l0_node->next[0];
+        l0_node = node_paddr.get<Node>();
+        continue;
+      }//remove head nodes of l0
 
       int search_start_height=0;
       while(search_start_height<kMaxHeight-1){
@@ -1760,7 +1760,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             if(curr){
               preds[region][t] = curr;
-              pred_paddr_dump = curr_paddr_paddr;
+              path_cnts[region][t]++;
               move_next=true;
               continue;
             }
@@ -1769,7 +1769,10 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         }
         //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
         if(move_next){
-          if(t>1) preds[region][t-1] = preds[region][t];
+          if(t>1){
+            preds[region][t-1] = preds[region][t];
+            path_cnts[region][t-1] = 1;
+          }
           else preds[0][0] = preds[region][t];
         }
       }
@@ -1792,27 +1795,27 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
         pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
         key_total_cnt = pred_kvpairs->cnt;
-
-      //
-      //2. Scan L0 nodes
-      //
-      while(true){
-        if(l0_node==nullptr || (curr && (curr->min_key.Compare(l0_node->key) <= 0)) || key_total_cnt > NPAIRS) break; //conditions for merge and split
-        //add l0_node key/value to buffer and increase buffer counter and total counter
-        key_buffer[buffer_cnt] = l0_node->key;
-        value_buffer[buffer_cnt] = l0_node->value;
-        buffer_cnt++;
-        key_total_cnt++;
-
-        // Move on to next node of l0
-        node_paddr = l0_node->next[0];
-        l0_node = node_paddr.get<Node>();
-      }
+        break;
+    }
+   //initializing of next_min_key, space_cnt is done.
 
 
+    //start loop, break if no l0_node left
+    while(true){
+#ifdef L0_COMPACTION_YIELD
+    std::this_thread::yield();
+#endif
       //
-      //2. Start (Split and ) Merge
+      //1. check if it needs insertion keys into l1 node
       //
+      //   Three conditions for insertion:
+      //   1. Check if l0_node is null pointer (need to lastly write all keys in buffer)
+      //   2. Check if l0_node->key is smaller than curr->min_key (skip check if curr is not exist)
+      //   2. Check if total counter reach to 2*NPAIRS
+      //   
+      //   and if so, do insert
+
+      if(l0_node==nullptr || (curr && (curr->min_key.Compare(l0_node->key) <= 0)) || key_total_cnt > NPAIRS){
         #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
           auto curr_tp = std::chrono::high_resolution_clock::now();
           auto scan_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
@@ -1822,17 +1825,17 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         INIT_REPORTER_CLIENT;
 
         //
-        //2-1. Start Split
+        // 1-1. if total counter exceed NPAIRS, do split exactly half number of total counter
+        //      and do insert in newly allocated node 
         //
         if(key_total_cnt > NPAIRS){
-          // 1) decide height deterministically
+          // 1) decide height using search path
+          auto rnd = Random::GetTLSInstance();
           int height = 2;
-          uint64_t branching_factor = tmp_kBranching;
-          while (height < kMaxHeight) {
-            if(cnts[region][0]%branching_factor!=0) break;
+          while (height < kMaxHeight && rnd->PercentTrue((int)(25*(power(1.35,path_cnts[region][height-1])-1)))) {
             height++;
-            branching_factor = branching_factor*tmp_kBranching;
           }
+        
 
           // 2) calculate node size and allocate node and kvpair
           size_t node_size = sizeof(PmemNode2) + (height - 1) * sizeof(HintedPtr);
@@ -1934,6 +1937,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
                 if(curr){
                   preds[region][t] = curr;
                   pred_paddr_dump = curr_paddr_paddr;
+                  path_cnts[region][t]++;
                   move_next=true;
                   continue;
                 }
@@ -1942,7 +1946,10 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
             }
             //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
             if(move_next){
-              if(t>1) preds[region][t-1] = preds[region][t];
+              if(t>1){
+                preds[region][t-1] = preds[region][t];
+                path_cnts[region][t-1] = 1;
+              }
               else preds[0][0] = preds[region][t];
             }
           }
@@ -2006,7 +2013,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         } //split of pred node is done.
         
         //
-        //2-2. Start Merge of original Node (Overflow Node)
+        // 1-2. do insert in preds node
         //
 
         //insert position 은 key_total_cnt로 한다.
@@ -2073,6 +2080,10 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         //report number of inserted keys for monitoring
         REPORT_L0_COMPACTION_OPS(tmp_buffer_cnt-buffer_cnt);
 
+        //1-3. if there is no l0_node left, break while loop
+        //     only if it does insert in #1.
+        if(l0_node == nullptr) break;
+
         #ifdef L0_COMPACTION_LATENCY_BREAKDOWN
           curr_tp = std::chrono::high_resolution_clock::now();
           auto merge_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(curr_tp - prev_tp);
@@ -2080,8 +2091,79 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
           prev_tp = curr_tp;
         #endif
 
-        REPORT_DONE;
+        //1-4. set pred, curr, and buffer counter(total counter) using l0 node
+        //     only if it does insert in #1.
 
+        int search_start_height=0;
+      while(search_start_height<kMaxHeight-1){
+        if(preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(l0_node->key) > 0) break;
+        search_start_height++;
+      }
+
+      //search preds and succes at upper level
+      bool move_next = false;
+      for (int t = search_start_height; t > 0; t--) {
+        while (true) { 
+          if (preds[region][t]->next[t].next_key.Compare(l0_node->key) <= 0) {
+            uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
+            curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
+            if(curr){
+              preds[region][t] = curr;
+              pred_paddr_dump = curr_paddr_paddr;
+              path_cnts[region][t]++;
+              move_next=true;
+              continue;
+            }
+          }
+          break;
+        }
+        //if higher preds is nearer to new node than lower preds, use result of searching higher preds 
+        if(move_next){
+          if(t>1){
+            preds[region][t-1] = preds[region][t];
+            path_cnts[region][t-1] = 1;
+          }
+          else preds[0][0] = preds[region][t];
+        }
+      }
+
+      //search preds and succes at braided level
+        uint64_t curr_paddr_paddr = preds[0][0]->next[0].next_ptr;
+        curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
+        while (curr) {
+          if (curr->min_key.Compare(l0_node->key) <= 0) {
+            preds[0][0] = curr;
+            pred_paddr_dump = curr_paddr_paddr;
+            curr_paddr_paddr = curr->next[0].next_ptr;
+            curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
+            continue;
+          }
+          break;
+        }
+
+        uint64_t pred_kvpairs_paddr = pred_paddr_dump + sizeof(PmemNode2) + (preds[0][0]->height - 1) * sizeof(HintedPtr);
+        pred_kvpairs = (KVpairs*) ((PmemPtr*) &pred_kvpairs_paddr)->get();
+        key_total_cnt = pred_kvpairs->cnt;
+
+        REPORT_DONE;
+      }
+
+
+      //
+      //2. add l0_node key/value to buffer and increase buffer counter and total counter
+      //   
+      key_buffer[buffer_cnt] = l0_node->key;
+      value_buffer[buffer_cnt] = l0_node->value;
+      buffer_cnt++;
+      key_total_cnt++;
+
+
+      //
+      //3. Move on to next node of l0
+      //
+      //node_cnt++; 
+      node_paddr = l0_node->next[0];
+      l0_node = node_paddr.get<Node>();
     }//end of loop
 
     uint64_t total_cnt[kNumRegions] = {0};
