@@ -17,7 +17,7 @@ void InitPoolSet() {
   // Create poolset file
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/pmem_skiplist_test";
+    pss << "/mnt/pmem" << i << "/juwon/pmem_skiplist_test";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);

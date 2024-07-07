@@ -208,7 +208,7 @@ DEFINE_bool(use_existing_db, false, "If true, do not destroy the existing"
             " database.  If you set this flag and also specify a benchmark that"
             " wants a fresh database, that benchmark will fail.");
 
-static std::string FLAGS_db = "/pmem/wkim/listdb";
+static std::string FLAGS_db = "/pmem/juwon/listdb";
 //DEFINE_string(db, "", "Use the db with the following name.");
 
 enum DistributionType : unsigned char {

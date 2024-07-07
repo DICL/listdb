@@ -29,13 +29,13 @@ clwb(const void *addr)
 }
 
 void foo() {
-  fs::remove_all("/pmem0/wkim/pmem_test2");
-  fs::create_directories("/pmem0/wkim/pmem_test2");
+  fs::remove_all("/mnt/pmem0/juwon/pmem_test2");
+  fs::create_directories("/mnt/pmem0/juwon/pmem_test2");
 
-  std::fstream s("/pmem0/wkim/pmem_test2.set", s.out);
+  std::fstream s("/mnt/pmem0/juwon/pmem_test2.set", s.out);
   s << "PMEMPOOLSET" << std::endl;
   s << "OPTION SINGLEHDR" << std::endl;
-  s << "400G /pmem0/wkim/pmem_test2/" << std::endl;
+  s << "400G /mnt/pmem0/juwon/pmem_test2/" << std::endl;
   s.close();
 
   struct log_block {
@@ -47,7 +47,7 @@ void foo() {
     pmem::obj::persistent_ptr<log_block> head;
   };
 
-  int id = Pmem::BindPoolSet<pmem_log>("/pmem0/wkim/pmem_test2.set", "");
+  int id = Pmem::BindPoolSet<pmem_log>("/mnt/pmem0/juwon/pmem_test2.set", "");
   auto pop = Pmem::pool<pmem_log>(id);
   auto root = pop.root();
 
@@ -56,16 +56,16 @@ void foo() {
 }
 
 int main() {
-  fs::remove_all("/pmem0/wkim/pmem_test");
-  fs::create_directories("/pmem0/wkim/pmem_test");
+  fs::remove_all("/mnt/pmem0/juwon/pmem_test");
+  fs::create_directories("/mnt/pmem0/juwon/pmem_test");
 
-  std::fstream s("/pmem0/wkim/pmem_test.set", s.out);
+  std::fstream s("/mnt/pmem0/juwon/pmem_test.set", s.out);
   s << "PMEMPOOLSET" << std::endl;
   s << "OPTION SINGLEHDR" << std::endl;
-  s << "400G /pmem0/wkim/pmem_test/" << std::endl;
+  s << "400G /mnt/pmem0/juwon/pmem_test/" << std::endl;
   s.close();
 
-  int id = Pmem::BindPoolSet("/pmem0/wkim/pmem_test.set", "");
+  int id = Pmem::BindPoolSet("/mnt/pmem0/juwon/pmem_test.set", "");
   auto pop = Pmem::pool(id);
 
   pmem::obj::persistent_ptr<char[]> pbuf;
@@ -79,7 +79,7 @@ int main() {
   clwb(buf);
   pop.close();
 
-  pop = pmem::obj::pool_base::open("/pmem0/wkim/pmem_test.set", "");
+  pop = pmem::obj::pool_base::open("/mnt/pmem0/juwon/pmem_test.set", "");
   buf = (char*) pop.handle() + offset;
   std::cout << pop.handle() << " " << (void*) buf << " " << offset << std::endl;
   std::cout << buf << std::endl;

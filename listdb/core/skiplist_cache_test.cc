@@ -29,7 +29,7 @@ void InitPoolSet() {
   // Create poolset file
   for (int i = 0; i < 1/* kNumRegions */; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/cache_test";
+    pss << "/mnt/pmem" << i << "/juwon/cache_test";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);

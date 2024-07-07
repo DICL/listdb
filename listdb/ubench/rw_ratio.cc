@@ -16,13 +16,6 @@
 
 #include <getopt.h>
 
-#include <libpmemobj++/make_persistent_array.hpp>
-#include <libpmemobj++/pool.hpp>
-#include <thread>
-#include <chrono>
-#include <algorithm>
-#include <libpmemobj++/transaction.hpp>
-
 #include "listdb/common.h"
 #include "listdb/core/pmem_log.h"
 #include "listdb/db_client.h"
@@ -40,9 +33,9 @@
 //#define QUERY_DISTRIBUTION "unif"
 //#define QUERY_DISTRIBUTION "zipf"
 
-constexpr int NUM_THREADS = 20;
-constexpr size_t NUM_LOADS = 800 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 0 * 1000 * 1000;
+constexpr int NUM_THREADS = 60;
+constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
+constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -56,15 +49,13 @@ constexpr int LOAD3_TIME = 60;
 constexpr int WORK1_TIME = 80;
 constexpr int WORK2_TIME = 80;
 
-constexpr int SLEEP_TIME = 10000;//time to waiting l0 compactions end
+constexpr int SLEEP_TIME = 20;//time to waiting l0 compactions end
 constexpr int SLEEP_TIME2 = 10;//time to waiting l0 compactions end
 constexpr int READ_RATIO = 100;//set 200 to do scan
 
 constexpr int NUM_SHARDS = kNumShards;
 
 namespace fs = std::experimental::filesystem::v1;
-
-using namespace pmem::obj;
 
 enum OpType {
   OP_INSERT,
@@ -164,7 +155,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
   ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << 100 << "M";
+  ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
 
@@ -183,7 +174,7 @@ void InitPoolSet() {
   // Create poolset file
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/pmem_log_test";
+    pss << "/mnt/pmem" << i << "/juwon/pmem_log_test";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);
@@ -201,155 +192,6 @@ void InitPoolSet() {
   }
 }
 
-void Run1(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
-          const std::vector<uint64_t>& work_keys) {
-  fprintf(stdout, "=== BraidedPmemSkipList (%d-shard) ===\n", num_shards);
-
-  InitPoolSet();
-  BraidedPmemSkipList* skiplist[num_shards];
-  PmemLog* arena[num_shards][kNumRegions];
-  for (int i = 0; i < num_shards; i++) {
-    auto sl = new BraidedPmemSkipList(pool_id_table[0]);
-    for (int j = 0; j < kNumRegions; j++) {
-      arena[i][j] = new PmemLog(pool_id_table[j], i);
-      sl->BindArena(pool_id_table[j], arena[i][j]);
-    }
-    sl->Init();
-    skiplist[i] = sl;
-  }
-
-  using Node = BraidedPmemSkipList::Node;
-  uint64_t shard_size = std::numeric_limits<uint64_t>::max() / num_shards;
-  
-  // Load
-  {
-    printf("Load %zu items\n", NUM_LOADS);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = NUM_LOADS / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        Random rnd(id);
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          static const unsigned int kBranching = 4;
-          int height = 2;
-          //if (height < kMaxHeight && ((rnd.Next() % (kBranching/2)) == 0)) {
-          //  height++;
-            while (height < kMaxHeight && ((rnd.Next() % kBranching) == 0)) {
-              height++;
-            }
-          //}
-          //const size_t alloc_size = Node::compute_alloc_size(load_keys[i], height);
-          //size_t node_size = util::AlignedSize(8, sizeof(Node) + (height-1)*sizeof(uint64_t));
-          size_t node_size = sizeof(Node) + (height-1)*sizeof(uint64_t);
-          
-          //int s = load_keys[i] % num_shards;
-          int s = load_keys[i] / shard_size;
-
-#if 1
-          auto node_paddr = arena[s][r]->Allocate(node_size);
-          Node* node = (Node*) node_paddr.get();
-#else
-          auto pool = Pmem::pool<pmem_log_root>(r);
-          pmem::obj::persistent_ptr<char[]> p_buf;
-          pmem::obj::make_persistent_atomic<char[]>(pool, p_buf, node_size);
-          Node* node = (Node*) p_buf.get();
-          PmemPtr node_paddr = PmemPtr(r, ((uintptr_t) node - (uintptr_t) pool.handle()));
-#endif
-          //Node* node = Node::init_node((char*) buf, load_keys[i], (1ull<<8|kTypeValue), 0, height);
-          node->key = load_keys[i];
-          node->tag = height;
-          node->value = load_keys[i];
-          skiplist[s]->Insert(node_paddr);
-
-          //auto ret = skiplist[s]->Lookup(load_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (!found) {
-          //  fprintf(stdout, "Lookup returns NULL for key: %zu\n", load_keys[i]);
-          //} else if (load_keys[i] != *((uint64_t*) &found->key)) {
-          //  for (auto& lk : load_keys) {
-          //    if (lk == load_keys[i]) {
-          //      fprintf(stdout, "Key not found %zu (found = %zu)\n", load_keys[i], found->key);
-          //      fprintf(stdout, "Inserted\n");
-          //      exit(1);
-          //    }
-          //  }
-          //} else if (found->key.Compare(found->value) != 0) {
-          //  fprintf(stdout, "Invalid KV-pair found { %zu, %zu } (query key: %zu)\n", found->key, found->value, load_keys[i]);
-          //} else {
-          //  //fprintf(stdout, "Key found %zu\n", load_keys[i]);
-          //}
-        }
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load IOPS: %.3lf M\n", NUM_LOADS/dur_sec/1000000);
-  }
-  fprintf(stdout, "\n");
-
-  // Work
-  {
-    printf("WORK %zu queries\n", NUM_WORKS);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-    std::vector<int> cnt(num_threads);
-    const size_t num_ops_per_thread = NUM_WORKS / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          //int s = work_keys[i] % num_shards;
-          int s = work_keys[i] / shard_size;
-          skiplist[s]->Lookup(work_keys[i], r);
-          //auto ret = skiplist[s]->Lookup(work_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (found && work_keys[i] == (uint64_t) found->key) {
-          //  cnt[id]++;
-          //}
-          //auto ret = skiplist[s]->Lookup(work_keys[i], r);
-          //Node* found = (Node*) ret.get();
-          //if (!found) {
-          //  fprintf(stdout, "Lookup returns NULL for key: %zu\n", work_keys[i]);
-          //} else if (work_keys[i] != *((uint64_t*) &found->key)) {
-          //  for (auto& lk : load_keys) {
-          //    if (lk == work_keys[i]) {
-          //      fprintf(stdout, "Key not found %zu (found = %zu)\n", work_keys[i], found->key);
-          //      fprintf(stdout, "Inserted\n");
-          //      exit(1);
-          //    }
-          //  }
-          //} else if (found->key.Compare(found->value) != 0) {
-          //  fprintf(stdout, "Invalid KV-pair found { %zu, %zu } (query key: %zu)\n", found->key, found->value, work_keys[i]);
-          //}
-        }
-      });
-    }
-    for (auto& t :  workers) {
-      t.join();
-    }
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Work IOPS: %.3lf M\n", NUM_WORKS/dur_sec/1000000);
-    //fprintf(stdout, "Found %d\n", cnt_sum);
-  }
-  fprintf(stdout, "\n");
-}
-
 void Run2(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
           const std::vector<uint64_t>& work_keys, const std::vector<uint64_t>& work_scan_nums) {
   fprintf(stdout, "=== ListDB (%d-shard) ===\n", num_shards);
@@ -358,9 +200,9 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   db->Init();
 
   //test juwon reporter
-  //Reporter* reporter = nullptr;
-  //reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
-  //reporter->Start();
+  Reporter* reporter = nullptr;
+  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
+  reporter->Start();
   
   // Load
   {
@@ -375,17 +217,17 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
         int r = GetChip();
         DBClient* client = new DBClient(db, id, r);
 
-        //ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
+        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
 
         for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
           client->Put(load_keys[i], load_keys[i]);
 
           //test juwon reporter
-          //if (reporter_client != nullptr) {
-          //  reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          //}
+          if (reporter_client != nullptr) {
+            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
+          }
         }
-        //delete reporter_client;//test juwon reporter
+        delete reporter_client;//test juwon reporter
       });
     }
     for (auto& t : loaders) {
@@ -398,7 +240,7 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   }
   fprintf(stdout, "\n");
 
-  std::this_thread::sleep_for(std::chrono::seconds(20));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
   for (int i = 0; i < num_shards; i++) {
     db->ManualFlushMemTable(i);
   }
@@ -410,10 +252,10 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   fprintf(stdout, "sleep %d seconds for l0 compaction end...\n",SLEEP_TIME);
   std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME));
 
-  db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
+  //db->SetL1CompactionSchedulerStatus(ListDB::ServiceStatus::kActive);
 
-  fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
-  std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
+  //fprintf(stdout, "sleep %d seconds for l1 compaction end...\n",SLEEP_TIME2);
+  //std::this_thread::sleep_for(std::chrono::seconds(SLEEP_TIME2));
 
   std::this_thread::sleep_for(std::chrono::seconds(3));
   db->PrintDebugLsmState(0);
@@ -532,393 +374,6 @@ void Run2(const int num_threads, const int num_shards, const std::vector<uint64_
   delete db;
 }
 
-void Run3(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys, const std::vector<OpType>& work_ops,
-          const std::vector<uint64_t>& work_keys) {
-  fprintf(stdout, "=== lockfree_skiplist (%d-shard) ===\n", num_shards);
-
-  lockfree_skiplist skiplist[num_shards];
-  using Node = lockfree_skiplist::Node;
-  
-  // Load
-  {
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = NUM_LOADS / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        Random rnd(id);
-        SetAffinity(Numa::CpuSequenceRR(id));
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          static const unsigned int kBranching = 4;
-          int height = 1;
-          while (height < kMaxHeight && ((rnd.Next() % kBranching) == 0)) {
-            height++;
-          }
-          const size_t alloc_size = Node::compute_alloc_size(load_keys[i], height);
-          
-          int s = load_keys[i] % num_shards;
-
-          void* buf = aligned_alloc(8, alloc_size);
-          Node* node = Node::init_node((char*) buf, load_keys[i], 0, kTypeValue, height, 0);
-          //node->log_paddr = 0;
-          skiplist[s].Insert(node);
-        }
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load IOPS: %.3lf M\n", NUM_LOADS/dur_sec/1000000);
-  }
-
-  // Work
-  {
-    printf("WORK %zu queries\n", NUM_WORKS);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-    std::vector<int> cnt(num_threads);
-    const size_t num_ops_per_thread = NUM_WORKS / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-       workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        //int r = GetChip();
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          int s = work_keys[i] % num_shards;
-          skiplist[s].Lookup(work_keys[i]);
-        }
-      });
-    }
-    for (auto& t :  workers) {
-      t.join();
-    }
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Work IOPS: %.3lf M\n", NUM_WORKS/dur_sec/1000000);
-    //fprintf(stdout, "Found %d\n", cnt_sum);
-  }
-  fprintf(stdout, "\n");
-}
-
-//Run4 for user behavior
-void Run4(const int num_threads, const int num_shards, const std::vector<uint64_t>& load_keys1, const std::vector<uint64_t>& load_keys2, const std::vector<uint64_t>& load_keys3,
-const std::vector<OpType>& work_ops1, const std::vector<OpType>& work_ops2, const std::vector<uint64_t>& work_keys1, const std::vector<uint64_t>& work_keys2,  const std::vector<uint64_t>& work_scan_nums) {
-  fprintf(stdout, "=== ListDB (%d-shard) ===\n", num_shards);
-
-  ListDB* db = new ListDB();
-  db->Init();
-
-  //test juwon reporter
-  Reporter* reporter = nullptr;
-  reporter = db->GetOrCreateReporter("reporter_test_juwon.log");
-  reporter->Start();
-
-  
-  // Load1
-  {
-    printf("Load %zu items\n", NUM_LOADS1);
-
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = NUM_LOADS1 / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          client->Put(load_keys1[i], load_keys1[i]);
-
-          //test juwon reporter
-          if (reporter_client != nullptr) {
-            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          }
-        }
-        delete reporter_client;//test juwon reporter
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load1 time : %f\n", dur_sec);
-    fprintf(stdout, "Load1 IOPS: %.3lf M\n", NUM_LOADS1/dur_sec/1000000);
-    
-    while(true){
-      if(dur_sec>=LOAD1_TIME) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      end_tp = std::chrono::steady_clock::now();
-      dur = end_tp - begin_tp;
-      dur_sec = dur.count();
-    }
-  }
-  fprintf(stdout, "\n");
-
-  // Load2
-  {
-    printf("Load %zu items\n", NUM_LOADS2);
-
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = NUM_LOADS2 / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          client->Put(load_keys2[i], load_keys2[i]);
-
-          //test juwon reporter
-          if (reporter_client != nullptr) {
-            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          }
-        }
-        delete reporter_client;//test juwon reporter
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load2 time : %f\n", dur_sec);
-    fprintf(stdout, "Load2 IOPS: %.3lf M\n", NUM_LOADS2/dur_sec/1000000);
-
-    
-    while(true){
-      if(dur_sec>=LOAD2_TIME) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      end_tp = std::chrono::steady_clock::now();
-      dur = end_tp - begin_tp;
-      dur_sec = dur.count();
-    }
-  }
-  fprintf(stdout, "\n");
-
-  // Load3
-  {
-    printf("Load %zu items\n", NUM_LOADS3);
-
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> loaders;
-    const size_t num_ops_per_thread = NUM_LOADS3 / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      loaders.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          client->Put(load_keys3[i], load_keys3[i]);
-
-          //test juwon reporter
-          if (reporter_client != nullptr) {
-            reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-          }
-        }
-        delete reporter_client;//test juwon reporter
-      });
-    }
-    for (auto& t : loaders) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-    fprintf(stdout, "Load3 time : %f\n", dur_sec);
-    fprintf(stdout, "Load3 IOPS: %.3lf M\n", NUM_LOADS3/dur_sec/1000000);
-
-    
-    while(true){
-      if(dur_sec>=LOAD3_TIME) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      end_tp = std::chrono::steady_clock::now();
-      dur = end_tp - begin_tp;
-      dur_sec = dur.count();
-    }
-  }
-  fprintf(stdout, "\n");
-
-
-  // Work1
-  {
-    printf("WORK1 %zu queries\n", NUM_WORKS1);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-#ifdef COUNT_FOUND
-    std::vector<int> cnt(num_threads);
-#endif
-    const size_t num_ops_per_thread = NUM_WORKS1 / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          if (work_ops1[i] == OP_INSERT || work_ops1[i] == OP_UPDATE) {
-            client->Put(work_keys1[i], work_keys1[i]);
-
-            //test juwon reporter
-            if (reporter_client != nullptr) {
-              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-            }
-          } else if (work_ops1[i] == OP_READ) {
-            uint64_t val_read;
-#ifndef COUNT_FOUND
-            //if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
-            client->Get(work_keys1[i], &val_read);
-#else
-            auto ret = client->Get(work_keys1[i], &val_read);
-            if (ret) cnt[id]++;
-#endif
-            //test juwon reporter
-            if (reporter_client != nullptr) {
-              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);//its get
-            }
-          } else if (work_ops1[i] == OP_SCAN) {
-            std::vector<uint64_t> val_scan;
-            val_scan.reserve(work_scan_nums[i]);
-            
-            client->Scan(work_keys1[i], work_scan_nums[i], &val_scan);
-          } 
-        }
-        delete reporter_client;//test juwon reporter
-      });
-    }
-    
-    for (auto& t :  workers) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-
-    fprintf(stdout, "Work1 time : %f\n", dur_sec);
-    fprintf(stdout, "Work1 IOPS: %.3lf M\n", NUM_WORKS1/dur_sec/1000000);
-    //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
-#ifdef COUNT_FOUND
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    fprintf(stdout, "Found %d\n", cnt_sum);
-#endif
-
-
-    
-    while(true){
-      if(dur_sec>=WORK1_TIME) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      end_tp = std::chrono::steady_clock::now();
-      dur = end_tp - begin_tp;
-      dur_sec = dur.count();
-    }
-  }
-
-  // Work2
-  {
-    printf("WORK2 %zu queries\n", NUM_WORKS2);
-    auto begin_tp = std::chrono::steady_clock::now();
-    std::vector<std::thread> workers;
-#ifdef COUNT_FOUND
-    std::vector<int> cnt(num_threads);
-#endif
-    const size_t num_ops_per_thread = NUM_WORKS2 / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      workers.emplace_back([&, id] {
-        SetAffinity(Numa::CpuSequenceRR(id));
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-        ReporterClient* reporter_client = (reporter != nullptr) ? new ReporterClient(reporter) : nullptr; // test juwon reporter
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          if (work_ops2[i] == OP_INSERT || work_ops2[i] == OP_UPDATE) {
-            client->Put(work_keys2[i], work_keys2[i]);
-
-            //test juwon reporter
-            if (reporter_client != nullptr) {
-              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);
-            }
-          } else if (work_ops2[i] == OP_READ) {
-            uint64_t val_read;
-#ifndef COUNT_FOUND
-            //if(!client->Get(work_keys[i], &val_read)) lookup_fail_cnt.fetch_add(1);
-            client->Get(work_keys2[i], &val_read);
-#else
-            auto ret = client->Get(work_keys2[i], &val_read);
-            if (ret) cnt[id]++;
-#endif
-              //test juwon reporter
-            if (reporter_client != nullptr) {
-              reporter_client->ReportFinishedOps(Reporter::OpType::kPut, 1);//its get
-            }
-          } else if (work_ops2[i] == OP_SCAN) {
-            std::vector<uint64_t> val_scan;
-            val_scan.reserve(work_scan_nums[i]);
-            
-            client->Scan(work_keys2[i], work_scan_nums[i], &val_scan);
-          } 
-        }
-        delete reporter_client;//test juwon reporter
-      });
-    }
-    
-    for (auto& t :  workers) {
-      t.join();
-    }
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-
-
-    fprintf(stdout, "Work2 IOPS: %.3lf M\n", NUM_WORKS2/dur_sec/1000000);
-    fprintf(stdout, "Work2 time : %f\n", dur_sec);
-    //fprintf(stdout,"Lookup fail count : %d\n",lookup_fail_cnt.load());
-#ifdef COUNT_FOUND
-    int cnt_sum = 0;
-    for (int i = 0; i < num_threads; i++) {
-      cnt_sum += cnt[i];
-    }
-    fprintf(stdout, "Found %d\n", cnt_sum);
-#endif
-
-    
-    while(true){
-      if(dur_sec>=WORK2_TIME) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      end_tp = std::chrono::steady_clock::now();
-      dur = end_tp - begin_tp;
-      dur_sec = dur.count();
-    }
-  }
-
-
-  fprintf(stdout, "\n");
-  std::string buf;
-  db->GetStatString("l1_cache_size", &buf);
-  fprintf(stdout, "%s\n", buf.c_str());
-  delete db;
-}
-
 void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::string>* props) {
   struct option long_options[] = {
     { "num_threads", required_argument, 0, 0 },
@@ -943,97 +398,6 @@ void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::strin
       }
     }
   }
-}
-
-void Run5(){//for motivation test juwon
-  fprintf(stdout, "=== ListDB (1-shard) ===\n");
-
-  size_t key_num = 1000000;
-  int num_threads = 60;
-
-  //generate put keys
-  std::vector<uint64_t> put_keys(key_num);
-  for (uint64_t i = 0; i < key_num; ++i) {
-      put_keys[i] = i + 1;
-  }
-  unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-  std::shuffle(put_keys.begin(), put_keys.end(), std::default_random_engine(seed));
-
-  //generate get keys
-  std::vector<uint64_t> get_keys(key_num);
-  for (uint64_t i = 0; i < key_num; ++i) {
-      get_keys[i] = i + 1;
-  }
-  seed = std::chrono::system_clock::now().time_since_epoch().count();
-  std::shuffle(get_keys.begin(), get_keys.end(), std::default_random_engine(seed));
-
-  ListDB* db = new ListDB();
-  db->Init();
-
-  printf("start put keys\n");
-  //write of single thread
-  /*
-  {
-    DBClient* client = new DBClient(db, 0, 0);
-    for (size_t i = 0; i < key_num; i++) {
-      if(i%(key_num/10) == 0) printf("%lu done.\n",i);
-      client->Put_m(put_keys[i], put_keys[i]);
-    }
-  }
-  */
-  {
-    DBClient* client = new DBClient(db, 0, 0);
-    client->Put_b(key_num);
-  }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-  //read of multiple thread (client 수 조절)
-  printf("start get keys\n");
-  auto begin_tp = std::chrono::steady_clock::now();
-  std::vector<std::thread> workers;
-
-  const size_t num_ops_per_thread = key_num / num_threads;
-    for (int id = 0; id < num_threads; id++) {
-      workers.emplace_back([&, id] {
-        SetAffinity(Numa::PriorCpu());
-        int r = GetChip();
-        DBClient* client = new DBClient(db, id, r);
-
-        for (size_t i = id*num_ops_per_thread; i < (id+1)*num_ops_per_thread; i++) {
-          uint64_t val_read;
-          client->Get_m(get_keys[i], &val_read);
-        }
-      });
-    }
-    
-    for (auto& t :  workers) {
-      t.join();
-    }
-
-    auto end_tp = std::chrono::steady_clock::now();
-    std::chrono::duration<double> dur = end_tp - begin_tp;
-    double dur_sec = dur.count();
-
-    fprintf(stdout, "Work1 time : %f\n", dur_sec);
-    fprintf(stdout, "Work1 IOPS: %.3lf M\n", key_num/dur_sec/1000000);
-
-}
-
-ssize_t binary_search(Key* array, size_t size, Key key) {
-    size_t left = 0;
-    size_t right = size - 1;
-    while (left <= right) {
-        size_t mid = left + (right - left) / 2;
-        if (array[mid] == key) {
-            return mid;
-        } else if (array[mid] < key) {
-            left = mid + 1;
-        } else {
-            right = mid - 1;
-        }
-    }
-    return -1;
 }
 
 int main(int argc, char* argv[]) {
@@ -1084,7 +448,7 @@ int main(int argc, char* argv[]) {
   }
 
   Numa::Init();
-/*
+
   std::vector<uint64_t> load_keys;
   std::vector<OpType> work_ops;
   std::vector<uint64_t> work_keys;
@@ -1099,129 +463,7 @@ int main(int argc, char* argv[]) {
   FillWorkKeysReadRatio(NUM_LOADS, NUM_WORKS, &work_ops, &work_keys, &work_scan_nums, read_ratio);
   
 
-  //Run1(num_threads, num_shards, load_keys, work_ops, work_keys);
   Run2(num_threads, num_shards, load_keys, work_ops, work_keys, work_scan_nums);
-  //Run3(num_threads, num_shards, load_keys, work_ops, work_keys);
- 
-  //user behavior
-  std::vector<uint64_t> load_keys1;
-  std::vector<uint64_t> load_keys2;
-  std::vector<uint64_t> load_keys3;
-  std::vector<OpType> work_ops1;
-  std::vector<OpType> work_ops2;
-  std::vector<uint64_t> work_keys1;
-  std::vector<uint64_t> work_keys2;
-  std::vector<uint64_t> work_scan_nums;
-  load_keys1.reserve(NUM_LOADS1);
-  load_keys2.reserve(NUM_LOADS2);
-  load_keys3.reserve(NUM_LOADS3);
-  work_ops1.reserve(NUM_WORKS1);
-  work_ops2.reserve(NUM_WORKS2);
-  work_keys1.reserve(NUM_WORKS1);
-  work_keys2.reserve(NUM_WORKS2);
-
-  std::stringstream ss;
-
-  ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloada/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS1 / 1000 / 1000) << "M_" << (NUM_WORKS1 / 1000 / 1000) << "M";
-  FillLoadKeys(NUM_LOADS1, &load_keys1, ss.str());
-
-  ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadb/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS2 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
-  FillLoadKeys(NUM_LOADS2, &load_keys2, ss.str());
-
-  ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
-  ss << "load_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << 100 << "M";
-  FillLoadKeys(NUM_LOADS3, &load_keys3, ss.str());
-
-  ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloada/"; //test juwon
-  ss << "run_r" << read_ratio << "_unif_int_" << (NUM_LOADS1 / 1000 / 1000) << "M_" << (NUM_WORKS1 / 1000 / 1000) << "M";
-  FillWorkKeys(NUM_WORKS1, &work_ops1, &work_keys1, &work_scan_nums, ss.str());
-
-  ss.str("");
-  ss << "/juwon/index-microbench/ycsb_workloadb/"; //test juwon
-  ss << "run_r" << read_ratio << "_unif_int_" << (NUM_LOADS3 / 1000 / 1000) << "M_" << (NUM_WORKS2 / 1000 / 1000) << "M";
-  FillWorkKeys(NUM_WORKS2, &work_ops2, &work_keys2, &work_scan_nums, ss.str());
-
-
-  Run4(num_threads, num_shards, load_keys1, load_keys2, load_keys3, work_ops1, work_ops2, work_keys1, work_keys2, work_scan_nums); //user behavior juwon (3 loads, 2 works)
-*/
-  //Run5();
-
-  // Path to the pmem pool
-    const std::string path = "/pmem0/testpool";
-
-    // Size of the memory pool in bytes
-size_t pool_size = 100 * 1024 * 1024;  // 100 MB
-
-    // Create or open the pmem pool
-    pool_base pop = pool_base::create(path, "KeyArray", pool_size, S_IWUSR | S_IRUSR);
-
-    // Set the number of keys, number of threads, and total number of key searches
-size_t num_keys = 1000000;
-int num_searches = num_keys;
-
-// Allocate a persistent array for keys
-persistent_ptr<Key[]> parray_keys;
-transaction::run(pop, [&] {
-    parray_keys = make_persistent<Key[]>(num_keys);
-    for (size_t i = 0; i < num_keys; ++i) {
-        parray_keys[i] = i + 1;
-    }
-});
-
-// Allocate a persistent array for values
-persistent_ptr<Key[]> parray_values;
-transaction::run(pop, [&] {
-    parray_values = make_persistent<Key[]>(num_keys);
-    for (size_t i = 0; i < num_keys; ++i) {
-        parray_values[i] = i + 1;
-    }
-});
-
-// Start the timer
-auto start = std::chrono::high_resolution_clock::now();
-
-// Launch multiple threads to perform binary searches
-std::vector<std::thread> threads;
-for (int i = 0; i < num_threads; ++i) {
-    threads.push_back(std::thread([&] {
-        for (int j = 0; j < num_searches / num_threads; ++j) {
-            uint64_t val_read;
-            ssize_t idx = binary_search(parray_keys.get(), num_keys, rand() % num_keys + 1);
-            if (idx != -1) {
-                val_read = parray_values[idx];
-            }
-        }
-    }));
-}
-
-// Wait for all threads to finish
-for (auto& thread : threads) {
-    thread.join();
-}
-
-// Stop the timer and print the elapsed time
-auto end = std::chrono::high_resolution_clock::now();
-std::chrono::duration<double> elapsed = end - start;
-// Calculate the MIOPS
-double miops = num_searches / elapsed.count() / 1e6;
-std::cout << "MIOPS: " << miops << "\n";
-std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
-
-    // Deallocate the array when done
-    transaction::run(pop, [&] {
-        delete_persistent<Key[]>(parray_keys, 1000000);
-    });
-
-    // Close the pmem pool
-    pop.close();
-
-    return 0;
 
   return 0;
 }

@@ -41,7 +41,7 @@ constexpr size_t kStringKeyLength = 16;
 #define MO_RELAXED std::memory_order_relaxed
 
 constexpr int kNumRegions = 4;
-constexpr int kNumShards = 1;
+constexpr int kNumShards = 64;
 #define LISTDB_RANGE_SHARD
 #ifdef LISTDB_RANGE_SHARD
 constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShards / 2 + (kNumShards > 1); // juwon edited (this is proper for index-microbench)
@@ -50,10 +50,10 @@ constexpr uint64_t kShardSize = std::numeric_limits<uint64_t>::max() / kNumShard
 //constexpr size_t kDramCapacity = 10 * (1ull << 30);
 //constexpr size_t kMemTableCapacity = 64 * (1ull << 20);
 //constexpr int kMaxNumMemTables = 4;
-constexpr int kMaxNumMemTables = 16;
+constexpr int kMaxNumMemTables = 4;
 //for LISTDB l1 
 constexpr int kLevelMultiplier = 10;
-//#define LISTDB_BLOOM_FILTER
+#define LISTDB_BLOOM_FILTER
 
 //for LISTDB l2
 constexpr size_t kDiskBlockSize = 4096*128;//memory alignment size
@@ -87,7 +87,7 @@ constexpr int kNumDramLevels = 1;
 constexpr int kNumPmemLevels = 2;
 constexpr int kNumLevels = kNumDramLevels + kNumPmemLevels;
 
-constexpr int kNumWorkers = 2;
+constexpr int kNumWorkers = 30;
 
 constexpr size_t kPmemLogBlockSize = 4 * (1ull<<20) / kNumShards;
 constexpr size_t kPmemBlobBlockSize = kPmemLogBlockSize;

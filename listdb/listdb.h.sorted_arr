@@ -145,7 +145,7 @@ void ListDB::Init() {
   // Log Pmem Pool
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/listdb_log";
+    pss << "/mnt/pmem" << i << "/juwon/listdb_log";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);
@@ -171,7 +171,7 @@ void ListDB::Init() {
   // Pmem Pool for L1
   for (int i = 0; i < kNumRegions; i++) {
     std::stringstream pss;
-    pss << "/pmem" << i << "/wkim/listdb_l1";
+    pss << "/mnt/pmem" << i << "/juwon/listdb_l1";
     std::string path = pss.str();
     fs::remove_all(path);
     fs::create_directories(path);
