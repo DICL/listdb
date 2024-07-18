@@ -408,7 +408,7 @@ bool DBClient::Get_m(const Key& key, Value* value_out) {
     *value_out = curr->value;
     return true;
   }
-  printf("fail to search!\n");
+  //printf("fail to search!\n");
   return false;
 }
 
@@ -782,6 +782,7 @@ bool DBClient::Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* s
   // NUMA-local upper layers
   for (int i = height - 1; i >= 1; i--) {
     while (true) {
+      //if(key==8674865052476271390 || key==4497455375325908531 || key==3772020186569430559 || key==7571122414589934652 || key==4495033681488005219) printf("finding %lu, nextkey %lu, region %d, height %d\n",key,pred->next[i].next_key,db_->pool_id_to_region(pool_id),i);
       if (pred->next[i].next_key.Compare(key) <= 0){
         uint64_t curr_paddr_dump = pred->next[i].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -803,6 +804,7 @@ bool DBClient::Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* s
   // Braided bottom layer
 
     while (true) {
+      //if(key==8674865052476271390 || key==4497455375325908531 || key==3772020186569430559 || key==7571122414589934652 || key==4495033681488005219) printf("finding %lu, nextkey %lu, region %d height 0\n",key,pred->next[0].next_key,db_->pool_id_to_region(pool_id));
       if (pred->next[0].next_key.Compare(key) <= 0){
         uint64_t curr_paddr_dump = pred->next[0].next_ptr;
         curr = (Node2*) ((PmemPtr*) &curr_paddr_dump)->get();
@@ -822,13 +824,21 @@ bool DBClient::Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* s
 
     uint64_t pred_cnt = pred_kvpairs->cnt;
     for(uint64_t k=0;k<pred_cnt;k++){
-      if(pred_kvpairs->key[k].Compare(key) == 0){
-        *value_out = pred_kvpairs->value[k];
+      if(pred_kvpairs->KeyByIndex(k).Compare(key) == 0){
+        *value_out = pred_kvpairs->ValueByIndex(k);
         //double check for conflict cases
-        if(pred_kvpairs->key[k].Compare(key) == 0) return true;
+        if(pred_kvpairs->KeyByIndex(k).Compare(key) == 0) return true;
       }
     }
-    
+
+    //if(key==8674865052476271390 || key==4497455375325908531 || key==3772020186569430559 || key==7571122414589934652 || key==4495033681488005219) printf("finding %lu, minkey %lu, region %d, fail\n",key,pred_kvpairs->KeyByIndex(0),db_->pool_id_to_region(pool_id));
+    //if(key==8674865052476271390 || key==4497455375325908531 || key==3772020186569430559 || key==7571122414589934652 || key==4495033681488005219){
+    //  printf("which in %lu: \n",pred_kvpairs->KeyByIndex(0));
+    //  for(uint64_t k=0;k<pred_cnt;k++) printf("%lu ",pred_kvpairs->KeyByIndex(k));
+    //  printf("\n");
+    //}
+
+    /*
     //check case of conflict scenario
     while(true){
       if(pred->next[0].next_key.Compare(key) <= 0){
@@ -865,15 +875,15 @@ bool DBClient::Lookupl1(const Key& key, const int pool_id, PackedPmemSkipList* s
 
       uint64_t pred_cnt = pred_kvpairs->cnt;
       for(uint64_t k=0;k<pred_cnt;k++){
-        if(pred_kvpairs->key[k].Compare(key) == 0){
-          *value_out = pred_kvpairs->value[k];
+        if(pred_kvpairs->KeyByIndex(k).Compare(key) == 0){
+          *value_out = pred_kvpairs->ValueByIndex(k);
           //double check for conflict cases
-          if(pred_kvpairs->key[k].Compare(key) == 0) return true;
+          if(pred_kvpairs->KeyByIndex(k).Compare(key) == 0) return true;
         }
       }
       
     }
-    
+    */
     return false;
   
 }
@@ -960,9 +970,19 @@ PmemPtr DBClient::LookupRangel1(const Key& key, const int pool_id, PackedPmemSki
 
   //start scan from given range
   uint64_t pred_cnt = pred_kvpairs->cnt;
+  std::vector<std::pair<Key, Value>> sorted_kvpairs;
+    sorted_kvpairs.reserve(pred_kvpairs->cnt);
+    for (size_t i = 0; i < pred_kvpairs->cnt; i++) {
+      sorted_kvpairs.emplace_back(pred_kvpairs->KeyByIndex(i), pred_kvpairs->ValueByIndex(i));
+    }
+    std::sort(sorted_kvpairs.begin(), sorted_kvpairs.end(), [](const std::pair<Key, Value>& a, const std::pair<Key, Value>& b) {
+      return a.first.Compare(b.first) < 0;
+    });
+
   for(uint64_t k=0;k<pred_cnt;k++){
-    if(pred_kvpairs->key[k].Compare(key) < 0) continue;
-    values_out->push_back(pred_kvpairs->value[k]);
+
+    if(sorted_kvpairs[k].first.Compare(key) < 0) continue;
+    values_out->push_back(sorted_kvpairs[k].second);
     scan_cnt--;
     if(scan_cnt==0) return result_paddr;
   }
@@ -980,9 +1000,18 @@ PmemPtr DBClient::LookupRangel1(const Key& key, const int pool_id, PackedPmemSki
       //height_visit_cnt_[0]++;
 
       uint64_t curr_cnt = curr_kvpairs->cnt;
+      std::vector<std::pair<Key, Value>> sorted_kvpairs;
+        sorted_kvpairs.reserve(curr_kvpairs->cnt);
+        for (size_t i = 0; i < curr_kvpairs->cnt; i++) {
+          sorted_kvpairs.emplace_back(curr_kvpairs->KeyByIndex(i), curr_kvpairs->ValueByIndex(i));
+        }
+        std::sort(sorted_kvpairs.begin(), sorted_kvpairs.end(), [](const std::pair<Key, Value>& a, const std::pair<Key, Value>& b) {
+          return a.first.Compare(b.first) < 0;
+        });
       for(uint64_t k=0;k<curr_cnt;k++){
-        if(curr_kvpairs->key[k].Compare(key) < 0) continue;
-        values_out->push_back(curr_kvpairs->value[k]);
+
+        if(sorted_kvpairs[k].first.Compare(key) < 0) continue;
+        values_out->push_back(sorted_kvpairs[k].second);
         scan_cnt--;
         if(scan_cnt==0) return result_paddr;
       }      

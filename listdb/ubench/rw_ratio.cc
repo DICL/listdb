@@ -35,7 +35,7 @@
 
 constexpr int NUM_THREADS = 60;
 constexpr size_t NUM_LOADS = 100 * 1000 * 1000;
-constexpr size_t NUM_WORKS = 100 * 1000 * 1000;
+constexpr size_t NUM_WORKS = 10 * 1000 * 1000;
 
 //for user behavior
 constexpr size_t NUM_LOADS1 = 200 * 1000 * 1000;
@@ -154,7 +154,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloadc/"; //test juwon
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -162,7 +162,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/juwon/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloadc/"; //test juwon
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
@@ -401,6 +401,13 @@ void ParseCLA(int argc, char* argv[], std::unordered_map<std::string, std::strin
 }
 
 int main(int argc, char* argv[]) {
+  // Dangerous: Be very careful with system commands that remove files or directories
+    int result = std::system("rm -rf /mnt/pmem*/juwon/*");
+    if (result != 0) {
+      printf("removing db directory failed!\n");
+        // Handle error
+    }
+
   std::unordered_map<std::string, std::string> props;
   ParseCLA(argc, argv, &props);
   int num_threads = NUM_THREADS;

@@ -24,11 +24,30 @@ class PackedPmemSkipList {
     HintedPtr next[1];
   };
 
+  static const size_t MAX_BYTES = (sizeof(Key) + sizeof(Value)) * NPAIRS; // Example calculation
   //new structures for node 2
   struct KVpairs{
     uint64_t cnt;
-    Key key[NPAIRS];
-    Value value[NPAIRS];
+    uint16_t offsets[NPAIRS];
+    char bytes[MAX_BYTES];
+
+    void InsertKV(const Key& key, const Value& value) {
+      if(cnt==0) offsets[cnt] = 0;
+      else offsets[cnt] = offsets[cnt-1]+sizeof(Key)+sizeof(Value);
+      *reinterpret_cast<Key*>(bytes+offsets[cnt]) = key;
+      *reinterpret_cast<Value*>(bytes+offsets[cnt]+sizeof(Key)) = value;
+      cnt++;
+    }
+
+    inline Key KeyByIndex(size_t idx) const{
+      return *reinterpret_cast<const Key*>(bytes+offsets[idx]);
+    }
+
+    inline Value ValueByIndex(size_t idx) const{
+      return *reinterpret_cast<const Value*>(bytes+offsets[idx]+sizeof(Key));
+    }
+
+
   };
 
 
@@ -74,14 +93,14 @@ void PackedPmemSkipList::BindHead(const int pool_id, void* head_addr) {
 void PackedPmemSkipList::Init() {
   for (auto& it : arena_) {
     int pool_id = it.first;
-    size_t head_size = sizeof(Node) + (kMaxHeight - 1) * sizeof(uint64_t);
+    size_t head_size = sizeof(Node) + (kMaxHeight - 1) * sizeof(HintedPtr);
 
-    auto head_paddr = arena_[pool_id]->Allocate(head_size);
+    auto head_paddr = arena_[pool_id]->Allocate(head_size+sizeof(KVpairs));
     Node* head = (Node*) head_paddr.get();
-
+    head->height = kMaxHeight;
     head->min_key = 0; 
     head->next[0].next_key = 0;
-    memset(&head->next[0].next_ptr, 0, kMaxHeight * sizeof(uint64_t));
+    memset(&head->next[0], 0, kMaxHeight * sizeof(HintedPtr));
     head_.emplace(pool_id, head);
     head_paddr_dump_.emplace(pool_id, head_paddr.dump());
   }
