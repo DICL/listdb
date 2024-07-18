@@ -154,7 +154,7 @@ void FillWorkKeys(const size_t num_works, std::vector<OpType>* work_ops,
 
 void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<uint64_t>* load_keys, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloada/"; //test juwon
   ss << "load_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillLoadKeys(num_loads, load_keys, ss.str());
 }
@@ -162,7 +162,7 @@ void FillLoadKeysReadRatio(const size_t num_loads, const size_t num_works, std::
 void FillWorkKeysReadRatio(const size_t num_loads, const size_t num_works, std::vector<OpType>* work_ops,
                            std::vector<uint64_t>* work_keys, std::vector<uint64_t>* work_scan_nums, unsigned int read_ratio) {
   std::stringstream ss;
-  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloadc/"; //test juwon
+  ss << "/home/juwon/RECIPE/index-microbench/ycsb_workloada/"; //test juwon
   ss << "run_r" << read_ratio << "_unif_int_" << (num_loads / 1000 / 1000) << "M_" << (num_works / 1000 / 1000) << "M";
   FillWorkKeys(num_works, work_ops, work_keys, work_scan_nums, ss.str());
 }
@@ -427,18 +427,6 @@ int main(int argc, char* argv[]) {
   fprintf(stdout, "num_threads=%d\nread_ratio=%d\n", num_threads, read_ratio);
   {
     fprintf(stdout, "*** Cache Configurations ***\n");
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (SimpleHashTable)\n",
-            kHTSize, kHTSize * sizeof(SimpleHashTable::Bucket));
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (StaticHashTableCache)\n",
-            kHTSize, kHTSize * sizeof(StaticHashTableCache::Bucket));
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    fprintf(stdout, "L0_cache_size: %zu = %zu bytes (DoubleHashingCache)\n",
-            kHTSize, kHTSize * sizeof(DoubleHashingCache::Bucket));
-#else
-    fprintf(stdout, "L0_cache_size: 0\n");
-#endif
 
 #ifdef LISTDB_SKIPLIST_CACHE
     fprintf(stdout, "l1_cache_size: %zu bytes\n", kSkipListCacheCapacity);
@@ -446,11 +434,6 @@ int main(int argc, char* argv[]) {
     std::cout << "kSkipListCacheCardinality: " << kSkipListCacheCardinality << std::endl;
 #else
     fprintf(stdout, "l1_cache_size: disabled.\n");
-#endif
-
-#ifdef LISTDB_L0_CACHE
-    fprintf(stdout, "L0_CACHE_TYPE: %d\n", LISTDB_L0_CACHE);
-    fprintf(stdout, "PROBING_DISTANCE: %d\n", LISTDB_L0_CACHE_PROBING_DISTANCE);
 #endif
   }
 

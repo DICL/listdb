@@ -162,7 +162,7 @@ void SkipListCache<N>::UpdateCache(PmemTable2List* l1_tl) {
 
   }
   CurrFieldNum = checking_int;
-  //if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
+  if(region_==0) printf("target height is %d and cache %lu out of %lu\n",target_height,checking_int,iter_cnt);//test juwon
 
 #ifdef LISTDB_GREEDY_PLR
   train_fit_ = 0;

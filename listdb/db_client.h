@@ -246,35 +246,6 @@ bool DBClient::Get(const Key& key, Value* value_out) {
       table = table->Next();
     }
 
-#ifdef LISTDB_L0_CACHE
-    {
-      auto ht = db_->GetHashTable(s);
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-      if (ht->Get(key, value_out)) {
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = rv->value;
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = rv->value;
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = rv->value;
-        return true;
-      }
-#endif
-    }
-#endif
-
     //pmem_get_cnt_++;
     
     while (table) {
@@ -524,34 +495,6 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       }
       table = table->Next();
     }
-#ifdef LISTDB_L0_CACHE
-    {
-      auto ht = db_->GetHashTable(s);
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-      if (ht->Get(key, value_out)) {
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
-        return true;
-      }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-      ListDB::PmemNode* rv = ht->Lookup(key);
-      if (rv) {
-        *value_out = (uint64_t) PmemPtr::Decode<char>(rv->value);
-        return true;
-      }
-#endif
-    }
-#endif
     //pmem_get_cnt_++;
     while (table) {
       auto pmem = (PmemTable*) table;
@@ -579,16 +522,17 @@ bool DBClient::GetStringKV(const std::string_view& key_sv, Value* value_out) {
       table = table->Next();
     }
   }
-
   {
     // Level 1 Lookup
-    
     auto tl = (PmemTable2List*) db_->GetTableList(1, s);
     auto table = tl->GetFront();
     while (table) {
       auto pmem = (PmemTable2*) table;
       auto skiplist = pmem->skiplist();
-      if(Lookupl1(key, l1_pool_id_, skiplist, s, value_out)) return true;
+      if(Lookupl1(key, l1_pool_id_, skiplist, s, value_out)){
+        *value_out = (uint64_t) PmemPtr::Decode<char>(*value_out);
+        return true;
+      }
       table = table->Next();
     }
   }

@@ -1042,7 +1042,8 @@ class Benchmark {
       } else if (name == "flush") {
         Flush();
       } else if (name == "L1Compaction") {
-        L1Compaction();
+        //L1Compaction();
+        printf("L1Compaction not support yet!\n");
       } else if (name == "stats") {
         abort();
         //PrintStats("rocksdb.stats");

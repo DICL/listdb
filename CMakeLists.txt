@@ -132,6 +132,7 @@ set(ubench_srcs
   listdb/ubench/recovery_test.cc
   listdb/ubench/string_kv_test.cc
   listdb/ubench/ycsb_index_microbench.cc
+  listdb/ubench/ycsb_stringkey.cc
   )
 foreach (ubench_src ${ubench_srcs})
   get_filename_component(ubench_name ${ubench_src} NAME_WE)

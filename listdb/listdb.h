@@ -26,14 +26,10 @@
 #endif
 #include "listdb/core/pmem_blob.h"
 #include "listdb/core/pmem_log.h"
-#include "listdb/core/static_hashtable_cache.h"
-#include "listdb/core/double_hashing_cache.h"
-#include "listdb/core/linear_probing_hashtable_cache.h"
 #include "listdb/core/pmem_db.h"
 #include "listdb/index/braided_pmem_skiplist.h"
 #include "listdb/index/packed_pmem_skiplist.h"
 #include "listdb/index/lockfree_skiplist.h"
-#include "listdb/index/simple_hash_table.h"
 #include "listdb/lsm/level_list.h"
 #include "listdb/lsm/memtable_list.h"
 #include "listdb/lsm/pmemtable.h"
@@ -148,16 +144,6 @@ class ListDB {
 
   MemTable* GetMemTable(int shard);
 
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-  SimpleHashTable* GetHashTable(int shard);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-  StaticHashTableCache* GetHashTable(int shard);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-  DoubleHashingCache* GetHashTable(int shard);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-  LinearProbingHashTableCache* GetHashTable(int shard);
-#endif
-
   TableList* GetTableList(int level, int shard);
 
   template <typename T>
@@ -220,16 +206,6 @@ class ListDB {
   PmemLog* l0_arena_[kNumRegions][kNumShards];
   PmemLog* l1_arena_[kNumRegions][kNumShards];
   LevelList* ll_[kNumShards];
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-  SimpleHashTable* hash_table_[kNumShards];
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-  StaticHashTableCache* hash_table_[kNumShards];
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-  DoubleHashingCache* hash_table_[kNumShards];
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-  LinearProbingHashTableCache* hash_table_[kNumShards];
-#endif
 
   std::unordered_map<int, int> pool_id_to_region_;
   std::unordered_map<int, int> log_pool_id_;
@@ -430,27 +406,6 @@ void ListDB::Init() {
     for (int j = 0; j < kNumRegions; j++) {
       cache_[i][j] = new SkipListCacheRep(l1_arena_[j][i]->pool_id(), j, kSkipListCacheCapacity / kNumShards / kNumRegions);
     }
-  }
-#endif
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-  for (int i = 0; i < 1; i++) {
-    hash_table_[i] = new SimpleHashTable(kHTSize);
-    for (size_t j = 0; j < kHTSize; j++) {
-      hash_table_[i]->at(j)->version = 1UL;
-    }
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-  for (int i = 0; i < kNumShards; i++) {
-    hash_table_[i] = new StaticHashTableCache(kHTSize / kNumShards, i);
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-  for (int i = 0; i < kNumShards; i++) {
-    hash_table_[i] = new DoubleHashingCache(kHTSize / kNumShards, i);
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-  for (int i = 0; i < kNumShards; i++) {
-    hash_table_[i] = new LinearProbingHashTableCache(kHTSize / kNumShards, i);
   }
 #endif
 
@@ -1139,25 +1094,6 @@ inline MemTable* ListDB::GetMemTable(int shard) {
   return (MemTable*) mem;
 }
 
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-  inline SimpleHashTable* ListDB::GetHashTable(int shard) {
-    //return hash_table_[shard];
-    return hash_table_[0];
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-  inline StaticHashTableCache* ListDB::GetHashTable(int shard) {
-    return hash_table_[shard];
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-  inline DoubleHashingCache* ListDB::GetHashTable(int shard) {
-    return hash_table_[shard];
-  }
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-  inline LinearProbingHashTableCache* ListDB::GetHashTable(int shard) {
-    return hash_table_[shard];
-  }
-#endif
-
 inline TableList* ListDB::GetTableList(int level, int shard) {
   auto tl = ll_[shard]->GetTableList(level);
   return tl;
@@ -1207,10 +1143,6 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
     }
   }
 
-#ifdef LISTDB_L0_CACHE
-  auto hash_table = GetHashTable(task->shard);
-#endif
-
   uint64_t flush_cnt = 0;
   uint64_t begin_micros = Clock::NowMicros();
   INIT_REPORTER_CLIENT;
@@ -1235,16 +1167,6 @@ void ListDB::FlushMemTable(MemTableFlushTask* task, CompactionWorkerData* td) {
     }
     pred->next[0] = mem_node->value;
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-    hash_table->Add(mem_node->key, mem_node->value);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-    hash_table->Insert(mem_node->key, node);
-#endif
 
 #ifdef LISTDB_BLOOM_FILTER
   l0_bloom_filter->AddKey(mem_node->key);
@@ -1306,9 +1228,6 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
   }
 
-#ifdef LISTDB_L0_CACHE
-  auto hash_table = GetHashTable(shard);
-#endif
 
 #ifdef LISTDB_BLOOM_FILTER
   BloomFilter* l0_bloom_filter = new BloomFilter(10,kMemTableCapacity/kNumShards/sizeof(PmemNode));
@@ -1329,16 +1248,6 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
     pred->next[0] = mem_node->value;
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-    hash_table->Add(mem_node->key, mem_node->value);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-    hash_table->Insert(mem_node->key, node);
-#endif
 
 #ifdef LISTDB_BLOOM_FILTER
   l0_bloom_filter->AddKey(mem_node->key);
@@ -1392,10 +1301,6 @@ void ListDB::ManualFlushMemTable(int shard) {
     }
   }
 
-#ifdef LISTDB_L0_CACHE
-  auto hash_table = GetHashTable(shard);
-#endif
-
   INIT_REPORTER_CLIENT;
   while (mem_node) {
 #ifdef GROUP_LOGGING
@@ -1442,16 +1347,6 @@ void ListDB::ManualFlushMemTable(int shard) {
       preds[region][i] = ((PmemPtr*) &(preds[region][i]->next[i]))->get<Node>();
     }
     pred = ((PmemPtr*) &(pred->next[0]))->get<Node>();
-
-#if LISTDB_L0_CACHE == L0_CACHE_T_SIMPLE
-    hash_table->Add(mem_node->key, mem_node->value);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_STATIC
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_DOUBLE_HASHING
-    hash_table->Insert(mem_node->key, node);
-#elif LISTDB_L0_CACHE == L0_CACHE_T_LINEAR_PROBING
-    hash_table->Insert(mem_node->key, node);
-#endif
 
     REPORT_FLUSH_OPS(1);
 
@@ -1672,7 +1567,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
         //set all the preds to new head node (and path count)
         for(int j=0; j<kMaxHeight; j++){
           new_node->next[j].next_ptr = 0;
-          new_node->next[j].next_key = 0;
+          new_node->next[j].next_key = Key(0);
           preds[i][j] = new_node;
           path_cnts[i][j] = 1;
         }
@@ -1755,7 +1650,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
     //find search start height for fast l1 search
     int search_start_height=0;
       while(search_start_height<kMaxHeight-1){
-        if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(l0_node->key) > 0) break;
+        if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key.Valid() || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(l0_node->key) > 0) break;
         search_start_height++;
       }
 
@@ -1763,7 +1658,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       bool move_next = false;
       for (int t = search_start_height; t > 0; t--) {
         while (true) { 
-          if (preds[region][t]->next[t].next_key && preds[region][t]->next[t].next_key.Compare(l0_node->key) <= 0) {
+          if (preds[region][t]->next[t].next_key.Valid() && preds[region][t]->next[t].next_key.Compare(l0_node->key) <= 0) {
             uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
             curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             if(curr){
@@ -1791,7 +1686,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       //search preds and succes at braided level
 
       while (true) { 
-        if (preds[0][0]->next[0].next_key && preds[0][0]->next[0].next_key.Compare(l0_node->key) <= 0) {
+        if (preds[0][0]->next[0].next_key.Valid() && preds[0][0]->next[0].next_key.Compare(l0_node->key) <= 0) {
           uint64_t curr_paddr_paddr = preds[0][0]->next[0].next_ptr;
           curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
           if(curr){
@@ -1814,7 +1709,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       while(l0_node && l0kvbuffer.size()<=NPAIRS){
        // if(l0_node->key==8674865052476271390 || l0_node->key==4497455375325908531 || l0_node->key==3772020186569430559 || l0_node->key==7571122414589934652 || l0_node->key==4495033681488005219) printf("found key %lu in l1compaction pred[0][0] min key is %lu\n",l0_node->key,preds[0][0]->min_key);
         //if (task->shard == 0) fprintf(stdout, "size is %lu and cnt is %lu\n",l0kvbuffer.size(),pred_kvpairs->cnt);
-        if(preds[0][0]->next[0].next_key && preds[0][0]->next[0].next_key.Compare(l0_node->key)<=0) break;
+        if(preds[0][0]->next[0].next_key.Valid() && preds[0][0]->next[0].next_key.Compare(l0_node->key)<=0) break;
         l0kvbuffer.emplace_back(l0_node->key, l0_node->value);
         node_paddr = l0_node->next[0];
         l0_node = node_paddr.get<Node>();
@@ -1871,14 +1766,14 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
       if(!preds_split[region][kMaxHeight-1]){
       search_start_height=0;
         while(search_start_height<kMaxHeight-1){          
-          if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(preds[0][0]->min_key) > 0) break;
+          if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key.Valid() || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(preds[0][0]->min_key) > 0) break;
           search_start_height++;
         }
         //search preds and succes at upper level
         move_next = false;
         for (int t = search_start_height; t > 0; t--) {
           while (true) { 
-            if (preds[region][t]->next[t].next_key && preds[region][t]->next[t].next_key.Compare(preds[0][0]->min_key) <= 0) {
+            if (preds[region][t]->next[t].next_key.Valid() && preds[region][t]->next[t].next_key.Compare(preds[0][0]->min_key) <= 0) {
               uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
               tmp_curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
               if(tmp_curr){
@@ -1986,7 +1881,7 @@ void ListDB::LogStructuredMergeCompactionL0(CompactionWorkerData* td, L0Compacti
 while(l0kvbuffer.size()+l1kvbuffer.size()>0){
         //scan l0 keys to buffer while it reaches split point or out of l1 node key range----------------
         while(l0_node && l0kvbuffer.size()<=NPAIRS){
-          if(preds[0][0]->next[0].next_key && preds[0][0]->next[0].next_key.Compare(l0_node->key)<=0) break;
+          if(preds[0][0]->next[0].next_key.Valid() && preds[0][0]->next[0].next_key.Compare(l0_node->key)<=0) break;
           l0kvbuffer.emplace_back(l0_node->key, l0_node->value);
           node_paddr = l0_node->next[0];
           l0_node = node_paddr.get<Node>();
@@ -2017,14 +1912,14 @@ while(l0kvbuffer.size()+l1kvbuffer.size()>0){
       if(!preds_split[region][kMaxHeight-1]){
       search_start_height=0;
         while(search_start_height<kMaxHeight-1){
-          if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(preds[0][0]->min_key) > 0) break;
+          if(!preds[region][search_start_height+1]->next[search_start_height+1].next_key.Valid() || preds[region][search_start_height+1]->next[search_start_height+1].next_key.Compare(preds[0][0]->min_key) > 0) break;
           search_start_height++;
         }
         //search preds and succes at upper level
         move_next = false;
         for (int t = search_start_height; t > 0; t--) {
           while (true) { 
-            if (preds[region][t]->next[t].next_key && preds[region][t]->next[t].next_key.Compare(preds[0][0]->min_key) <= 0) {
+            if (preds[region][t]->next[t].next_key.Valid() && preds[region][t]->next[t].next_key.Compare(preds[0][0]->min_key) <= 0) {
               uint64_t curr_paddr_paddr = preds[region][t]->next[t].next_ptr;
               tmp_curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
               if(tmp_curr){
@@ -2154,7 +2049,7 @@ while(l0kvbuffer.size()+l1kvbuffer.size()>0){
         for (int t = height-1; t > 0; t--) {
           while (true) { 
             //if(task->shard ==0) printf("predpred finding %lu next key %lu height %d \n",preds[0][0]->min_key,preds_preds[t]->next[t].next_key,t);
-            if (preds_preds[t]->next[t].next_key && preds_preds[t]->next[t].next_key.Compare(preds[0][0]->min_key) < 0) {
+            if (preds_preds[t]->next[t].next_key.Valid() && preds_preds[t]->next[t].next_key.Compare(preds[0][0]->min_key) < 0) {
               uint64_t curr_paddr_paddr = preds_preds[t]->next[t].next_ptr;
               temp_curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
               if(temp_curr){
@@ -2170,7 +2065,7 @@ while(l0kvbuffer.size()+l1kvbuffer.size()>0){
         
         //search preds and succes at braided level
         while (true) { 
-          if (preds_preds[0]->next[0].next_key && preds_preds[0]->next[0].next_key.Compare(preds[0][0]->min_key) < 0) {
+          if (preds_preds[0]->next[0].next_key.Valid() && preds_preds[0]->next[0].next_key.Compare(preds[0][0]->min_key) < 0) {
             uint64_t curr_paddr_paddr = preds_preds[0]->next[0].next_ptr;
             temp_curr = (Node2*) ((PmemPtr*) &curr_paddr_paddr)->get();
             if(temp_curr){
